@@ -1,0 +1,75 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Grid Trading Bot</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body { font-family: Arial, sans-serif; margin: 0; padding: 20px; }
+        h1 { color: #333; }
+        table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+        th, td { padding: 10px; text-align: left; border-bottom: 1px solid #ddd; }
+        th { background-color: #f2f2f2; }
+        .button { 
+            display: inline-block; padding: 8px 16px; text-decoration: none; 
+            color: white; background-color: #4CAF50; border-radius: 4px; margin-right: 5px;
+        }
+        .button.red { background-color: #f44336; }
+        .button.blue { background-color: #2196F3; }
+        .action-cell { white-space: nowrap; }
+    </style>
+</head>
+<body>
+    <h1>Grid Trading Bot</h1>
+    <a href="/grid/create" class="button">Create New Grid</a>
+    
+    <table>
+        <thead>
+            <tr>
+                <th>ID</th>
+                <th>Symbol</th>
+                <th>Price Range</th>
+                <th>Grids</th>
+                <th>Investment</th>
+                <th>PnL</th>
+                <th>Status</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for grid in grids %}
+            <tr>
+                <td>{{ grid.grid_id[:8] }}</td>
+                <td>{{ grid.symbol }}</td>
+                <td>{{ grid.price_lower }} - {{ grid.price_upper }}</td>
+                <td>{{ grid.grid_number }}</td>
+                <td>{{ "%.2f"|format(grid.investment) }}</td>
+                <td>{{ "%.2f"|format(grid.pnl) }} ({{ "%.2f"|format(grid.pnl_percentage) }}%)</td>
+                <td>{{ "Running" if grid.running else "Stopped" }}</td>
+                <td class="action-cell">
+                    {% if grid.running %}
+                    <a href="/grid/stop/{{ grid.grid_id }}" class="button red">Stop</a>
+                    {% else %}
+                    <a href="/grid/start/{{ grid.grid_id }}" class="button blue">Start</a>
+                    {% endif %}
+                    <a href="/grid/edit/{{ grid.grid_id }}" class="button">Edit</a>
+                    <a href="/grid/delete/{{ grid.grid_id }}" class="button red" onclick="return confirm('Are you sure you want to delete this grid?')">Delete</a>
+                </td>
+            </tr>
+            {% else %}
+            <tr>
+                <td colspan="8">No grids found</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    
+    <script>
+        // Auto-refresh the page every 30 seconds
+        setTimeout(function() {
+            location.reload();
+        }, 30000);
+    </script>
+</body>
+</html>
+        

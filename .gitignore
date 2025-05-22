@@ -1,0 +1,25 @@
+# Config files
+config.json
+
+# Data directory
+data/
+!data/.gitkeep
+
+# Log files
+logs/
+!logs/.gitkeep
+
+# Python cache files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual Environment
+.venv/
+venv/
+env/
+
+# IDE settings
+.idea/
+.vscode/
