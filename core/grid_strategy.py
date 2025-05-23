@@ -492,55 +492,104 @@ class GridStrategy:
         except Exception as e:
             self.logger.error(f"Error setting up grid: {e}")
             self.running = False
-    
+    def _check_liquidation_risk(self) -> bool:
+        """Monitor liquidation risk with 20x leverage"""
+        try:
+            current_price = float(self.exchange.get_ticker(self.symbol)['last'])
+            
+            # Check each position's distance from liquidation
+            risky_positions = 0
+            for position in self.all_positions.values():
+                if position.exit_time is not None:
+                    continue
+                    
+                if position.side == 'long':
+                    liquidation_price = position.entry_price * 0.95  # ~5% down = liquidation
+                    risk_pct = (current_price - liquidation_price) / liquidation_price
+                else:
+                    liquidation_price = position.entry_price * 1.05  # ~5% up = liquidation  
+                    risk_pct = (liquidation_price - current_price) / liquidation_price
+                
+                if risk_pct < 0.02:  # Within 2% of liquidation
+                    risky_positions += 1
+                    self.logger.warning(f"Position {position.position_id[:8]} near liquidation: {risk_pct:.2%} margin")
+            
+            # If >30% positions are risky, reduce exposure
+            total_positions = len([p for p in self.all_positions.values() if p.exit_time is None])
+            if total_positions > 0 and risky_positions / total_positions > 0.3:
+                self.logger.warning(f"High liquidation risk: {risky_positions}/{total_positions} positions at risk")
+                return True
+                
+            return False
+            
+        except Exception as e:
+            self.logger.error(f"Error checking liquidation risk: {e}")
+            return False
+    def _reduce_risky_positions(self):
+        """Reduce positions that are close to liquidation"""
+        try:
+            current_price = float(self.exchange.get_ticker(self.symbol)['last'])
+            positions_closed = 0
+            
+            for position in list(self.all_positions.values()):
+                if position.exit_time is not None:
+                    continue
+                    
+                # Calculate risk level
+                if position.side == 'long':
+                    liquidation_price = position.entry_price * 0.95
+                    risk_pct = (current_price - liquidation_price) / liquidation_price
+                else:
+                    liquidation_price = position.entry_price * 1.05
+                    risk_pct = (liquidation_price - current_price) / liquidation_price
+                
+                # Close positions within 1.5% of liquidation
+                if risk_pct < 0.015:
+                    try:
+                        self._close_position_at_market(position)
+                        positions_closed += 1
+                        self.logger.info(f"Closed risky position {position.position_id[:8]}: {risk_pct:.2%} from liquidation")
+                    except Exception as e:
+                        self.logger.error(f"Error closing risky position: {e}")
+            
+            if positions_closed > 0:
+                self.logger.info(f"Closed {positions_closed} risky positions to prevent liquidation")
+                
+        except Exception as e:
+            self.logger.error(f"Error reducing risky positions: {e}")
     def _setup_zone_orders(self, zone: GridZone, current_price: float) -> int:
-        """Setup orders for a specific zone with correct grid logic"""
+        """Setup ultra-tight orders for 20x leverage"""
         try:
             grid_levels = self._get_grid_levels(zone)
             orders_placed = 0
-            buy_orders = []
-            sell_orders = []
             
-            self.logger.info(f"Setting up zone orders:")
-            self.logger.info(f"  Range: ${zone.price_lower:.6f} - ${zone.price_upper:.6f}")
+            self.logger.info(f"Setting up 20x leverage zone orders:")
             self.logger.info(f"  Current Price: ${current_price:.6f}")
-            self.logger.info(f"  Grid Levels: {[f'${l:.6f}' for l in grid_levels]}")
             
-            # Place orders at each grid level based on current price
             for i, level_price in enumerate(grid_levels):
-                
-                # Skip levels that are too close to current price (avoid immediate fills)
+                # Much tighter spacing for 20x leverage - 0.2% minimum gap
                 price_diff_pct = abs(level_price - current_price) / current_price
-                if price_diff_pct < 0.005:  # Skip if within 0.5% of current price
-                    self.logger.debug(f"  Skipping level ${level_price:.6f} - too close to current price ({price_diff_pct:.1%})")
+                if price_diff_pct < 0.002:  # Skip if within 0.2% (vs 0.5% at 1x)
                     continue
                 
-                # Determine order type based on price relative to current price
+                # Determine order type
                 if level_price < current_price:
-                    # Place buy order below current price
                     order_type = 'buy'
-                    target_price = level_price
-                    
                 elif level_price > current_price:
-                    # Place sell order above current price  
                     order_type = 'sell'
-                    target_price = level_price
-                    
                 else:
-                    # Skip if exactly at current price
                     continue
                 
-                # Calculate order amount
-                amount = self._calculate_order_amount(target_price, zone.investment_per_grid)
+                # Use safe position sizing for 20x leverage
+                amount = self._calculate_safe_position_size(level_price, zone.investment_per_grid)
                 
                 try:
-                    # Place the order
-                    order = self.exchange.create_limit_order(self.symbol, order_type, amount, target_price)
+                    order = self.exchange.create_limit_order(self.symbol, order_type, amount, level_price)
                     
                     order_info = {
                         'zone_id': zone.zone_id,
                         'type': order_type,
-                        'price': target_price,
+                        'price': level_price,
                         'amount': amount,
                         'grid_level': i,
                         'target_investment': zone.investment_per_grid,
@@ -551,44 +600,16 @@ class GridStrategy:
                     zone.orders[order['id']] = order_info
                     orders_placed += 1
                     
-                    # Track for summary
-                    order_summary = {
-                        'level': i,
-                        'price': target_price,
-                        'amount': amount,
-                        'value': amount * target_price,
-                        'investment': (amount * target_price) / self.user_leverage
-                    }
-                    
-                    if order_type == 'buy':
-                        buy_orders.append(order_summary)
-                    else:
-                        sell_orders.append(order_summary)
-                    
-                    self.logger.debug(f"  ✅ {order_type.upper()} order: Level {i}, ${target_price:.6f} x {amount:.4f}")
+                    profit_potential = (level_price - current_price) / current_price * 20 if order_type == 'sell' else (current_price - level_price) / current_price * 20
+                    self.logger.debug(f"  ✅ {order_type.upper()}: ${level_price:.6f} ({price_diff_pct:.2%} from current) = {profit_potential:.1f}% potential")
                     
                 except Exception as e:
-                    self.logger.error(f"  ❌ Failed to place {order_type} order at ${target_price:.6f}: {e}")
-            
-            # Print summary
-            self.logger.info(f"📊 Order Placement Summary:")
-            self.logger.info(f"  Total Orders: {orders_placed}")
-            self.logger.info(f"  Buy Orders: {len(buy_orders)} (below ${current_price:.6f})")
-            for order in buy_orders:
-                self.logger.info(f"    Level {order['level']}: ${order['price']:.6f} x {order['amount']:.4f} = ${order['investment']:.2f}")
-            
-            self.logger.info(f"  Sell Orders: {len(sell_orders)} (above ${current_price:.6f})")
-            for order in sell_orders:
-                self.logger.info(f"    Level {order['level']}: ${order['price']:.6f} x {order['amount']:.4f} = ${order['investment']:.2f}")
-            
-            total_investment = sum(o['investment'] for o in buy_orders + sell_orders)
-            self.logger.info(f"  Total Investment Allocated: ${total_investment:.2f}")
-            self.logger.info(f"  Expected per Grid: ${zone.investment_per_grid:.2f}")
+                    self.logger.error(f"  ❌ Failed {order_type} at ${level_price:.6f}: {e}")
             
             return orders_placed
             
         except Exception as e:
-            self.logger.error(f"Error setting up zone orders: {e}")
+            self.logger.error(f"Error setting up 20x leverage zone orders: {e}")
             return 0
     
     def update_grid(self):
@@ -660,14 +681,19 @@ class GridStrategy:
                 self.logger.warning(f"No info found for filled order {order_id}")
                 return
             
-            # Create position from filled order
+            # Check if this is a counter order (closing a position)
+            if 'position_id' in order_info:
+                self._close_position_from_counter_order(order_id, order_status)
+                return
+            
+            # This is a regular grid order, create new position
             position_id = str(uuid.uuid4())
             fill_price = float(order_status.get('average', order_info['price']))
             fill_amount = float(order_status.get('filled', order_info['amount']))
             
             position = GridPosition(
                 position_id=position_id,
-                grid_level=order_info['grid_level'],
+                grid_level=order_info.get('grid_level', 0),  # Safe default for missing key
                 entry_price=fill_price,
                 quantity=fill_amount,
                 side='long' if order_info['type'] == 'buy' else 'short',
@@ -697,7 +723,34 @@ class GridStrategy:
             
         except Exception as e:
             self.logger.error(f"Error processing filled order {order_id}: {e}")
-    
+    def _close_position_from_counter_order(self, order_id: str, order_status: Dict):
+        """Close position from counter order fill"""
+        try:
+            order_info = self.pending_orders[order_id]
+            position_id = order_info['position_id']
+            
+            if position_id in self.all_positions:
+                position = self.all_positions[position_id]
+                position.exit_time = time.time()
+                position.exit_price = float(order_status.get('average', order_info['price']))
+                
+                # Calculate realized PnL
+                if position.side == 'long':
+                    position.realized_pnl = (position.exit_price - position.entry_price) * position.quantity
+                else:
+                    position.realized_pnl = (position.entry_price - position.exit_price) * position.quantity
+                
+                # Clear counter order references
+                position.has_counter_order = False
+                position.counter_order_id = None
+                
+                self.logger.info(f"Closed position {position_id[:8]} via counter order: PnL = ${position.realized_pnl:.2f}")
+            
+            # Remove from pending orders
+            del self.pending_orders[order_id]
+            
+        except Exception as e:
+            self.logger.error(f"Error closing position from counter order {order_id}: {e}")
     def _remove_cancelled_order(self, order_id: str):
         """Remove cancelled order from tracking"""
         try:
@@ -788,50 +841,90 @@ class GridStrategy:
             self.logger.error(f"Error creating counter order for position {position.position_id}: {e}")
     
     def _check_and_adapt_grid(self, current_price: float):
-        """Check if grid needs adaptation and perform gradual migration"""
+        """Check if grid needs adaptation - stay close to current price for max profit"""
         try:
-            # Throttle adaptation checks
-            if time.time() - self.last_adaptation_time < 60:  # Max once per minute
+            # Very frequent checks for tight grid management (every 10 seconds)
+            if time.time() - self.last_adaptation_time < 10:
                 return
             
             self.last_adaptation_time = time.time()
             
-            # Get market intelligence if enabled
-            market_shift_needed = False
-            shift_direction = None
+            # Check if price moved outside tight range (immediate adaptation needed)
+            price_needs_adaptation = self._price_needs_immediate_adaptation(current_price)
             
+            # Get market intelligence for direction
+            shift_direction = None
             if self.enable_samig and hasattr(self, 'market_intel'):
                 market_snapshot = self.market_intel.analyze_market(self.exchange)
-                market_shift_needed, shift_direction = self._assess_market_shift(market_snapshot, current_price)
+                _, shift_direction = self._assess_market_shift(market_snapshot, current_price)
             
-            # Check if price is significantly outside any active zone
-            price_outside_zones = self._is_price_outside_zones(current_price)
-            
-            if price_outside_zones or market_shift_needed:
-                self.logger.info(f"Grid adaptation triggered:")
-                self.logger.info(f"  Current Price: ${current_price:.6f}")
-                self.logger.info(f"  Price Outside Zones: {price_outside_zones}")
-                self.logger.info(f"  Market Shift Needed: {market_shift_needed}")
-                
+            if price_needs_adaptation:
+                self.logger.info(f"Grid adaptation triggered - staying close to price: ${current_price:.6f}")
                 self._perform_gradual_grid_migration(current_price, shift_direction)
                 
         except Exception as e:
             self.logger.error(f"Error in grid adaptation: {e}")
+    def _price_needs_immediate_adaptation(self, current_price: float) -> bool:
+        """Ultra-tight adaptation for 20x leverage - capture micro-movements"""
+        try:
+            for zone in self.active_zones.values():
+                if not zone.active:
+                    continue
+                
+                # Ultra-tight buffer for 20x leverage (0.5-1%)
+                zone_width = zone.price_upper - zone.price_lower
+                ultra_tight_buffer = zone_width * 0.005  # 0.5% buffer
+                
+                # Check if current price is within ultra-tight range
+                if (zone.price_lower + ultra_tight_buffer) <= current_price <= (zone.price_upper - ultra_tight_buffer):
+                    return False  # Price is in good range
+            
+            return True  # Price moved outside ultra-tight range
+            
+        except Exception as e:
+            self.logger.error(f"Error checking price adaptation need: {e}")
+            return False
+    def _calculate_safe_position_size(self, price: float, investment_per_grid: float) -> float:
+        """Calculate position size with 20x leverage risk management"""
+        try:
+            # Base calculation
+            notional_value = investment_per_grid * self.user_leverage
+            base_amount = notional_value / price
+            
+            # Risk management for 20x leverage
+            # Limit total exposure to prevent liquidation
+            max_positions = 8  # Max simultaneous positions
+            current_positions = len([p for p in self.all_positions.values() if p.exit_time is None])
+            
+            # Reduce position size if approaching limit
+            if current_positions >= max_positions * 0.75:  # At 75% capacity
+                risk_reduction_factor = 0.7  # Reduce by 30%
+                base_amount *= risk_reduction_factor
+                self.logger.info(f"Position size reduced due to exposure limit: {current_positions}/{max_positions}")
+            
+            # Ensure minimum profit covers spread costs (0.04% spread + 0.06% profit = 0.1% minimum)
+            min_profit_requirement = price * 0.001  # 0.1% minimum profit target
+            
+            return self._round_amount(base_amount)
+            
+        except Exception as e:
+            self.logger.error(f"Error calculating safe position size: {e}")
+            return max(self.min_amount, 0.0001)
     
     def _assess_market_shift(self, market_snapshot: MarketSnapshot, current_price: float) -> Tuple[bool, Optional[str]]:
-        """Assess if market conditions require grid shift"""
+        """Assess market direction for grid positioning - sensitive for quick adaptation"""
         try:
-            # Strong trend detection
-            if market_snapshot.trend_strength > 0.7:
-                if market_snapshot.momentum > 0.3:
-                    return True, 'up'
-                elif market_snapshot.momentum < -0.3:
-                    return True, 'down'
-            
-            # High volatility with directional bias
-            if market_snapshot.volatility > 2.0 and abs(market_snapshot.momentum) > 0.4:
+            # Very sensitive to any directional movement for optimal grid positioning
+            if abs(market_snapshot.momentum) > 0.1:  # Very low threshold
                 direction = 'up' if market_snapshot.momentum > 0 else 'down'
                 return True, direction
+            
+            # Any measurable trend gets consideration
+            if market_snapshot.trend_strength > 0.3:
+                if market_snapshot.momentum > 0.05:
+                    return True, 'up'
+                elif market_snapshot.momentum < -0.05:
+                    return True, 'down'
             
             return False, None
             
@@ -857,35 +950,37 @@ class GridStrategy:
             return False
     
     def _perform_gradual_grid_migration(self, current_price: float, shift_direction: Optional[str]):
-        """Perform gradual grid migration instead of sudden shift"""
+        """Perform grid migration - always stay centered close to current price"""
         try:
-            # Calculate new zone parameters
+            # Keep original zone width but center tightly around current price
             zone_width = self.user_price_upper - self.user_price_lower
             
+            # Always center around current price for maximum profit capture
+            # Slight bias based on market direction but stay tight
             if shift_direction == 'up':
-                # Shift zone upward
-                new_lower = max(self.user_price_lower, current_price - zone_width * 0.3)
-                new_upper = new_lower + zone_width
+                # Slightly bias upward but keep tight
+                new_lower = current_price - zone_width * 0.45
+                new_upper = current_price + zone_width * 0.55
             elif shift_direction == 'down':
-                # Shift zone downward
-                new_upper = min(self.user_price_upper, current_price + zone_width * 0.3)
-                new_lower = new_upper - zone_width
+                # Slightly bias downward but keep tight  
+                new_lower = current_price - zone_width * 0.55
+                new_upper = current_price + zone_width * 0.45
             else:
-                # Center around current price
+                # Perfect center around current price
                 new_lower = current_price - zone_width * 0.5
                 new_upper = current_price + zone_width * 0.5
-            
-            # Ensure new zone is reasonable
-            new_lower = max(new_lower, current_price * 0.7)  # Not more than 30% below
-            new_upper = min(new_upper, current_price * 1.3)  # Not more than 30% above
             
             new_lower = self._round_price(new_lower)
             new_upper = self._round_price(new_upper)
             
+            self.logger.info(f"Migrating grid to stay close to price:")
+            self.logger.info(f"  Current: ${current_price:.6f}")
+            self.logger.info(f"  New Range: ${new_lower:.6f} - ${new_upper:.6f}")
+            
             # Create new zone
             self._create_migration_zone(new_lower, new_upper, current_price)
             
-            # Schedule old zone deactivation (gradual phase-out)
+            # Immediate cleanup of old zones
             self._schedule_zone_deactivation()
             
         except Exception as e:
@@ -917,7 +1012,7 @@ class GridStrategy:
             self.logger.error(f"Error creating migration zone: {e}")
     
     def _schedule_zone_deactivation(self):
-        """Schedule deactivation of old zones that have no positions"""
+        """Immediate deactivation of old zones for tight grid management"""
         try:
             zones_to_deactivate = []
             
@@ -927,13 +1022,13 @@ class GridStrategy:
                 
                 # Check if zone has active positions
                 active_positions = sum(1 for pos in zone.positions.values() 
-                                     if pos.exit_time is None)
+                                    if pos.exit_time is None)
                 
                 # Check zone age
                 zone_age = time.time() - zone.creation_time
                 
-                # Deactivate old zones with no positions after 5 minutes
-                if active_positions == 0 and zone_age > 300:
+                # Immediate cleanup for tight grid management (30 seconds)
+                if active_positions == 0 and zone_age > 30:
                     zones_to_deactivate.append(zone_id)
             
             for zone_id in zones_to_deactivate:
