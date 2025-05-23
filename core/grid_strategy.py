@@ -1,526 +1,150 @@
 """
-Enhanced Grid Trading Strategy with Self-Adaptive Market Intelligence (SAMIG)
-Combines traditional grid trading with advanced market analysis and adaptive parameters.
+Enhanced Grid Trading Strategy with Proper Position Management
+Maintains constant grid size while intelligently shifting with price movement.
 """
 import logging
 import time
-import numpy as np
+import uuid
 from typing import Dict, List, Any, Optional, Tuple, Set
 from dataclasses import dataclass
 from collections import deque
 import traceback
 from core.exchange import Exchange
 
+# Export classes for external imports
+__all__ = ['GridStrategy', 'MarketIntelligence', 'GridPosition', 'GridZone', 'MarketSnapshot']
+
+@dataclass
+class GridPosition:
+    """Represents a filled position from grid trading"""
+    position_id: str
+    grid_level: int
+    entry_price: float
+    quantity: float
+    side: str  # 'long' or 'short'
+    entry_time: float
+    exit_price: Optional[float] = None
+    exit_time: Optional[float] = None
+    realized_pnl: float = 0.0
+    unrealized_pnl: float = 0.0
+    has_counter_order: bool = False
+    counter_order_id: Optional[str] = None
+
+@dataclass
+class GridZone:
+    """Represents an active grid zone"""
+    zone_id: str
+    price_lower: float
+    price_upper: float
+    grid_count: int
+    investment_per_grid: float
+    active: bool = True
+    creation_time: float = 0.0
+    positions: Dict[str, GridPosition] = None
+    orders: Dict[str, Dict] = None
+    
+    def __post_init__(self):
+        if self.positions is None:
+            self.positions = {}
+        if self.orders is None:
+            self.orders = {}
+        if self.creation_time == 0.0:
+            self.creation_time = time.time()
+
 @dataclass
 class MarketSnapshot:
-    """Real-time market condition snapshot"""
     timestamp: float
     price: float
     volume: float
-    spread: float
-    order_book_imbalance: float
-    price_velocity: float
-    volatility_regime: float
+    volatility: float
     momentum: float
-    mean_reversion_strength: float
+    trend_strength: float
 
-@dataclass
-class GridPerformanceMetric:
-    """Performance tracking for adaptive learning"""
-    timestamp: float
-    pnl: float
-    win_rate: float
-    trades_count: int
-    market_conditions: MarketSnapshot
-    grid_config: Dict
-
-class AdaptiveParameterManager:
-    """Crypto-optimized adaptive parameter management"""
-    
-    def __init__(self):
-        self.performance_history = deque(maxlen=50)  # Shorter history for crypto
-        self.learning_rate = 0.2  # Higher learning rate for fast crypto markets
-        
-        # Crypto-specific parameter bounds
-        self.param_bounds = {
-            'grid_density': {'min': 0.3, 'max': 2.5, 'current': 1.0},
-            'volatility_response': {'min': 0.5, 'max': 3.0, 'current': 1.2},
-            'momentum_threshold': {'min': 0.05, 'max': 0.8, 'current': 0.3},
-            'mean_reversion_factor': {'min': 0.3, 'max': 2.5, 'current': 1.0},
-            'exposure_asymmetry': {'min': 0.6, 'max': 2.0, 'current': 1.0},
-            'rapid_adaptation': {'min': 0.1, 'max': 1.0, 'current': 0.5},
-            'volume_sensitivity': {'min': 0.2, 'max': 2.0, 'current': 1.0},
-            'rsi_bounds_adjustment': {'min': 0.5, 'max': 1.5, 'current': 1.0}
-        }
-        
-        # Market regime detection
-        self.current_regime = 'neutral'  # trending, ranging, volatile
-        self.regime_stability = 0
-    
-    def update_parameter(self, param_name: str, performance_score: float, market_conditions: MarketSnapshot):
-        """Update parameter based on crypto market performance"""
-        if param_name not in self.param_bounds:
-            return
-        
-        bounds = self.param_bounds[param_name]
-        current = bounds['current']
-        
-        # Detect market regime
-        self._update_market_regime(market_conditions)
-        
-        # Regime-specific learning rates
-        regime_multipliers = {
-            'trending': 1.5,    # Learn faster in trending markets
-            'ranging': 0.8,     # Learn slower in ranging markets  
-            'volatile': 2.0     # Learn fastest in volatile markets
-        }
-        
-        effective_learning_rate = self.learning_rate * regime_multipliers.get(self.current_regime, 1.0)
-        
-        # Performance-based adjustment with crypto-specific scaling
-        if performance_score > 0:
-            adjustment = effective_learning_rate * (performance_score / 50)  # Scale for crypto returns
-        else:
-            adjustment = -effective_learning_rate * (abs(performance_score) / 50)
-        
-        # Market condition modulations
-        adjustment *= self._get_market_adjustment_factor(param_name, market_conditions)
-        
-        # Apply bounds with momentum
-        momentum = 0.1 * (current - bounds.get('previous', current))
-        new_value = current + adjustment + momentum
-        
-        # Store previous value
-        bounds['previous'] = current
-        bounds['current'] = max(bounds['min'], min(bounds['max'], new_value))
-        
-        logging.debug(f"Adaptive parameter {param_name}: {current:.3f} -> {bounds['current']:.3f} "
-                     f"(regime: {self.current_regime}, perf: {performance_score:.2f}%)")
-    
-    def _update_market_regime(self, market_conditions: MarketSnapshot):
-        """Detect and update current market regime"""
-        # Use volatility and momentum to classify regime
-        vol_regime = market_conditions.volatility_regime
-        momentum = abs(market_conditions.momentum)
-        
-        # Regime classification thresholds
-        if vol_regime > 1.5 and momentum > 0.3:
-            new_regime = 'volatile'
-        elif momentum > 0.4:
-            new_regime = 'trending'
-        else:
-            new_regime = 'ranging'
-        
-        # Update regime with stability counter
-        if new_regime == self.current_regime:
-            self.regime_stability = min(10, self.regime_stability + 1)
-        else:
-            if self.regime_stability > 3:  # Require stability before changing
-                self.current_regime = new_regime
-                self.regime_stability = 0
-            else:
-                self.regime_stability = 0
-    
-    def _get_market_adjustment_factor(self, param_name: str, market_conditions: MarketSnapshot) -> float:
-        """Get market-specific adjustment factors for parameters"""
-        vol_regime = market_conditions.volatility_regime
-        momentum = market_conditions.momentum
-        mean_reversion = market_conditions.mean_reversion_strength
-        
-        # Parameter-specific market adjustments
-        adjustments = {
-            'grid_density': 1 + (vol_regime - 1) * 0.5,  # More grids in volatile markets
-            'volatility_response': vol_regime,  # Direct volatility scaling
-            'momentum_threshold': 1 - abs(momentum) * 0.3,  # Lower threshold in trending markets
-            'mean_reversion_factor': mean_reversion,  # Scale with mean reversion strength
-            'exposure_asymmetry': 1 + momentum * 0.5,  # Bias exposure with momentum
-            'rapid_adaptation': vol_regime * 0.8,  # Adapt faster in volatile markets
-            'volume_sensitivity': 1 + market_conditions.volume / 1000000 * 0.1,  # Volume scaling
-            'rsi_bounds_adjustment': 1 + (vol_regime - 1) * 0.3  # Adjust RSI bounds for volatility
-        }
-        
-        return adjustments.get(param_name, 1.0)
-    
-    def get_parameter(self, param_name: str) -> float:
-        """Get current adaptive parameter value"""
-        return self.param_bounds.get(param_name, {}).get('current', 1.0)
-    
-    def get_regime_adjusted_parameters(self) -> Dict[str, float]:
-        """Get all parameters adjusted for current market regime"""
-        base_params = {name: bounds['current'] for name, bounds in self.param_bounds.items()}
-        
-        # Apply regime-specific adjustments
-        if self.current_regime == 'volatile':
-            base_params['grid_density'] *= 0.8  # Fewer grids in chaos
-            base_params['rapid_adaptation'] *= 1.5  # Adapt faster
-            base_params['volatility_response'] *= 1.2  # More responsive
-            
-        elif self.current_regime == 'trending':
-            base_params['momentum_threshold'] *= 0.7  # Lower momentum threshold
-            base_params['exposure_asymmetry'] *= 1.3  # More directional bias
-            base_params['mean_reversion_factor'] *= 0.8  # Less mean reversion
-            
-        elif self.current_regime == 'ranging':
-            base_params['grid_density'] *= 1.2  # More grids for range trading
-            base_params['mean_reversion_factor'] *= 1.3  # More mean reversion
-            base_params['momentum_threshold'] *= 1.3  # Higher momentum threshold
-        
-        return base_params
-    
-    def reset_parameters(self):
-        """Reset all parameters to defaults (useful after major regime changes)"""
-        defaults = {
-            'grid_density': 1.0,
-            'volatility_response': 1.2,
-            'momentum_threshold': 0.3,
-            'mean_reversion_factor': 1.0,
-            'exposure_asymmetry': 1.0,
-            'rapid_adaptation': 0.5,
-            'volume_sensitivity': 1.0,
-            'rsi_bounds_adjustment': 1.0
-        }
-        
-        for param_name, default_value in defaults.items():
-            if param_name in self.param_bounds:
-                self.param_bounds[param_name]['current'] = default_value
-        
-        logging.info("Adaptive parameters reset to defaults due to regime change")
-class MarketIntelligenceEngine:
-    """Crypto-focused market analysis engine using real-time kline data"""
+class MarketIntelligence:
+    """Simplified market intelligence for grid strategy"""
     
     def __init__(self, symbol: str):
         self.symbol = symbol
-        self.kline_data = deque(maxlen=100)  # Store recent klines
-        self.price_history = deque(maxlen=200)
-        self.volume_history = deque(maxlen=200)
-        self.rsi_history = deque(maxlen=50)
-        self.snapshot_history = deque(maxlen=100)
-        self.last_kline_time = 0
-        
-        # Crypto-specific characteristics
-        self.asset_characteristics = {
-            'typical_volatility': None,
-            'volume_profile': None,
-            'momentum_persistence': None,
-            'price_precision': None
-        }
+        self.price_history = deque(maxlen=100)
+        self.last_analysis_time = 0
     
-    def analyze_market_conditions(self, exchange: Exchange) -> MarketSnapshot:
-        """Analyze crypto market using real-time kline data and crypto-specific indicators"""
-        try:
-            # Get recent kline data (1-minute candles for real-time analysis)
-            klines = self._fetch_recent_klines(exchange)
-            
-            if not klines or len(klines) < 10:
-                return self._create_fallback_snapshot(exchange)
-            
-            # Extract current market data
-            current_kline = klines[-1]
-            current_price = float(current_kline[4])  # Close price
-            current_volume = float(current_kline[5])  # Volume
-            
-            # Update histories
-            self.price_history.append(current_price)
-            self.volume_history.append(current_volume)
-            self.kline_data.extend(klines)
-            
-            # Calculate crypto-specific analytics
-            price_velocity = self._calculate_price_velocity(klines)
-            momentum = self._calculate_crypto_momentum(klines)
-            volatility_regime = self._calculate_crypto_volatility(klines)
-            volume_momentum = self._calculate_volume_momentum(klines)
-            rsi = self._calculate_rsi(klines)
-            mean_reversion_strength = self._calculate_mean_reversion(klines)
-            
-            # Estimate spread from recent price action
-            spread_estimate = self._estimate_spread(klines)
-            
-            snapshot = MarketSnapshot(
-                timestamp=time.time(),
-                price=current_price,
-                volume=current_volume,
-                spread=spread_estimate,
-                order_book_imbalance=volume_momentum,  # Use volume momentum as proxy
-                price_velocity=price_velocity,
-                volatility_regime=volatility_regime,
-                momentum=momentum,
-                mean_reversion_strength=mean_reversion_strength
-            )
-            
-            self.snapshot_history.append(snapshot)
-            self._update_asset_characteristics(klines)
-            
-            return snapshot
-            
-        except Exception as e:
-            logging.error(f"Error in crypto market analysis: {e}")
-            return self._create_fallback_snapshot(exchange)
-    
-    def _fetch_recent_klines(self, exchange: Exchange) -> List:
-        """Fetch recent 1-minute klines for real-time crypto analysis"""
-        try:
-            # Get last 30 minutes of 1-minute klines for detailed analysis
-            klines = exchange.exchange.fetch_ohlcv(
-                exchange._get_symbol_id(self.symbol),
-                timeframe='1m',
-                limit=30
-            )
-            
-            # Convert to Binance kline format: [time, open, high, low, close, volume]
-            formatted_klines = []
-            for kline in klines:
-                formatted_klines.append([
-                    int(kline[0]),      # timestamp
-                    str(kline[1]),      # open
-                    str(kline[2]),      # high  
-                    str(kline[3]),      # low
-                    str(kline[4]),      # close
-                    str(kline[5])       # volume
-                ])
-            
-            return formatted_klines
-            
-        except Exception as e:
-            logging.error(f"Error fetching klines: {e}")
-            return []
-    
-    def _create_fallback_snapshot(self, exchange: Exchange) -> MarketSnapshot:
-        """Create fallback snapshot using ticker data only"""
+    def analyze_market(self, exchange: Exchange) -> MarketSnapshot:
+        """Analyze current market conditions"""
         try:
             ticker = exchange.get_ticker(self.symbol)
             current_price = float(ticker['last'])
             volume = float(ticker.get('quoteVolume', 0))
             
+            self.price_history.append(current_price)
+            
+            # Calculate simple indicators
+            volatility = self._calculate_volatility()
+            momentum = self._calculate_momentum()
+            trend_strength = self._calculate_trend_strength()
+            
             return MarketSnapshot(
                 timestamp=time.time(),
                 price=current_price,
                 volume=volume,
-                spread=0.001,  # Default 0.1% spread estimate
-                order_book_imbalance=0,
-                price_velocity=0,
-                volatility_regime=1.0,
-                momentum=0,
-                mean_reversion_strength=1.0
+                volatility=volatility,
+                momentum=momentum,
+                trend_strength=trend_strength
             )
-        except:
-            return MarketSnapshot(time.time(), 0, 0, 0, 0, 0, 1, 0, 1)
+        except Exception as e:
+            logging.error(f"Error in market analysis: {e}")
+            return MarketSnapshot(time.time(), 0, 0, 1.0, 0, 0)
     
-    def _calculate_price_velocity(self, klines: List) -> float:
-        """Calculate crypto price velocity (rate of change per minute)"""
-        if len(klines) < 5:
-            return 0
-        
-        # Use last 5 minutes for velocity calculation
-        recent_prices = [float(k[4]) for k in klines[-5:]]
-        
-        if len(recent_prices) < 2:
-            return 0
-        
-        # Calculate percentage change per minute
-        price_change = (recent_prices[-1] - recent_prices[0]) / recent_prices[0]
-        time_span = len(recent_prices) - 1  # minutes
-        
-        velocity = price_change / time_span if time_span > 0 else 0
-        
-        # Normalize to [-1, 1] range for crypto (can move 5%+ per minute)
-        return max(-1, min(1, velocity * 20))
-    
-    def _calculate_crypto_momentum(self, klines: List) -> float:
-        """Calculate crypto momentum using multiple timeframes"""
-        if len(klines) < 15:
-            return 0
-        
-        prices = [float(k[4]) for k in klines]
-        
-        # Multi-timeframe momentum (crypto-optimized)
-        short_momentum = (prices[-1] - prices[-3]) / prices[-3] if len(prices) >= 3 else 0  # 3-min
-        medium_momentum = (prices[-1] - prices[-7]) / prices[-7] if len(prices) >= 7 else 0  # 7-min  
-        long_momentum = (prices[-1] - prices[-15]) / prices[-15] if len(prices) >= 15 else 0  # 15-min
-        
-        # Weight shorter timeframes more heavily for crypto
-        momentum = short_momentum * 0.6 + medium_momentum * 0.3 + long_momentum * 0.1
-        
-        # Normalize for crypto volatility (can easily move 2-3% in minutes)
-        return max(-1, min(1, momentum * 30))
-    
-    def _calculate_crypto_volatility(self, klines: List) -> float:
-        """Calculate volatility regime using high-low ranges"""
-        if len(klines) < 10:
+    def _calculate_volatility(self) -> float:
+        """Calculate price volatility"""
+        if len(self.price_history) < 10:
             return 1.0
         
-        # Calculate minute-by-minute volatility
-        recent_volatilities = []
-        historical_volatilities = []
-        
-        for i, kline in enumerate(klines):
-            high = float(kline[2])
-            low = float(kline[3])
-            close = float(kline[4])
-            
-            # Calculate intra-minute volatility
-            if close > 0:
-                volatility = (high - low) / close
-                
-                if i >= len(klines) - 5:  # Recent 5 minutes
-                    recent_volatilities.append(volatility)
-                historical_volatilities.append(volatility)
-        
-        if not recent_volatilities or not historical_volatilities:
-            return 1.0
-        
-        recent_vol = sum(recent_volatilities) / len(recent_volatilities)
-        hist_vol = sum(historical_volatilities) / len(historical_volatilities)
-        
-        return recent_vol / hist_vol if hist_vol > 0 else 1.0
-    
-    def _calculate_volume_momentum(self, klines: List) -> float:
-        """Calculate volume momentum as proxy for order flow imbalance"""
-        if len(klines) < 10:
-            return 0
-        
-        volumes = [float(k[5]) for k in klines]
-        prices = [float(k[4]) for k in klines]
-        
-        # Calculate volume-weighted price momentum
-        recent_volumes = volumes[-5:]
-        recent_prices = prices[-5:]
-        historical_avg_volume = sum(volumes) / len(volumes)
-        
-        if historical_avg_volume == 0:
-            return 0
-        
-        # Weight price changes by relative volume
-        weighted_momentum = 0
-        total_weight = 0
-        
-        for i in range(1, len(recent_prices)):
-            price_change = (recent_prices[i] - recent_prices[i-1]) / recent_prices[i-1]
-            volume_weight = recent_volumes[i] / historical_avg_volume
-            
-            weighted_momentum += price_change * volume_weight
-            total_weight += volume_weight
-        
-        if total_weight == 0:
-            return 0
-        
-        momentum = weighted_momentum / total_weight
-        
-        # Normalize to [-1, 1] range
-        return max(-1, min(1, momentum * 50))
-    
-    def _calculate_rsi(self, klines: List, period: int = 14) -> float:
-        """Calculate RSI for crypto (optimized for short periods)"""
-        if len(klines) < period + 1:
-            return 50  # Neutral RSI
-        
-        prices = [float(k[4]) for k in klines]
-        
-        # Calculate price changes
-        deltas = [prices[i] - prices[i-1] for i in range(1, len(prices))]
-        
-        # Separate gains and losses
-        gains = [max(0, delta) for delta in deltas]
-        losses = [abs(min(0, delta)) for delta in deltas]
-        
-        # Calculate average gains and losses
-        if len(gains) < period:
-            return 50
-        
-        avg_gain = sum(gains[-period:]) / period
-        avg_loss = sum(losses[-period:]) / period
-        
-        if avg_loss == 0:
-            return 100  # No losses = overbought
-        
-        rs = avg_gain / avg_loss
-        rsi = 100 - (100 / (1 + rs))
-        
-        self.rsi_history.append(rsi)
-        return rsi
-    
-    def _calculate_mean_reversion(self, klines: List) -> float:
-        """Calculate mean reversion strength for crypto"""
-        if len(klines) < 20:
-            return 1.0
-        
-        prices = [float(k[4]) for k in klines]
-        
-        # Calculate returns
+        prices = list(self.price_history)[-10:]
         returns = [(prices[i] - prices[i-1]) / prices[i-1] for i in range(1, len(prices))]
         
-        if len(returns) < 10:
+        if not returns:
             return 1.0
         
-        # Calculate first-order autocorrelation
         mean_return = sum(returns) / len(returns)
+        variance = sum((r - mean_return) ** 2 for r in returns) / len(returns)
+        volatility = variance ** 0.5
         
-        numerator = sum((returns[i] - mean_return) * (returns[i-1] - mean_return) 
-                       for i in range(1, len(returns)))
-        denominator = sum((r - mean_return) ** 2 for r in returns)
-        
-        if denominator == 0:
-            return 1.0
-        
-        autocorr = numerator / denominator
-        
-        # Convert to mean reversion strength (negative correlation = strong mean reversion)
-        mean_reversion = max(0.1, min(2.0, 1 - autocorr))
-        
-        return mean_reversion
+        return max(0.5, min(3.0, volatility * 100))  # Normalize to 0.5-3.0 range
     
-    def _estimate_spread(self, klines: List) -> float:
-        """Estimate bid-ask spread from recent price action"""
-        if len(klines) < 5:
-            return 0.001  # Default 0.1% spread
+    def _calculate_momentum(self) -> float:
+        """Calculate price momentum"""
+        if len(self.price_history) < 20:
+            return 0.0
         
-        # Use recent high-low ranges as spread proxy
-        recent_spreads = []
+        prices = list(self.price_history)
+        short_ma = sum(prices[-5:]) / 5
+        long_ma = sum(prices[-20:]) / 20
         
-        for kline in klines[-5:]:
-            high = float(kline[2])
-            low = float(kline[3])
-            close = float(kline[4])
-            
-            if close > 0:
-                spread = (high - low) / close
-                recent_spreads.append(spread)
+        if long_ma > 0:
+            momentum = (short_ma - long_ma) / long_ma
+            return max(-1.0, min(1.0, momentum * 10))  # Normalize to -1 to 1
         
-        if not recent_spreads:
-            return 0.001
-        
-        avg_spread = sum(recent_spreads) / len(recent_spreads)
-        
-        # Cap spread estimate at reasonable levels
-        return min(0.01, max(0.0001, avg_spread))  # 0.01% to 1%
+        return 0.0
     
-    def _update_asset_characteristics(self, klines: List):
-        """Update learned crypto asset characteristics"""
-        if len(klines) < 30:
-            return
+    def _calculate_trend_strength(self) -> float:
+        """Calculate trend strength (0 = ranging, 1 = strong trend)"""
+        if len(self.price_history) < 20:
+            return 0.0
         
-        prices = [float(k[4]) for k in klines]
-        volumes = [float(k[5]) for k in klines]
+        prices = list(self.price_history)
         
-        # Calculate typical volatility
-        returns = [(prices[i] - prices[i-1]) / prices[i-1] 
-                  for i in range(1, len(prices)) if prices[i-1] > 0]
+        # Count directional movements
+        up_moves = sum(1 for i in range(1, len(prices)) if prices[i] > prices[i-1])
+        down_moves = sum(1 for i in range(1, len(prices)) if prices[i] < prices[i-1])
+        total_moves = up_moves + down_moves
         
-        if returns:
-            volatility = (sum(r**2 for r in returns) / len(returns)) ** 0.5
-            self.asset_characteristics['typical_volatility'] = volatility
+        if total_moves == 0:
+            return 0.0
         
-        # Calculate volume profile
-        if volumes:
-            avg_volume = sum(volumes) / len(volumes)
-            self.asset_characteristics['volume_profile'] = avg_volume
-        
-        # Calculate momentum persistence
-        if len(self.rsi_history) > 10:
-            rsi_values = list(self.rsi_history)
-            rsi_trend = sum(1 for i in range(1, len(rsi_values)) 
-                           if (rsi_values[i] - rsi_values[i-1]) * (rsi_values[i-1] - rsi_values[i-2]) > 0)
-            persistence = rsi_trend / max(1, len(rsi_values) - 2)
-            self.asset_characteristics['momentum_persistence'] = persistence
+        # Strong trend = mostly moves in one direction
+        directional_bias = abs(up_moves - down_moves) / total_moves
+        return min(1.0, directional_bias * 2)
+
 class GridStrategy:
     def __init__(self, 
                  exchange: Exchange, 
@@ -534,8 +158,8 @@ class GridStrategy:
                  grid_id: str,
                  leverage: float = 20.0,
                  enable_grid_adaptation: bool = True,
-                 enable_samig: bool = True):
-        """Initialize enhanced grid strategy with optional SAMIG features"""
+                 enable_samig: bool = False):
+        """Initialize grid strategy with proper position management"""
         
         self.logger = logging.getLogger(__name__)
         self.exchange = exchange
@@ -543,675 +167,844 @@ class GridStrategy:
         self.original_symbol = symbol
         self.symbol = exchange._get_symbol_id(symbol) if hasattr(exchange, '_get_symbol_id') else symbol
         
-        # Core parameters
-        self.price_lower = float(price_lower)
-        self.price_upper = float(price_upper)
-        self.grid_number = int(grid_number)
-        self.investment = float(investment)
+        # IMMUTABLE USER PARAMETERS - Never change these
+        self.user_price_lower = float(price_lower)
+        self.user_price_upper = float(price_upper)
+        self.user_grid_number = int(grid_number)
+        self.user_total_investment = float(investment)
+        self.user_investment_per_grid = self.user_total_investment / self.user_grid_number
+        self.user_leverage = float(leverage)
+        
+        # Configuration parameters
         self.take_profit_pnl = float(take_profit_pnl)
         self.stop_loss_pnl = float(stop_loss_pnl)
         self.grid_id = grid_id
-        self.leverage = float(leverage)
         self.enable_grid_adaptation = enable_grid_adaptation
         self.enable_samig = enable_samig
         
-        # Base parameters for SAMIG reference
-        self.base_price_lower = self.price_lower
-        self.base_price_upper = self.price_upper
-        self.base_grid_number = self.grid_number
+        # Position and Zone Management
+        self.active_zones: Dict[str, GridZone] = {}
+        self.all_positions: Dict[str, GridPosition] = {}
+        self.pending_orders: Dict[str, Dict] = {}
         
-        # Grid calculations
-        self.grid_interval = (self.price_upper - self.price_lower) / self.grid_number
-        self.investment_per_grid = self.investment / self.grid_number
-        
-        # SAMIG components (optional)
+        # Market intelligence
         if self.enable_samig:
-            self.market_intelligence = MarketIntelligenceEngine(symbol)
-            self.parameter_manager = AdaptiveParameterManager()
-            self.performance_tracker = deque(maxlen=50)
-            self.current_market_snapshot = None
-            self.adaptation_count = 0
+            self.market_intel = MarketIntelligence(symbol)
         
-        # Grid state
-        self.grid_orders = {}
-        self.pnl = 0.0
-        self.initial_investment = investment
-        self.trades_count = 0
+        # State tracking
         self.running = False
-        self.grid_adjustments_count = 0
+        self.total_trades = 0
+        self.total_pnl = 0.0
+        self.last_price_check = 0
+        self.last_adaptation_time = 0
         
-        # Market information
+        # Market info
         self._fetch_market_info()
+        
+        # Create initial zone
+        self._create_initial_zone()
+        
+        self.logger.info(f"Grid Strategy Initialized:")
+        self.logger.info(f"  Symbol: {symbol}")
+        self.logger.info(f"  Price Range: ${self.user_price_lower:.6f} - ${self.user_price_upper:.6f}")
+        self.logger.info(f"  Grid Count: {self.user_grid_number}")
+        self.logger.info(f"  Investment per Grid: ${self.user_investment_per_grid:.2f}")
+        self.logger.info(f"  Total Investment: ${self.user_total_investment:.2f}")
+        self.logger.info(f"  Leverage: {self.user_leverage}x")
     
     def _fetch_market_info(self):
         """Fetch market information for the trading pair"""
         try:
             market_info = self.exchange.get_market_info(self.symbol)
-            self.price_precision = market_info['precision']['price']
-            self.amount_precision = market_info['precision']['amount']
-            self.min_amount = market_info['limits']['amount']['min']
-            self.min_cost = market_info.get('limits', {}).get('cost', {}).get('min', 0)
+            
+            # Log the raw market info for debugging
+            self.logger.debug(f"Raw market info for {self.symbol}: {market_info}")
+            
+            # Safely extract precision values
+            precision_info = market_info.get('precision', {})
+            price_precision = precision_info.get('price', 6)
+            amount_precision = precision_info.get('amount', 6)
+            
+            # Handle different precision formats from exchanges
+            if isinstance(price_precision, (int, float)):
+                self.price_precision = int(price_precision)
+            else:
+                self.logger.warning(f"Invalid price precision format: {price_precision}, using default 6")
+                self.price_precision = 6
+                
+            if isinstance(amount_precision, (int, float)):
+                self.amount_precision = int(amount_precision)
+            else:
+                self.logger.warning(f"Invalid amount precision format: {amount_precision}, using default 6")
+                self.amount_precision = 6
+            
+            # Extract limits safely
+            limits = market_info.get('limits', {})
+            amount_limits = limits.get('amount', {})
+            cost_limits = limits.get('cost', {})
+            
+            self.min_amount = float(amount_limits.get('min', 0.0001))
+            self.min_cost = float(cost_limits.get('min', 1.0))
+            
+            # Log the processed values
+            self.logger.info(f"Market info for {self.symbol}:")
+            self.logger.info(f"  Price precision: {self.price_precision} decimals")
+            self.logger.info(f"  Amount precision: {self.amount_precision} decimals")  
+            self.logger.info(f"  Min amount: {self.min_amount}")
+            self.logger.info(f"  Min cost: {self.min_cost}")
+            
+            # Warning if precision seems wrong
+            if self.price_precision == 0:
+                self.logger.warning(f"Exchange returned 0 price precision for {self.symbol} - will use intelligent rounding")
+            if self.amount_precision == 0:
+                self.logger.warning(f"Exchange returned 0 amount precision for {self.symbol} - will use intelligent rounding")
+            
         except Exception as e:
             self.logger.error(f"Error fetching market info for {self.symbol}: {e}")
-            self.price_precision = 2
+            # Safe fallback values
+            self.price_precision = 6
             self.amount_precision = 6
-            self.min_amount = 0.0
-            self.min_cost = 0.0
+            self.min_amount = 0.0001
+            self.min_cost = 1.0
+            self.logger.info(f"Using fallback market info for {self.symbol}")
     
-    def _calculate_dynamic_grid_parameters(self) -> Dict:
-        """Calculate dynamic grid parameters using SAMIG if enabled"""
-        if not self.enable_samig:
-            return {
-                'price_lower': self.price_lower,
-                'price_upper': self.price_upper,
-                'grid_number': self.grid_number,
-                'long_exposure_limit': self.investment,
-                'short_exposure_limit': self.investment,
-                'grid_interval': self.grid_interval,
-                'order_size_multiplier': 1.0
-            }
-        
+    def _validate_rounded_values(self, price: float, amount: float) -> Tuple[float, float]:
+        """Validate that rounded values meet exchange requirements"""
         try:
-            # Get market intelligence
-            market_snapshot = self.market_intelligence.analyze_market_conditions(self.exchange)
-            self.current_market_snapshot = market_snapshot
+            # Ensure price is not zero
+            if price <= 0:
+                raise ValueError(f"Invalid price after rounding: {price}")
             
-            # Get adaptive parameters
-            grid_density = self.parameter_manager.get_parameter('grid_density')
-            trend_sensitivity = self.parameter_manager.get_parameter('trend_sensitivity')
-            volatility_response = self.parameter_manager.get_parameter('volatility_response')
-            momentum_threshold = self.parameter_manager.get_parameter('momentum_threshold')
-            mean_reversion_factor = self.parameter_manager.get_parameter('mean_reversion_factor')
-            exposure_asymmetry = self.parameter_manager.get_parameter('exposure_asymmetry')
+            # Ensure amount meets minimum requirements
+            if amount < self.min_amount:
+                self.logger.warning(f"Amount {amount} below minimum {self.min_amount}, adjusting")
+                amount = self.min_amount
             
-            # Calculate dynamic parameters
-            current_price = market_snapshot.price
-            price_range = self.base_price_upper - self.base_price_lower
+            # Ensure order value meets minimum cost
+            order_value = price * amount
+            if order_value < self.min_cost:
+                self.logger.warning(f"Order value {order_value} below minimum {self.min_cost}, adjusting amount")
+                amount = self.min_cost / price
+                amount = self._round_amount(amount)
             
-            # Volatility adjustment
-            vol_adjustment = 1 + (market_snapshot.volatility_regime - 1) * volatility_response
-            adjusted_range = price_range * vol_adjustment
+            return price, amount
             
-            # Momentum-based center shift
-            momentum_shift = market_snapshot.momentum * trend_sensitivity * price_range * 0.1
-            grid_center = current_price + momentum_shift
-            
-            dynamic_price_lower = grid_center - adjusted_range / 2
-            dynamic_price_upper = grid_center + adjusted_range / 2
-            
-            # Ensure positive prices
-            if dynamic_price_lower <= 0:
-                dynamic_price_lower = current_price * 0.5
-                dynamic_price_upper = dynamic_price_lower + adjusted_range
-            
-            # Dynamic grid density
-            if abs(market_snapshot.momentum) > momentum_threshold:
-                dynamic_grid_number = max(3, int(self.base_grid_number * 0.7))
-            else:
-                dynamic_grid_number = int(self.base_grid_number * grid_density * mean_reversion_factor)
-            
-            # Asymmetric exposure limits
-            base_exposure = self.investment
-            
-            if market_snapshot.order_book_imbalance > 0:
-                long_exposure_limit = base_exposure * exposure_asymmetry
-                short_exposure_limit = base_exposure / exposure_asymmetry
-            elif market_snapshot.order_book_imbalance < 0:
-                long_exposure_limit = base_exposure / exposure_asymmetry
-                short_exposure_limit = base_exposure * exposure_asymmetry
-            else:
-                long_exposure_limit = short_exposure_limit = base_exposure
-            
-            # Momentum bias
-            if market_snapshot.momentum > momentum_threshold:
-                long_exposure_limit *= (1 + abs(market_snapshot.momentum))
-            elif market_snapshot.momentum < -momentum_threshold:
-                short_exposure_limit *= (1 + abs(market_snapshot.momentum))
-            
-            return {
-                'price_lower': dynamic_price_lower,
-                'price_upper': dynamic_price_upper,
-                'grid_number': dynamic_grid_number,
-                'long_exposure_limit': long_exposure_limit,
-                'short_exposure_limit': short_exposure_limit,
-                'grid_interval': (dynamic_price_upper - dynamic_price_lower) / dynamic_grid_number,
-                'order_size_multiplier': 1 + market_snapshot.volatility_regime * 0.2
-            }
-        
         except Exception as e:
-            self.logger.error(f"Error calculating dynamic parameters: {e}")
-            # Fallback to static parameters
-            return {
-                'price_lower': self.price_lower,
-                'price_upper': self.price_upper,
-                'grid_number': self.grid_number,
-                'long_exposure_limit': self.investment,
-                'short_exposure_limit': self.investment,
-                'grid_interval': self.grid_interval,
-                'order_size_multiplier': 1.0
-            }
+            self.logger.error(f"Error validating rounded values: {e}")
+            return price, amount
+    
+    def _create_initial_zone(self):
+        """Create the initial trading zone"""
+        zone_id = f"zone_{int(time.time())}"
+        initial_zone = GridZone(
+            zone_id=zone_id,
+            price_lower=self.user_price_lower,
+            price_upper=self.user_price_upper,
+            grid_count=self.user_grid_number,
+            investment_per_grid=self.user_investment_per_grid
+        )
+        self.active_zones[zone_id] = initial_zone
+        
+        self.logger.info(f"Created initial zone: {zone_id}")
+        self.logger.info(f"  Range: ${initial_zone.price_lower:.6f} - ${initial_zone.price_upper:.6f}")
     
     def _round_price(self, price: float) -> float:
-        """Round price according to market precision"""
+        """Round price with intelligent precision detection"""
         try:
-            if hasattr(self, 'price_precision') and isinstance(self.price_precision, int):
-                decimals = self.price_precision
-            else:
-                if price < 0.1:
-                    decimals = 8
-                elif price < 10:
-                    decimals = 6
-                elif price < 1000:
-                    decimals = 4
-                else:
-                    decimals = 2
+            # Get base precision from exchange
+            base_precision = int(self.price_precision) if hasattr(self, 'price_precision') else 0
             
-            return round(price, decimals)
+            # Intelligent precision based on price magnitude (crypto-optimized)
+            if price < 0.00001:      # Very small coins
+                smart_precision = 8
+            elif price < 0.0001:     # Small altcoins  
+                smart_precision = 7
+            elif price < 0.001:      # Micro-priced tokens
+                smart_precision = 6
+            elif price < 0.01:       # Low-priced coins
+                smart_precision = 5
+            elif price < 0.1:        # Sub-dollar coins
+                smart_precision = 4
+            elif price < 1.0:        # Dollar-range coins
+                smart_precision = 3
+            elif price < 100:        # Normal crypto prices
+                smart_precision = 2
+            else:                    # High-priced assets
+                smart_precision = 1
+            
+            # Use the maximum of exchange precision and smart precision
+            # This prevents losing precision on small values
+            final_precision = max(base_precision, smart_precision)
+            
+            # Ensure minimum precision of 2 for crypto trading
+            final_precision = max(final_precision, 2)
+            
+            # Apply rounding
+            rounded_price = float(f"{price:.{final_precision}f}")
+            
+            self.logger.debug(f"Price rounding: {price} -> {rounded_price} "
+                            f"(base_prec: {base_precision}, smart_prec: {smart_precision}, final: {final_precision})")
+            
+            return rounded_price
+            
         except Exception as e:
-            self.logger.error(f"Error rounding price {price}: {e}")
-            return float(price)
+            self.logger.error(f"Error in _round_price for {price}: {e}")
+            # Ultimate fallback: format based on price magnitude
+            if price >= 1:
+                return float(f"{price:.2f}")
+            elif price >= 0.01:
+                return float(f"{price:.4f}")
+            else:
+                return float(f"{price:.6f}")
     
     def _round_amount(self, amount: float) -> float:
-        """Round amount according to market precision"""
+        """Round amount with intelligent precision detection"""
         try:
-            if hasattr(self, 'amount_precision') and isinstance(self.amount_precision, int):
-                decimals = self.amount_precision
-            else:
-                decimals = 6
+            # Get base precision from exchange
+            base_precision = int(self.amount_precision) if hasattr(self, 'amount_precision') else 0
             
-            return round(amount, decimals)
+            # Intelligent precision for crypto amounts
+            if amount < 0.0001:      # Very small amounts
+                smart_precision = 8
+            elif amount < 0.001:     # Micro amounts
+                smart_precision = 7
+            elif amount < 0.01:      # Small amounts
+                smart_precision = 6
+            elif amount < 1:         # Sub-unit amounts
+                smart_precision = 5
+            elif amount < 100:       # Normal amounts
+                smart_precision = 4
+            else:                    # Large amounts
+                smart_precision = 3
+            
+            # Use the maximum of exchange precision and smart precision
+            final_precision = max(base_precision, smart_precision)
+            
+            # Ensure minimum precision of 4 for crypto amounts
+            final_precision = max(final_precision, 4)
+            
+            # Apply rounding
+            rounded_amount = float(f"{amount:.{final_precision}f}")
+            
+            self.logger.debug(f"Amount rounding: {amount} -> {rounded_amount} "
+                            f"(base_prec: {base_precision}, smart_prec: {smart_precision}, final: {final_precision})")
+            
+            return rounded_amount
+            
         except Exception as e:
-            self.logger.error(f"Error rounding amount {amount}: {e}")
-            return float(amount)
+            self.logger.error(f"Error in _round_amount for {amount}: {e}")
+            # Ultimate fallback
+            return float(f"{amount:.6f}")
     
-    def _calculate_grid_levels(self, dynamic_params: Dict = None) -> List[float]:
-        """Calculate grid price levels"""
+    def _calculate_order_amount(self, price: float, investment_per_grid: float) -> float:
+        """Calculate order amount for specific price and investment"""
         try:
-            if dynamic_params:
-                price_lower = dynamic_params['price_lower']
-                price_upper = dynamic_params['price_upper']
-                grid_number = dynamic_params['grid_number']
-            else:
-                price_lower = self.price_lower
-                price_upper = self.price_upper
-                grid_number = self.grid_number
+            # Round price first
+            rounded_price = self._round_price(price)
             
-            grid_interval = (price_upper - price_lower) / grid_number
-            levels = []
+            # Validate price is not zero
+            if rounded_price <= 0:
+                self.logger.error(f"Price rounded to zero: {price} -> {rounded_price}")
+                # Use original price if rounding failed
+                rounded_price = price if price > 0 else 0.01
             
-            for i in range(grid_number + 1):
-                level = price_lower + (i * grid_interval)
-                levels.append(self._round_price(level))
+            # Calculate notional value
+            notional_value = investment_per_grid * self.user_leverage
             
-            return levels
+            # Calculate amount
+            amount = notional_value / rounded_price
+            
+            # Round amount
+            rounded_amount = self._round_amount(amount)
+            
+            # Validate both values
+            final_price, final_amount = self._validate_rounded_values(rounded_price, rounded_amount)
+            
+            self.logger.debug(f"Order calculation:")
+            self.logger.debug(f"  Investment: ${investment_per_grid:.2f}")
+            self.logger.debug(f"  Leverage: {self.user_leverage}x")
+            self.logger.debug(f"  Notional: ${notional_value:.2f}")
+            self.logger.debug(f"  Price: {price:.8f} -> {final_price:.8f}")
+            self.logger.debug(f"  Amount: {amount:.8f} -> {final_amount:.8f}")
+            self.logger.debug(f"  Order value: ${final_price * final_amount:.2f}")
+            
+            return final_amount
+            
         except Exception as e:
-            self.logger.error(f"Error calculating grid levels: {e}")
-            return []
+            self.logger.error(f"Error calculating order amount for price ${price:.8f}: {e}")
+            # Emergency fallback
+            return max(self.min_amount, 0.0001)
     
-    def _calculate_order_amount(self, dynamic_params: Dict = None) -> float:
-        """Calculate order amount per grid level"""
+    def _get_grid_levels(self, zone: GridZone) -> List[float]:
+        """Calculate grid levels for a zone"""
+        interval = (zone.price_upper - zone.price_lower) / zone.grid_count
+        levels = []
+        
+        for i in range(zone.grid_count + 1):
+            level = zone.price_lower + (i * interval)
+            levels.append(self._round_price(level))
+        
+        return levels
+    
+    def setup_grid(self, debug_rounding: bool = False):
+        """Setup initial grid orders"""
         try:
-            multiplier = dynamic_params.get('order_size_multiplier', 1.0) if dynamic_params else 1.0
+            if not self.active_zones:
+                self.logger.error("No active zones to setup grid")
+                return
             
+            # Run rounding test for debugging (optional)
+            if debug_rounding:
+                self.test_rounding_precision()
+            
+            # Get current price
             ticker = self.exchange.get_ticker(self.symbol)
-            price = float(ticker['last'])
+            current_price = float(ticker['last'])
             
-            amount = (self.investment_per_grid * self.leverage * multiplier) / price
-            amount = max(amount, self.min_amount)
+            self.logger.info(f"Setting up grid at current price: ${current_price:.6f}")
             
-            return self._round_amount(amount)
-        except Exception as e:
-            self.logger.error(f"Error calculating order amount: {e}")
-            return self.min_amount
-    
-    def _get_directional_exposure(self) -> Dict[str, float]:
-        """Get current directional exposure breakdown"""
-        try:
-            positions = self.exchange.get_positions(self.symbol)
-            net_position_value = 0.0
-            
-            for position in positions:
-                initial_margin = float(position.get('initialMargin', 0))
-                side = position.get('side', '')
-                
-                if side == 'long':
-                    net_position_value += initial_margin
-                elif side == 'short':
-                    net_position_value -= initial_margin
-            
-            open_orders = self.exchange.get_open_orders(self.symbol)
-            potential_long_exposure = 0.0
-            potential_short_exposure = 0.0
-            
-            for order in open_orders:
-                if order['id'] in self.grid_orders:
-                    if order['side'] == 'buy':
-                        potential_long_exposure += self.investment_per_grid
-                    elif order['side'] == 'sell':
-                        potential_short_exposure += self.investment_per_grid
-            
-            total_potential_long = max(0, net_position_value) + potential_long_exposure
-            total_potential_short = abs(min(0, net_position_value)) + potential_short_exposure
-            
-            return {
-                'net_position_value': net_position_value,
-                'current_long_value': max(0, net_position_value),
-                'current_short_value': abs(min(0, net_position_value)),
-                'potential_long_exposure': potential_long_exposure,
-                'potential_short_exposure': potential_short_exposure,
-                'total_potential_long': total_potential_long,
-                'total_potential_short': total_potential_short,
-                'remaining_long_budget': max(0, self.investment - total_potential_long),
-                'remaining_short_budget': max(0, self.investment - total_potential_short)
-            }
-        except Exception as e:
-            self.logger.error(f"Error getting directional exposure: {e}")
-            return {
-                'net_position_value': 0, 'current_long_value': 0, 'current_short_value': 0,
-                'potential_long_exposure': 0, 'potential_short_exposure': 0,
-                'total_potential_long': 0, 'total_potential_short': 0,
-                'remaining_long_budget': self.investment, 'remaining_short_budget': self.investment
-            }
-    
-    def _can_place_buy_order(self, dynamic_params: Dict = None) -> bool:
-        """Check if we can place a buy order"""
-        try:
-            exposure = self._get_directional_exposure()
-            limit = dynamic_params.get('long_exposure_limit', self.investment) if dynamic_params else self.investment
-            return exposure['remaining_long_budget'] >= self.investment_per_grid and exposure['total_potential_long'] < limit
-        except Exception as e:
-            self.logger.error(f"Error checking buy order capability: {e}")
-            return False
-    
-    def _can_place_sell_order(self, dynamic_params: Dict = None) -> bool:
-        """Check if we can place a sell order"""
-        try:
-            exposure = self._get_directional_exposure()
-            limit = dynamic_params.get('short_exposure_limit', self.investment) if dynamic_params else self.investment
-            return exposure['remaining_short_budget'] >= self.investment_per_grid and exposure['total_potential_short'] < limit
-        except Exception as e:
-            self.logger.error(f"Error checking sell order capability: {e}")
-            return False
-    
-    def setup_grid(self) -> None:
-        """Setup the grid with enhanced adaptive capabilities"""
-        try:
-            # Get dynamic parameters
-            dynamic_params = self._calculate_dynamic_grid_parameters()
-            
-            if self.enable_samig and self.current_market_snapshot:
-                self.logger.info(f"SAMIG Setup - Market: Vol={self.current_market_snapshot.volatility_regime:.2f}, "
-                               f"Momentum={self.current_market_snapshot.momentum:.3f}")
-                self.logger.info(f"Dynamic: Grids={dynamic_params['grid_number']}, "
-                               f"Range=[{dynamic_params['price_lower']:.6f}, {dynamic_params['price_upper']:.6f}]")
-            
-            # Update current parameters with dynamic values
-            self.price_lower = dynamic_params['price_lower']
-            self.price_upper = dynamic_params['price_upper']
-            self.grid_number = dynamic_params['grid_number']
-            self.grid_interval = dynamic_params['grid_interval']
-            
-            grid_levels = self._calculate_grid_levels(dynamic_params)
-            amount = self._calculate_order_amount(dynamic_params)
-            current_price = float(self.exchange.get_ticker(self.symbol)['last'])
-            
-            self.logger.info(f"Setting up enhanced grid for {self.symbol}")
-            self.logger.info(f"Price range: {self.price_lower:.6f} - {self.price_upper:.6f}")
-            self.logger.info(f"Grid levels: {self.grid_number}, Current price: {current_price}")
-            
-            # Cancel existing orders
+            # Cancel any existing orders
             try:
                 self.exchange.cancel_all_orders(self.symbol)
-                time.sleep(2)
+                time.sleep(1)
             except Exception as e:
-                self.logger.warning(f"Error cancelling orders: {e}")
+                self.logger.warning(f"Error cancelling existing orders: {e}")
             
-            self.grid_orders = {}
-            orders_placed = 0
+            # Setup orders for each active zone
+            total_orders_placed = 0
             
-            # Place initial grid orders
-            for i in range(len(grid_levels) - 1):
-                buy_price = grid_levels[i]
-                sell_price = grid_levels[i + 1]
+            for zone_id, zone in self.active_zones.items():
+                if not zone.active:
+                    continue
                 
-                # Place buy orders below current price
-                if buy_price < current_price and self._can_place_buy_order(dynamic_params):
-                    try:
-                        order = self.exchange.create_limit_order(self.symbol, 'buy', amount, buy_price)
-                        time.sleep(1)
-                        
-                        order_status = self.exchange.get_order_status(order['id'], self.symbol)
-                        if order_status and order_status['status'] in ['open', 'new', 'partially_filled']:
-                            self.grid_orders[order['id']] = {
-                                'type': 'buy',
-                                'price': buy_price,
-                                'amount': amount,
-                                'status': 'open',
-                                'grid_level': i
-                            }
-                            orders_placed += 1
-                    except Exception as e:
-                        self.logger.error(f"Failed to place buy order at {buy_price}: {e}")
+                orders_placed = self._setup_zone_orders(zone, current_price)
+                total_orders_placed += orders_placed
                 
-                # Place sell orders above current price
-                if sell_price > current_price and self._can_place_sell_order(dynamic_params):
-                    try:
-                        order = self.exchange.create_limit_order(self.symbol, 'sell', amount, sell_price)
-                        time.sleep(1)
-                        
-                        order_status = self.exchange.get_order_status(order['id'], self.symbol)
-                        if order_status and order_status['status'] in ['open', 'new', 'partially_filled']:
-                            self.grid_orders[order['id']] = {
-                                'type': 'sell',
-                                'price': sell_price,
-                                'amount': amount,
-                                'status': 'open',
-                                'grid_level': i + 1
-                            }
-                            orders_placed += 1
-                    except Exception as e:
-                        self.logger.error(f"Failed to place sell order at {sell_price}: {e}")
+                self.logger.info(f"Zone {zone_id}: {orders_placed} orders placed")
             
-            if orders_placed > 0:
+            if total_orders_placed > 0:
                 self.running = True
-                self.logger.info(f"Grid setup complete with {orders_placed} orders")
+                self.logger.info(f"Grid setup complete: {total_orders_placed} total orders")
             else:
                 self.running = False
-                self.logger.warning("Grid setup failed - no orders placed")
-        
+                self.logger.warning("Grid setup failed: no orders placed")
+                
         except Exception as e:
             self.logger.error(f"Error setting up grid: {e}")
-            self.logger.error(f"Traceback: {traceback.format_exc()}")
             self.running = False
     
-    def update_grid(self) -> None:
-        """Update grid with controlled SAMIG intelligence"""
+    def _setup_zone_orders(self, zone: GridZone, current_price: float) -> int:
+        """Setup orders for a specific zone with correct grid logic"""
+        try:
+            grid_levels = self._get_grid_levels(zone)
+            orders_placed = 0
+            buy_orders = []
+            sell_orders = []
+            
+            self.logger.info(f"Setting up zone orders:")
+            self.logger.info(f"  Range: ${zone.price_lower:.6f} - ${zone.price_upper:.6f}")
+            self.logger.info(f"  Current Price: ${current_price:.6f}")
+            self.logger.info(f"  Grid Levels: {[f'${l:.6f}' for l in grid_levels]}")
+            
+            # Place orders at each grid level based on current price
+            for i, level_price in enumerate(grid_levels):
+                
+                # Skip levels that are too close to current price (avoid immediate fills)
+                price_diff_pct = abs(level_price - current_price) / current_price
+                if price_diff_pct < 0.005:  # Skip if within 0.5% of current price
+                    self.logger.debug(f"  Skipping level ${level_price:.6f} - too close to current price ({price_diff_pct:.1%})")
+                    continue
+                
+                # Determine order type based on price relative to current price
+                if level_price < current_price:
+                    # Place buy order below current price
+                    order_type = 'buy'
+                    target_price = level_price
+                    
+                elif level_price > current_price:
+                    # Place sell order above current price  
+                    order_type = 'sell'
+                    target_price = level_price
+                    
+                else:
+                    # Skip if exactly at current price
+                    continue
+                
+                # Calculate order amount
+                amount = self._calculate_order_amount(target_price, zone.investment_per_grid)
+                
+                try:
+                    # Place the order
+                    order = self.exchange.create_limit_order(self.symbol, order_type, amount, target_price)
+                    
+                    order_info = {
+                        'zone_id': zone.zone_id,
+                        'type': order_type,
+                        'price': target_price,
+                        'amount': amount,
+                        'grid_level': i,
+                        'target_investment': zone.investment_per_grid,
+                        'status': 'open'
+                    }
+                    
+                    self.pending_orders[order['id']] = order_info
+                    zone.orders[order['id']] = order_info
+                    orders_placed += 1
+                    
+                    # Track for summary
+                    order_summary = {
+                        'level': i,
+                        'price': target_price,
+                        'amount': amount,
+                        'value': amount * target_price,
+                        'investment': (amount * target_price) / self.user_leverage
+                    }
+                    
+                    if order_type == 'buy':
+                        buy_orders.append(order_summary)
+                    else:
+                        sell_orders.append(order_summary)
+                    
+                    self.logger.debug(f"  ✅ {order_type.upper()} order: Level {i}, ${target_price:.6f} x {amount:.4f}")
+                    
+                except Exception as e:
+                    self.logger.error(f"  ❌ Failed to place {order_type} order at ${target_price:.6f}: {e}")
+            
+            # Print summary
+            self.logger.info(f"📊 Order Placement Summary:")
+            self.logger.info(f"  Total Orders: {orders_placed}")
+            self.logger.info(f"  Buy Orders: {len(buy_orders)} (below ${current_price:.6f})")
+            for order in buy_orders:
+                self.logger.info(f"    Level {order['level']}: ${order['price']:.6f} x {order['amount']:.4f} = ${order['investment']:.2f}")
+            
+            self.logger.info(f"  Sell Orders: {len(sell_orders)} (above ${current_price:.6f})")
+            for order in sell_orders:
+                self.logger.info(f"    Level {order['level']}: ${order['price']:.6f} x {order['amount']:.4f} = ${order['investment']:.2f}")
+            
+            total_investment = sum(o['investment'] for o in buy_orders + sell_orders)
+            self.logger.info(f"  Total Investment Allocated: ${total_investment:.2f}")
+            self.logger.info(f"  Expected per Grid: ${zone.investment_per_grid:.2f}")
+            
+            return orders_placed
+            
+        except Exception as e:
+            self.logger.error(f"Error setting up zone orders: {e}")
+            return 0
+    
+    def update_grid(self):
+        """Main grid update logic with intelligent adaptation"""
         try:
             if not self.running:
                 return
             
-            current_price = float(self.exchange.get_ticker(self.symbol)['last'])
+            # Get current market state
+            ticker = self.exchange.get_ticker(self.symbol)
+            current_price = float(ticker['last'])
             
-            # SAMIG regime change detection with dampening
-            if self.enable_samig:
-                market_snapshot = self.market_intelligence.analyze_market_conditions(self.exchange)
-                
-                # Only check for regime changes, don't reconfigure on every update
-                if self._detect_regime_change(market_snapshot):
-                    self.logger.info("SAMIG: Major regime change detected - reconfiguring grid")
-                    self.setup_grid()
-                    return
-                
-                # Update current snapshot for next comparison
-                self.current_market_snapshot = market_snapshot
-                
-                # Performance evaluation with reduced frequency
-                self._evaluate_performance_and_adapt()
+            # Update orders and positions
+            self._update_orders_and_positions()
             
-            # Standard grid adaptation (less aggressive than SAMIG)
-            elif self.enable_grid_adaptation and self._is_price_outside_grid(current_price):
-                self._adapt_grid_to_price(current_price)
-                return
+            # Check for grid adaptation needs
+            if self.enable_grid_adaptation:
+                self._check_and_adapt_grid(current_price)
             
-            # Regular order updates
-            self._update_orders()
+            # Maintain counter orders for all positions
+            self._maintain_counter_orders()
+            
+            # Update PnL
+            self._update_pnl()
+            
+            # Check take profit / stop loss
             self._check_tp_sl()
             
         except Exception as e:
             self.logger.error(f"Error updating grid: {e}")
     
-    def _detect_regime_change(self, new_snapshot: MarketSnapshot) -> bool:
-        """Detect significant market regime changes with dampening to prevent over-adaptation"""
-        if not self.current_market_snapshot:
-            self.current_market_snapshot = new_snapshot
-            return False
-        
-        # Minimum time between regime changes (prevent thrashing)
-        min_regime_interval = 300  # 5 minutes minimum between reconfigurations
-        time_since_last_adaptation = time.time() - getattr(self, 'last_regime_change_time', 0)
-        
-        if time_since_last_adaptation < min_regime_interval:
-            return False
-        
-        old = self.current_market_snapshot
-        new = new_snapshot
-        
-        # Calculate relative changes with higher thresholds for grid trading
-        vol_change = abs(new.volatility_regime - old.volatility_regime) / (old.volatility_regime + 0.1)
-        momentum_change = abs(new.momentum - old.momentum)
-        mr_change = abs(new.mean_reversion_strength - old.mean_reversion_strength) / (old.mean_reversion_strength + 0.1)
-        
-        # Much higher thresholds for grid trading stability
-        vol_threshold = 0.8     # 80% volatility change required
-        momentum_threshold = 0.5  # 50% momentum change required
-        mr_threshold = 0.6      # 60% mean reversion change required
-        
-        # Require multiple indicators to confirm regime change
-        significant_changes = 0
-        if vol_change > vol_threshold:
-            significant_changes += 1
-        if momentum_change > momentum_threshold:
-            significant_changes += 1
-        if mr_change > mr_threshold:
-            significant_changes += 1
-        
-        # Require at least 2 out of 3 indicators to trigger regime change
-        regime_change = significant_changes >= 2
-        
-        if regime_change:
-            # Add regime change history tracking
-            if not hasattr(self, 'regime_change_history'):
-                self.regime_change_history = deque(maxlen=10)
-            
-            self.regime_change_history.append(time.time())
-            
-            # Check if we're changing regimes too frequently (dampening)
-            recent_changes = sum(1 for t in self.regime_change_history 
-                            if time.time() - t < 1800)  # 30 minutes
-            
-            if recent_changes > 3:  # Max 3 regime changes per 30 minutes
-                self.logger.info("Regime change dampening: Too many recent changes, skipping reconfiguration")
-                return False
-            
-            self.last_regime_change_time = time.time()
-            self.logger.info(f"Regime change confirmed: Vol Delta={vol_change:.3f}, Mom Delta={momentum_change:.3f}, "
-                            f"MR Delta={mr_change:.3f} (Changes: {significant_changes}/3)")
-        
-        return regime_change
-    
-    def _evaluate_performance_and_adapt(self):
-        """Evaluate performance and adapt SAMIG parameters with less frequency"""
-        if not self.enable_samig or len(self.performance_tracker) < 15:  # Increased minimum samples
-            return
-        
+    def _update_orders_and_positions(self):
+        """Update order status and track new positions"""
         try:
-            # Only evaluate every 10 updates to reduce noise
-            if not hasattr(self, 'evaluation_counter'):
-                self.evaluation_counter = 0
-            
-            self.evaluation_counter += 1
-            if self.evaluation_counter % 10 != 0:
-                return
-            
-            # Use longer period for performance evaluation
-            recent_pnl = sum([p.pnl for p in list(self.performance_tracker)[-15:]])
-            performance_score = recent_pnl / self.investment * 100
-            
-            # Only adapt if performance score is significant
-            if abs(performance_score) > 0.5:  # Only adapt for >0.5% performance changes
-                if self.current_market_snapshot:
-                    self.parameter_manager.update_parameter('grid_density', performance_score, self.current_market_snapshot)
-                    self.parameter_manager.update_parameter('trend_sensitivity', performance_score, self.current_market_snapshot)
-                    self.parameter_manager.update_parameter('volatility_response', performance_score, self.current_market_snapshot)
-                    
-                    self.adaptation_count += 1
-                    self.logger.info(f"SAMIG Adaptation #{self.adaptation_count}: Performance={performance_score:.2f}%")
-        
-        except Exception as e:
-            self.logger.error(f"Error in performance evaluation: {e}")
-    
-    def _is_price_outside_grid(self, current_price: float) -> bool:
-        """Check if price is outside grid boundaries with larger buffer"""
-        # Increase buffer to 2% to reduce unnecessary adaptations
-        buffer_size = (self.price_upper - self.price_lower) * 0.02
-        
-        outside_range = (current_price < (self.price_lower - buffer_size) or 
-                        current_price > (self.price_upper + buffer_size))
-        
-        if outside_range:
-            # Add time-based dampening for regular grid adaptation too
-            if not hasattr(self, 'last_adaptation_time'):
-                self.last_adaptation_time = 0
-            
-            time_since_adaptation = time.time() - self.last_adaptation_time
-            min_adaptation_interval = 180  # 3 minutes minimum between regular adaptations
-            
-            if time_since_adaptation < min_adaptation_interval:
-                return False
-            
-            self.last_adaptation_time = time.time()
-            self.logger.info(f"Price {current_price} is outside grid range [{self.price_lower:.6f} - {self.price_upper:.6f}]")
-        
-        return outside_range
-    
-    def _adapt_grid_to_price(self, current_price: float) -> None:
-        """Adapt grid to price movement"""
-        try:
-            self.logger.info(f"Grid adaptation: Price {current_price} outside range")
-            
-            grid_size = self.price_upper - self.price_lower
-            self.price_lower = current_price - (grid_size / 2)
-            self.price_upper = current_price + (grid_size / 2)
-            
-            if self.price_lower <= 0:
-                self.price_lower = 0.00001
-                self.price_upper = self.price_lower + grid_size
-            
-            self.grid_interval = (self.price_upper - self.price_lower) / self.grid_number
-            
-            try:
-                self.exchange.cancel_all_orders(self.symbol)
-                time.sleep(2)
-            except Exception as e:
-                self.logger.error(f"Error cancelling orders: {e}")
-            
-            self.grid_orders = {}
-            self.setup_grid()
-            self.grid_adjustments_count += 1
-            
-        except Exception as e:
-            self.logger.error(f"Error in grid adaptation: {e}")
-    
-    def _update_orders(self):
-        """Update order status and handle fills"""
-        try:
+            # Get current open orders from exchange
             open_orders = self.exchange.get_open_orders(self.symbol)
-            current_order_ids = {order['id']: order for order in open_orders}
+            open_order_ids = {order['id'] for order in open_orders}
             
-            for order_id in list(self.grid_orders.keys()):
-                order_info = self.grid_orders[order_id]
-                
-                if order_id not in current_order_ids and order_info['status'] == 'open':
+            # Check each pending order
+            filled_orders = []
+            
+            for order_id in list(self.pending_orders.keys()):
+                if order_id not in open_order_ids:
+                    # Order was filled or cancelled
                     try:
                         order_status = self.exchange.get_order_status(order_id, self.symbol)
                         
                         if order_status['status'] in ['filled', 'closed']:
-                            order_info['status'] = 'filled'
-                            self.trades_count += 1
-                            
-                            # Track performance for SAMIG
-                            if self.enable_samig:
-                                self._track_performance()
-                            
-                            self._calculate_pnl()
-                            self._place_counter_order(order_info)
-                        
-                        elif order_status['status'] == 'canceled':
-                            order_info['status'] = 'cancelled'
+                            filled_orders.append(order_id)
+                            self._process_filled_order(order_id, order_status)
+                        else:
+                            # Order was cancelled
+                            self._remove_cancelled_order(order_id)
                             
                     except Exception as e:
                         self.logger.error(f"Error checking order {order_id}: {e}")
-        
+            
+            if filled_orders:
+                self.logger.info(f"Processed {len(filled_orders)} filled orders")
+                
         except Exception as e:
-            self.logger.error(f"Error updating orders: {e}")
+            self.logger.error(f"Error updating orders and positions: {e}")
     
-    def _track_performance(self):
-        """Track performance metrics for SAMIG learning"""
-        if not self.enable_samig or not self.current_market_snapshot:
-            return
-        
+    def _process_filled_order(self, order_id: str, order_status: Dict):
+        """Process a filled order and create position"""
         try:
-            metric = GridPerformanceMetric(
-                timestamp=time.time(),
-                pnl=self.pnl,
-                win_rate=self.trades_count / max(1, len(self.grid_orders)),
-                trades_count=self.trades_count,
-                market_conditions=self.current_market_snapshot,
-                grid_config={
-                    'price_lower': self.price_lower,
-                    'price_upper': self.price_upper,
-                    'grid_number': self.grid_number,
-                    'leverage': self.leverage
-                }
+            order_info = self.pending_orders.get(order_id)
+            if not order_info:
+                self.logger.warning(f"No info found for filled order {order_id}")
+                return
+            
+            # Create position from filled order
+            position_id = str(uuid.uuid4())
+            fill_price = float(order_status.get('average', order_info['price']))
+            fill_amount = float(order_status.get('filled', order_info['amount']))
+            
+            position = GridPosition(
+                position_id=position_id,
+                grid_level=order_info['grid_level'],
+                entry_price=fill_price,
+                quantity=fill_amount,
+                side='long' if order_info['type'] == 'buy' else 'short',
+                entry_time=time.time()
             )
-            self.performance_tracker.append(metric)
-        
-        except Exception as e:
-            self.logger.error(f"Error tracking performance: {e}")
-    
-    def _place_counter_order(self, filled_order: Dict) -> None:
-        """Place counter order after fill"""
-        try:
-            grid_level = filled_order['grid_level']
-            price = filled_order['price']
-            amount = filled_order['amount']
             
-            if filled_order['type'] == 'buy':
-                sell_price = self._round_price(price + self.grid_interval)
-                if sell_price <= self.price_upper and self._can_place_sell_order():
-                    try:
-                        order = self.exchange.create_limit_order(self.symbol, 'sell', amount, sell_price)
-                        self.grid_orders[order['id']] = {
-                            'type': 'sell',
-                            'price': sell_price,
-                            'amount': amount,
-                            'status': 'open',
-                            'grid_level': grid_level + 1
-                        }
-                    except Exception as e:
-                        self.logger.error(f"Error placing counter sell order: {e}")
+            # Store position
+            self.all_positions[position_id] = position
             
-            elif filled_order['type'] == 'sell':
-                buy_price = self._round_price(price - self.grid_interval)
-                if buy_price >= self.price_lower and self._can_place_buy_order():
-                    try:
-                        order = self.exchange.create_limit_order(self.symbol, 'buy', amount, buy_price)
-                        self.grid_orders[order['id']] = {
-                            'type': 'buy',
-                            'price': buy_price,
-                            'amount': amount,
-                            'status': 'open',
-                            'grid_level': grid_level - 1
-                        }
-                    except Exception as e:
-                        self.logger.error(f"Error placing counter buy order: {e}")
-        
+            # Add to zone positions
+            zone_id = order_info['zone_id']
+            if zone_id in self.active_zones:
+                self.active_zones[zone_id].positions[position_id] = position
+            
+            # Remove from pending orders
+            del self.pending_orders[order_id]
+            
+            # Update trade counter
+            self.total_trades += 1
+            
+            self.logger.info(f"New position created:")
+            self.logger.info(f"  ID: {position_id[:8]}")
+            self.logger.info(f"  Side: {position.side}")
+            self.logger.info(f"  Price: ${fill_price:.6f}")
+            self.logger.info(f"  Amount: {fill_amount:.4f}")
+            self.logger.info(f"  Investment: ${(fill_amount * fill_price / self.user_leverage):.2f}")
+            
         except Exception as e:
-            self.logger.error(f"Error in counter order placement: {e}")
+            self.logger.error(f"Error processing filled order {order_id}: {e}")
     
-    def _calculate_pnl(self) -> None:
-        """Calculate PnL from positions"""
+    def _remove_cancelled_order(self, order_id: str):
+        """Remove cancelled order from tracking"""
         try:
-            positions = self.exchange.get_positions(self.symbol)
-            unrealized_pnl = sum(float(pos.get('unrealizedPnl', 0)) for pos in positions)
-            self.pnl = unrealized_pnl
+            order_info = self.pending_orders.get(order_id)
+            if order_info:
+                # Remove from zone orders
+                zone_id = order_info['zone_id']
+                if zone_id in self.active_zones:
+                    zone = self.active_zones[zone_id]
+                    if order_id in zone.orders:
+                        del zone.orders[order_id]
+                
+                # Remove from pending orders
+                del self.pending_orders[order_id]
+                
         except Exception as e:
-            self.logger.error(f"Error calculating PnL: {e}")
+            self.logger.error(f"Error removing cancelled order {order_id}: {e}")
     
-    def _check_tp_sl(self) -> None:
+    def _maintain_counter_orders(self):
+        """Ensure all positions have corresponding exit orders"""
+        try:
+            current_price = float(self.exchange.get_ticker(self.symbol)['last'])
+            
+            for position_id, position in self.all_positions.items():
+                if position.exit_time is not None:
+                    continue  # Position already closed
+                
+                if not position.has_counter_order:
+                    self._create_counter_order(position, current_price)
+                else:
+                    # Check if counter order still exists
+                    if position.counter_order_id:
+                        if position.counter_order_id not in self.pending_orders:
+                            # Counter order was filled or cancelled, create new one
+                            position.has_counter_order = False
+                            position.counter_order_id = None
+                            self._create_counter_order(position, current_price)
+                            
+        except Exception as e:
+            self.logger.error(f"Error maintaining counter orders: {e}")
+    
+    def _create_counter_order(self, position: GridPosition, current_price: float):
+        """Create counter order for a position"""
+        try:
+            # Determine counter order side and price
+            if position.side == 'long':
+                # Long position needs sell order
+                counter_side = 'sell'
+                # Try to sell at next grid level or current price + small profit
+                counter_price = position.entry_price * 1.005  # 0.5% profit minimum
+                counter_price = max(counter_price, current_price * 1.002)  # Or 0.2% above current
+            else:
+                # Short position needs buy order
+                counter_side = 'buy'
+                counter_price = position.entry_price * 0.995  # 0.5% profit minimum
+                counter_price = min(counter_price, current_price * 0.998)  # Or 0.2% below current
+            
+            counter_price = self._round_price(counter_price)
+            
+            # Create counter order
+            order = self.exchange.create_limit_order(
+                self.symbol, 
+                counter_side, 
+                position.quantity, 
+                counter_price
+            )
+            
+            # Track counter order
+            order_info = {
+                'zone_id': 'counter',
+                'type': counter_side,
+                'price': counter_price,
+                'amount': position.quantity,
+                'position_id': position.position_id,
+                'status': 'open'
+            }
+            
+            self.pending_orders[order['id']] = order_info
+            
+            # Update position
+            position.has_counter_order = True
+            position.counter_order_id = order['id']
+            
+            self.logger.debug(f"Counter order created for position {position.position_id[:8]}: "
+                            f"{counter_side} {position.quantity:.4f} @ ${counter_price:.6f}")
+            
+        except Exception as e:
+            self.logger.error(f"Error creating counter order for position {position.position_id}: {e}")
+    
+    def _check_and_adapt_grid(self, current_price: float):
+        """Check if grid needs adaptation and perform gradual migration"""
+        try:
+            # Throttle adaptation checks
+            if time.time() - self.last_adaptation_time < 60:  # Max once per minute
+                return
+            
+            self.last_adaptation_time = time.time()
+            
+            # Get market intelligence if enabled
+            market_shift_needed = False
+            shift_direction = None
+            
+            if self.enable_samig and hasattr(self, 'market_intel'):
+                market_snapshot = self.market_intel.analyze_market(self.exchange)
+                market_shift_needed, shift_direction = self._assess_market_shift(market_snapshot, current_price)
+            
+            # Check if price is significantly outside any active zone
+            price_outside_zones = self._is_price_outside_zones(current_price)
+            
+            if price_outside_zones or market_shift_needed:
+                self.logger.info(f"Grid adaptation triggered:")
+                self.logger.info(f"  Current Price: ${current_price:.6f}")
+                self.logger.info(f"  Price Outside Zones: {price_outside_zones}")
+                self.logger.info(f"  Market Shift Needed: {market_shift_needed}")
+                
+                self._perform_gradual_grid_migration(current_price, shift_direction)
+                
+        except Exception as e:
+            self.logger.error(f"Error in grid adaptation: {e}")
+    
+    def _assess_market_shift(self, market_snapshot: MarketSnapshot, current_price: float) -> Tuple[bool, Optional[str]]:
+        """Assess if market conditions require grid shift"""
+        try:
+            # Strong trend detection
+            if market_snapshot.trend_strength > 0.7:
+                if market_snapshot.momentum > 0.3:
+                    return True, 'up'
+                elif market_snapshot.momentum < -0.3:
+                    return True, 'down'
+            
+            # High volatility with directional bias
+            if market_snapshot.volatility > 2.0 and abs(market_snapshot.momentum) > 0.4:
+                direction = 'up' if market_snapshot.momentum > 0 else 'down'
+                return True, direction
+            
+            return False, None
+            
+        except Exception as e:
+            self.logger.error(f"Error assessing market shift: {e}")
+            return False, None
+    
+    def _is_price_outside_zones(self, current_price: float) -> bool:
+        """Check if current price is outside all active zones"""
+        try:
+            for zone in self.active_zones.values():
+                if not zone.active:
+                    continue
+                
+                buffer = (zone.price_upper - zone.price_lower) * 0.05  # 5% buffer
+                if (zone.price_lower - buffer) <= current_price <= (zone.price_upper + buffer):
+                    return False  # Price is within at least one zone
+            
+            return True  # Price is outside all zones
+            
+        except Exception as e:
+            self.logger.error(f"Error checking if price outside zones: {e}")
+            return False
+    
+    def _perform_gradual_grid_migration(self, current_price: float, shift_direction: Optional[str]):
+        """Perform gradual grid migration instead of sudden shift"""
+        try:
+            # Calculate new zone parameters
+            zone_width = self.user_price_upper - self.user_price_lower
+            
+            if shift_direction == 'up':
+                # Shift zone upward
+                new_lower = max(self.user_price_lower, current_price - zone_width * 0.3)
+                new_upper = new_lower + zone_width
+            elif shift_direction == 'down':
+                # Shift zone downward
+                new_upper = min(self.user_price_upper, current_price + zone_width * 0.3)
+                new_lower = new_upper - zone_width
+            else:
+                # Center around current price
+                new_lower = current_price - zone_width * 0.5
+                new_upper = current_price + zone_width * 0.5
+            
+            # Ensure new zone is reasonable
+            new_lower = max(new_lower, current_price * 0.7)  # Not more than 30% below
+            new_upper = min(new_upper, current_price * 1.3)  # Not more than 30% above
+            
+            new_lower = self._round_price(new_lower)
+            new_upper = self._round_price(new_upper)
+            
+            # Create new zone
+            self._create_migration_zone(new_lower, new_upper, current_price)
+            
+            # Schedule old zone deactivation (gradual phase-out)
+            self._schedule_zone_deactivation()
+            
+        except Exception as e:
+            self.logger.error(f"Error performing grid migration: {e}")
+    
+    def _create_migration_zone(self, new_lower: float, new_upper: float, current_price: float):
+        """Create new zone for grid migration"""
+        try:
+            zone_id = f"zone_{int(time.time())}"
+            
+            migration_zone = GridZone(
+                zone_id=zone_id,
+                price_lower=new_lower,
+                price_upper=new_upper,
+                grid_count=self.user_grid_number,
+                investment_per_grid=self.user_investment_per_grid
+            )
+            
+            self.active_zones[zone_id] = migration_zone
+            
+            # Setup orders for new zone
+            orders_placed = self._setup_zone_orders(migration_zone, current_price)
+            
+            self.logger.info(f"Created migration zone: {zone_id}")
+            self.logger.info(f"  Range: ${new_lower:.6f} - ${new_upper:.6f}")
+            self.logger.info(f"  Orders placed: {orders_placed}")
+            
+        except Exception as e:
+            self.logger.error(f"Error creating migration zone: {e}")
+    
+    def _schedule_zone_deactivation(self):
+        """Schedule deactivation of old zones that have no positions"""
+        try:
+            zones_to_deactivate = []
+            
+            for zone_id, zone in self.active_zones.items():
+                if not zone.active:
+                    continue
+                
+                # Check if zone has active positions
+                active_positions = sum(1 for pos in zone.positions.values() 
+                                     if pos.exit_time is None)
+                
+                # Check zone age
+                zone_age = time.time() - zone.creation_time
+                
+                # Deactivate old zones with no positions after 5 minutes
+                if active_positions == 0 and zone_age > 300:
+                    zones_to_deactivate.append(zone_id)
+            
+            for zone_id in zones_to_deactivate:
+                self._deactivate_zone(zone_id)
+                
+        except Exception as e:
+            self.logger.error(f"Error scheduling zone deactivation: {e}")
+    
+    def _deactivate_zone(self, zone_id: str):
+        """Deactivate a zone and cancel its orders"""
+        try:
+            if zone_id not in self.active_zones:
+                return
+            
+            zone = self.active_zones[zone_id]
+            zone.active = False
+            
+            # Cancel zone orders
+            orders_cancelled = 0
+            for order_id in list(zone.orders.keys()):
+                try:
+                    self.exchange.cancel_order(order_id, self.symbol)
+                    orders_cancelled += 1
+                    
+                    # Remove from tracking
+                    if order_id in self.pending_orders:
+                        del self.pending_orders[order_id]
+                    del zone.orders[order_id]
+                    
+                except Exception as e:
+                    self.logger.warning(f"Error cancelling order {order_id}: {e}")
+            
+            self.logger.info(f"Deactivated zone {zone_id}: {orders_cancelled} orders cancelled")
+            
+        except Exception as e:
+            self.logger.error(f"Error deactivating zone {zone_id}: {e}")
+    
+    def _update_pnl(self):
+        """Update total PnL from all positions"""
+        try:
+            total_unrealized = 0.0
+            total_realized = 0.0
+            
+            current_price = float(self.exchange.get_ticker(self.symbol)['last'])
+            
+            for position in self.all_positions.values():
+                if position.exit_time is None:
+                    # Unrealized PnL
+                    if position.side == 'long':
+                        unrealized = (current_price - position.entry_price) * position.quantity
+                    else:
+                        unrealized = (position.entry_price - current_price) * position.quantity
+                    
+                    position.unrealized_pnl = unrealized
+                    total_unrealized += unrealized
+                else:
+                    # Realized PnL
+                    total_realized += position.realized_pnl
+            
+            self.total_pnl = total_realized + total_unrealized
+            
+        except Exception as e:
+            self.logger.error(f"Error updating PnL: {e}")
+    
+    def _check_tp_sl(self):
         """Check take profit and stop loss conditions"""
         try:
-            pnl_percentage = (self.pnl / self.initial_investment) * 100
+            if self.user_total_investment <= 0:
+                return
+            
+            pnl_percentage = (self.total_pnl / self.user_total_investment) * 100
             
             if pnl_percentage >= self.take_profit_pnl:
                 self.logger.info(f"Take profit reached: {pnl_percentage:.2f}%")
@@ -1219,90 +1012,168 @@ class GridStrategy:
             elif pnl_percentage <= -self.stop_loss_pnl:
                 self.logger.info(f"Stop loss reached: {pnl_percentage:.2f}%")
                 self.stop_grid()
+                
         except Exception as e:
             self.logger.error(f"Error checking TP/SL: {e}")
     
-    def stop_grid(self) -> None:
+    def stop_grid(self):
         """Stop the grid strategy"""
         try:
             if not self.running:
                 return
             
-            self.logger.info(f"Stopping grid for {self.symbol}")
+            self.logger.info(f"Stopping grid strategy for {self.symbol}")
             
-            # Cancel orders
+            # Cancel all pending orders
             try:
                 self.exchange.cancel_all_orders(self.symbol)
-                for order_id in self.grid_orders:
-                    if self.grid_orders[order_id]['status'] == 'open':
-                        self.grid_orders[order_id]['status'] = 'cancelled'
+                self.pending_orders.clear()
+                
+                for zone in self.active_zones.values():
+                    zone.orders.clear()
+                    zone.active = False
+                    
             except Exception as e:
                 self.logger.error(f"Error cancelling orders: {e}")
             
-            # Close positions
+            # Close all open positions
             try:
-                positions = self.exchange.get_positions(self.symbol)
-                for position in positions:
-                    if abs(float(position['contracts'])) > 0:
-                        side = 'sell' if position['side'] == 'long' else 'buy'
-                        self.exchange.create_market_order(self.symbol, side, abs(float(position['contracts'])))
+                for position in self.all_positions.values():
+                    if position.exit_time is None:
+                        self._close_position_at_market(position)
+                        
             except Exception as e:
                 self.logger.error(f"Error closing positions: {e}")
             
             self.running = False
-            self.logger.info(f"Grid stopped for {self.symbol}")
+            self.logger.info(f"Grid strategy stopped for {self.symbol}")
             
         except Exception as e:
             self.logger.error(f"Error stopping grid: {e}")
             self.running = False
     
-    def get_status(self) -> Dict:
-        """Get comprehensive grid status including SAMIG metrics"""
+    def _close_position_at_market(self, position: GridPosition):
+        """Close position at market price"""
         try:
-            exposure = self._get_directional_exposure()
+            side = 'sell' if position.side == 'long' else 'buy'
+            
+            order = self.exchange.create_market_order(
+                self.symbol, 
+                side, 
+                position.quantity
+            )
+            
+            # Mark position as closed
+            position.exit_time = time.time()
+            position.exit_price = float(order.get('average', 0))
+            
+            # Calculate realized PnL
+            if position.side == 'long':
+                position.realized_pnl = (position.exit_price - position.entry_price) * position.quantity
+            else:
+                position.realized_pnl = (position.entry_price - position.exit_price) * position.quantity
+            
+            self.logger.info(f"Closed position {position.position_id[:8]} at market: "
+                           f"PnL = ${position.realized_pnl:.2f}")
+            
+        except Exception as e:
+            self.logger.error(f"Error closing position {position.position_id}: {e}")
+    
+    def test_rounding_precision(self):
+        """Test rounding precision for debugging"""
+        try:
+            self.logger.info(f"Testing rounding precision for {self.symbol}:")
+            self.logger.info(f"Exchange precision - Price: {self.price_precision}, Amount: {self.amount_precision}")
+            
+            # Test various price points
+            test_prices = [0.00001, 0.0001, 0.001, 0.01, 0.1, 1.0, 10.0, 100.0, 1000.0]
+            
+            for test_price in test_prices:
+                rounded_price = self._round_price(test_price)
+                self.logger.info(f"  Price: {test_price} -> {rounded_price}")
+                
+                # Test amount calculation
+                amount = self._calculate_order_amount(test_price, self.user_investment_per_grid)
+                self.logger.info(f"    Amount: {amount} (for ${self.user_investment_per_grid:.2f} investment)")
+                
+                # Check if order value makes sense
+                order_value = rounded_price * amount
+                actual_investment = order_value / self.user_leverage
+                self.logger.info(f"    Order value: ${order_value:.2f}, Investment: ${actual_investment:.2f}")
+                
+        except Exception as e:
+            self.logger.error(f"Error in rounding test: {e}")
+    
+    def get_status(self) -> Dict:
+        """Get comprehensive grid status"""
+        try:
+            # Count active positions and orders
+            active_positions = sum(1 for pos in self.all_positions.values() if pos.exit_time is None)
+            active_orders = len(self.pending_orders)
+            active_zones = sum(1 for zone in self.active_zones.values() if zone.active)
+            
+            # Calculate position breakdown
+            long_positions = sum(1 for pos in self.all_positions.values() 
+                               if pos.exit_time is None and pos.side == 'long')
+            short_positions = active_positions - long_positions
+            
+            # Calculate total investment in positions
+            total_position_value = 0.0
+            for pos in self.all_positions.values():
+                if pos.exit_time is None:
+                    total_position_value += pos.quantity * pos.entry_price / self.user_leverage
             
             status = {
+                # Immutable user parameters
                 'grid_id': self.grid_id,
                 'symbol': self.symbol,
                 'display_symbol': self.original_symbol,
-                'price_lower': self.price_lower,
-                'price_upper': self.price_upper,
-                'grid_number': self.grid_number,
-                'grid_interval': self.grid_interval,
-                'investment': self.investment,
-                'investment_per_grid': self.investment_per_grid,
-                'current_long_value': exposure['current_long_value'],
-                'current_short_value': exposure['current_short_value'],
-                'remaining_long_budget': exposure['remaining_long_budget'],
-                'remaining_short_budget': exposure['remaining_short_budget'],
+                'user_price_lower': self.user_price_lower,
+                'user_price_upper': self.user_price_upper,
+                'user_grid_number': self.user_grid_number,
+                'user_total_investment': self.user_total_investment,
+                'user_investment_per_grid': self.user_investment_per_grid,
+                
+                # Current state
+                'price_lower': self.user_price_lower,  # For display compatibility
+                'price_upper': self.user_price_upper,  # For display compatibility
+                'grid_number': self.user_grid_number,  # For display compatibility
+                'investment': self.user_total_investment,
+                'investment_per_grid': self.user_investment_per_grid,
+                'leverage': self.user_leverage,
+                
+                # Strategy settings
                 'take_profit_pnl': self.take_profit_pnl,
                 'stop_loss_pnl': self.stop_loss_pnl,
-                'leverage': self.leverage,
                 'enable_grid_adaptation': self.enable_grid_adaptation,
                 'enable_samig': self.enable_samig,
-                'grid_adjustments_count': self.grid_adjustments_count,
-                'pnl': self.pnl,
-                'pnl_percentage': (self.pnl / self.initial_investment) * 100 if self.initial_investment else 0,
-                'trades_count': self.trades_count,
+                
+                # Current status
                 'running': self.running,
-                'orders_count': len([o for o in self.grid_orders.values() if o.get('status') == 'open'])
+                'active_zones': active_zones,
+                'active_positions': active_positions,
+                'long_positions': long_positions,
+                'short_positions': short_positions,
+                'orders_count': active_orders,
+                'trades_count': self.total_trades,
+                'total_position_value': total_position_value,
+                
+                # PnL
+                'pnl': self.total_pnl,
+                'pnl_percentage': (self.total_pnl / self.user_total_investment * 100) if self.user_total_investment > 0 else 0,
+                
+                # Zone information
+                'zones': [
+                    {
+                        'zone_id': zone.zone_id,
+                        'range': f"${zone.price_lower:.6f} - ${zone.price_upper:.6f}",
+                        'active': zone.active,
+                        'positions': len([p for p in zone.positions.values() if p.exit_time is None]),
+                        'orders': len(zone.orders)
+                    }
+                    for zone in self.active_zones.values()
+                ]
             }
-            
-            # Add SAMIG-specific metrics
-            if self.enable_samig and self.current_market_snapshot:
-                status.update({
-                    'samig_active': True,
-                    'adaptation_count': self.adaptation_count,
-                    'volatility_regime': self.current_market_snapshot.volatility_regime,
-                    'momentum': self.current_market_snapshot.momentum,
-                    'mean_reversion_strength': self.current_market_snapshot.mean_reversion_strength,
-                    'order_book_imbalance': self.current_market_snapshot.order_book_imbalance,
-                    'grid_density': self.parameter_manager.get_parameter('grid_density'),
-                    'trend_sensitivity': self.parameter_manager.get_parameter('trend_sensitivity'),
-                    'volatility_response': self.parameter_manager.get_parameter('volatility_response')
-                })
-            else:
-                status['samig_active'] = False
             
             return status
             

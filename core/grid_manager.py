@@ -8,7 +8,7 @@ import uuid
 from typing import Dict, List, Any, Optional
 
 from core.exchange import Exchange
-from core.grid_strategy import GridStrategy, MarketIntelligenceEngine, AdaptiveParameterManager
+from core.grid_strategy import GridStrategy
 from core.data_store import DataStore
 
 class GridManager:
@@ -58,16 +58,17 @@ class GridManager:
                         investment=float(grid_config['investment']),
                         take_profit_pnl=float(grid_config['take_profit_pnl']),
                         stop_loss_pnl=float(grid_config['stop_loss_pnl']),
-                        grid_id=grid_id
+                        grid_id=grid_id,
+                        leverage=float(grid_config.get('leverage', 20.0)),
+                        enable_grid_adaptation=bool(grid_config.get('enable_grid_adaptation', True)),
+                        enable_samig=bool(grid_config.get('enable_samig', False))
                     )
-                    # Load orders if available
-                    orders = self.data_store.get_orders(grid_id)
-                    if orders:
-                        grid.grid_orders = orders
-                    # Restore other state variables
-                    grid.pnl = float(grid_config.get('pnl', 0))
-                    grid.trades_count = int(grid_config.get('trades_count', 0))
+                    
+                    # Restore state variables
+                    grid.total_pnl = float(grid_config.get('pnl', 0))
+                    grid.total_trades = int(grid_config.get('trades_count', 0))
                     grid.running = bool(grid_config.get('running', False))
+                    
                     # Add to grids dictionary
                     self.grids[grid_id] = grid
                     loaded_count += 1
@@ -88,7 +89,7 @@ class GridManager:
                    stop_loss_pnl: float,
                    leverage: float = 20.0,
                    enable_grid_adaptation: bool = True,
-                    enable_samig: bool = True) -> str:
+                   enable_samig: bool = False) -> str:
         """
         Create a new grid strategy.
         
@@ -102,6 +103,7 @@ class GridManager:
             stop_loss_pnl: Stop loss PnL percentage
             leverage: Trading leverage (e.g., 1.0, 10.0, etc.)
             enable_grid_adaptation: Whether to adapt grid when price moves outside boundaries
+            enable_samig: Enable SAMIG intelligent adaptation
             
         Returns:
             str: Grid ID
@@ -123,7 +125,7 @@ class GridManager:
                 grid_id=grid_id,
                 leverage=float(leverage),
                 enable_grid_adaptation=enable_grid_adaptation,
-                 enable_samig=enable_samig  # Add this
+                enable_samig=enable_samig
             )
             
             # Add to grids dictionary
@@ -132,7 +134,7 @@ class GridManager:
             # Save grid configuration to data store
             self.data_store.save_grid(grid_id, grid.get_status())
             
-            self.logger.info(f"Created grid: {grid_id} ({symbol}), adaptation: {'enabled' if enable_grid_adaptation else 'disabled'}")
+            self.logger.info(f"Created grid: {grid_id} ({symbol}), adaptation: {'enabled' if enable_grid_adaptation else 'disabled'}, SAMIG: {'enabled' if enable_samig else 'disabled'}")
             return grid_id
         except Exception as e:
             self.logger.error(f"Error creating grid: {e}")
@@ -159,20 +161,11 @@ class GridManager:
             if grid.running:
                 self.logger.info(f"Grid {grid_id} is already running")
                 return True
-                
-            # Set up initial grid parameters in case they need validation
-            grid.price_lower = float(grid.price_lower)
-            grid.price_upper = float(grid.price_upper)
-            grid.grid_number = int(grid.grid_number)
-            grid.investment = float(grid.investment)
-            grid.take_profit_pnl = float(grid.take_profit_pnl)
-            grid.stop_loss_pnl = float(grid.stop_loss_pnl)
-            grid.leverage = float(grid.leverage) if hasattr(grid, 'leverage') else 20.0
             
-            # Setup grid orders
-            self.logger.info(f"Starting grid {grid_id} with {grid.grid_number} levels")
-            self.logger.info(f"Price range: {grid.price_lower} - {grid.price_upper}")
-            self.logger.info(f"Investment: {grid.investment}, Leverage: {grid.leverage}x")
+            self.logger.info(f"Starting grid {grid_id} with {grid.user_grid_number} levels")
+            self.logger.info(f"Price range: ${grid.user_price_lower:.6f} - ${grid.user_price_upper:.6f}")
+            self.logger.info(f"Investment: ${grid.user_total_investment:.2f}, Leverage: {grid.user_leverage}x")
+            self.logger.info(f"Investment per grid: ${grid.user_investment_per_grid:.2f}")
             
             # Call setup_grid to place the orders
             grid.setup_grid()
@@ -184,9 +177,6 @@ class GridManager:
                 
             # Update grid status in data store
             self.data_store.save_grid(grid_id, grid.get_status())
-            
-            # Save initial orders
-            self.data_store.save_orders(grid_id, grid.grid_orders)
             
             # Start monitor thread if not running
             self._ensure_monitor_running()
@@ -219,8 +209,6 @@ class GridManager:
             grid.stop_grid()
             # Update grid status in data store
             self.data_store.save_grid(grid_id, grid.get_status())
-            # Clear orders but keep a record
-            self.data_store.save_orders(grid_id, {})
             self.logger.info(f"Stopped grid: {grid_id}")
             return True
         except Exception as e:
@@ -296,9 +284,8 @@ class GridManager:
                         try:
                             # Update grid
                             grid.update_grid()
-                            # Save updated grid status and orders
+                            # Save updated grid status
                             self.data_store.save_grid(grid_id, grid.get_status())
-                            self.data_store.save_orders(grid_id, grid.grid_orders)
                         except Exception as e:
                             self.logger.error(f"Error updating grid {grid_id}: {e}")
                 # Check every 10 seconds
@@ -365,14 +352,10 @@ class GridManager:
                 grid.enable_samig = bool(enable_samig)
                 self.logger.info(f"SAMIG for {grid_id} set to: {'enabled' if enable_samig else 'disabled'}")
                 
-                if enable_samig and not hasattr(grid, 'market_intelligence'):
+                if enable_samig and not hasattr(grid, 'market_intel'):
                     # Initialize SAMIG components if enabling
-                    from collections import deque
-                    grid.market_intelligence = MarketIntelligenceEngine(grid.original_symbol)
-                    grid.parameter_manager = AdaptiveParameterManager()
-                    grid.performance_tracker = deque(maxlen=50)
-                    grid.current_market_snapshot = None
-                    grid.adaptation_count = 0
+                    from core.grid_strategy import MarketIntelligence
+                    grid.market_intel = MarketIntelligence(grid.original_symbol)
                     self.logger.info(f"SAMIG components initialized for grid {grid_id}")
             
             # Update grid status in data store
