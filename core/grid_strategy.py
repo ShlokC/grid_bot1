@@ -58,9 +58,9 @@ class MarketSnapshot:
     trend_strength: float
     # KAMA-based directional intelligence
     kama_value: float = 0.0
-    kama_direction: str = 'neutral'  # 'up', 'down', 'neutral'
-    kama_strength: float = 0.0  # 0-1, strength of directional move
-    directional_bias: float = 0.0  # -1 to 1, negative=bearish, positive=bullish
+    kama_direction: str = 'neutral'
+    kama_strength: float = 0.0
+    directional_bias: float = 0.0  # FIX: Add this missing attribute
 
 class MarketIntelligence:
     """Simplified market intelligence for grid strategy"""
@@ -69,9 +69,15 @@ class MarketIntelligence:
         self.symbol = symbol
         self.price_history = deque(maxlen=100)
         self.last_analysis_time = 0
+        
+        # FIX: Initialize missing attributes
+        self.current_volatility_regime = 1.0
+        self.current_trend_strength = 0.0
+        self.last_volatility_update = 0
+        self.last_trend_update = 0
     
-    def analyze_market(self, exchange: Exchange) -> MarketSnapshot:
-        """Analyze current market conditions"""
+    def analyze_market(self, exchange: Exchange) -> 'MarketSnapshot':
+        """Analyze current market conditions with proper attribute updates"""
         try:
             ticker = exchange.get_ticker(self.symbol)
             current_price = float(ticker['last'])
@@ -79,24 +85,32 @@ class MarketIntelligence:
             
             self.price_history.append(current_price)
             
-            volatility = self._calculate_volatility()
+            # Update regime attributes
+            self.current_volatility_regime = self._calculate_volatility()
+            self.current_trend_strength = self._calculate_trend_strength()
             momentum = self._calculate_momentum()
-            trend_strength = self._calculate_trend_strength()
+            
+            self.last_volatility_update = time.time()
+            self.last_trend_update = time.time()
             
             return MarketSnapshot(
                 timestamp=time.time(),
                 price=current_price,
                 volume=volume,
-                volatility=volatility,
+                volatility=self.current_volatility_regime,
                 momentum=momentum,
-                trend_strength=trend_strength
+                trend_strength=self.current_trend_strength,
+                directional_bias=momentum  # Use momentum as directional bias
             )
         except Exception as e:
             logging.error(f"Error in market analysis: {e}")
-            return MarketSnapshot(time.time(), 0, 0, 1.0, 0, 0)
+            # Ensure attributes are set even on error
+            self.current_volatility_regime = 1.0
+            self.current_trend_strength = 0.0
+            return MarketSnapshot(time.time(), 0, 0, 1.0, 0, 0, directional_bias=0.0)
     
     def _calculate_volatility(self) -> float:
-        """Calculate price volatility"""
+        """Calculate price volatility and update regime"""
         if len(self.price_history) < 10:
             return 1.0
         
@@ -217,6 +231,53 @@ class GridStrategy:
         self.logger.info(f"  Leverage: {self.user_leverage}x")
         self.logger.info(f"  Max Concurrent Zones: {self.max_concurrent_zones}")
     
+    def _deactivate_zone(self, zone_id: str) -> bool:
+        """Deactivate a zone by cancelling its orders and marking it inactive."""
+        try:
+            if zone_id not in self.active_zones:
+                self.logger.warning(f"Zone {zone_id} not found for deactivation")
+                return False
+            
+            zone = self.active_zones[zone_id]
+            
+            # Cancel all orders in this zone and free investment
+            orders_cancelled = 0
+            investment_freed = 0.0
+            
+            for order_id in list(zone.orders.keys()):
+                try:
+                    self.exchange.cancel_order(order_id, self.symbol)
+                    
+                    # Free the investment
+                    order_info = zone.orders.get(order_id, {})
+                    margin_used = order_info.get('actual_margin_used', 0)
+                    
+                    if margin_used > 0:
+                        investment_freed += margin_used
+                        self.total_investment_used -= margin_used
+                        self.total_investment_used = max(0, self.total_investment_used)
+                    
+                    # Remove from tracking
+                    if order_id in self.pending_orders:
+                        del self.pending_orders[order_id]
+                    del zone.orders[order_id]
+                    orders_cancelled += 1
+                    
+                except Exception as e:
+                    self.logger.error(f"Error cancelling order {order_id}: {e}")
+            
+            # Mark zone as inactive
+            zone.active = False
+            
+            self.logger.info(f"Deactivated zone {zone_id}: "
+                        f"{orders_cancelled} orders cancelled, "
+                        f"${investment_freed:.2f} freed")
+            
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Error deactivating zone {zone_id}: {e}")
+            return False
     def _fetch_market_info(self):
         """Fetch market information for the trading pair"""
         try:
@@ -724,47 +785,86 @@ class GridStrategy:
             return 0
     
     def _analyze_current_exposure(self) -> Dict[str, Any]:
-        """Analyze current positions and orders to understand exposure"""
+        """FIXED: Analyze current positions and orders using LIVE exchange data"""
         try:
             current_price = float(self.exchange.get_ticker(self.symbol)['last'])
             
-            # Analyze open positions
+            # FIXED: Get LIVE positions from exchange instead of internal tracking
+            live_positions = self.exchange.get_positions(self.symbol)
+            
             long_positions = []
             short_positions = []
             total_position_value = 0.0
             unrealized_pnl = 0.0
             
-            for position in self.all_positions.values():
-                if position.exit_time is None:  # Open position
-                    position_value = position.quantity * position.entry_price
-                    total_position_value += position_value
+            for position in live_positions:
+                position_size = float(position.get('contracts', 0))
+                if position_size == 0:
+                    continue
                     
-                    # Calculate unrealized PnL
-                    if position.side == 'long':
-                        position.unrealized_pnl = (current_price - position.entry_price) * position.quantity
-                        long_positions.append(position)
-                    else:
-                        position.unrealized_pnl = (position.entry_price - current_price) * position.quantity
-                        short_positions.append(position)
+                entry_price = float(position.get('entryPrice', 0))
+                if entry_price <= 0:
+                    continue
                     
-                    unrealized_pnl += position.unrealized_pnl
+                position_value = abs(position_size) * entry_price
+                total_position_value += position_value
+                
+                # Calculate unrealized PnL
+                if position_size > 0:  # Long position
+                    unrealized = (current_price - entry_price) * position_size
+                    long_positions.append({
+                        'size': position_size,
+                        'entry_price': entry_price,
+                        'unrealized_pnl': unrealized
+                    })
+                else:  # Short position
+                    unrealized = (entry_price - current_price) * abs(position_size)
+                    short_positions.append({
+                        'size': abs(position_size),
+                        'entry_price': entry_price,
+                        'unrealized_pnl': unrealized
+                    })
+                
+                unrealized_pnl += unrealized
             
-            # Analyze pending orders
+            # FIXED: Get LIVE orders from exchange instead of internal tracking
+            live_orders = self.exchange.get_open_orders(self.symbol)
+            
             buy_orders = []
             sell_orders = []
             pending_buy_value = 0.0
             pending_sell_value = 0.0
+            covered_levels = set()
             
-            for order_info in self.pending_orders.values():
-                if order_info['status'] == 'open':
-                    order_value = order_info['price'] * order_info['amount']
+            for order in live_orders:
+                order_side = order.get('side', '').lower()
+                order_price = float(order.get('price', 0))
+                order_amount = float(order.get('amount', 0))
+                
+                if order_price <= 0 or order_amount <= 0:
+                    continue
                     
-                    if order_info['type'] == 'buy':
-                        buy_orders.append(order_info)
-                        pending_buy_value += order_value
-                    else:
-                        sell_orders.append(order_info)
-                        pending_sell_value += order_value
+                order_value = order_price * order_amount
+                covered_levels.add(round(order_price, 6))
+                
+                if order_side == 'buy':
+                    buy_orders.append({
+                        'price': order_price,
+                        'amount': order_amount,
+                        'value': order_value
+                    })
+                    pending_buy_value += order_value
+                elif order_side == 'sell':
+                    sell_orders.append({
+                        'price': order_price,
+                        'amount': order_amount,
+                        'value': order_value
+                    })
+                    pending_sell_value += order_value
+            
+            # Add position entry prices to covered levels
+            for pos in long_positions + short_positions:
+                covered_levels.add(round(pos['entry_price'], 6))
             
             # Calculate exposure metrics
             net_position_bias = len(long_positions) - len(short_positions)
@@ -776,24 +876,14 @@ class GridStrategy:
             order_count = len(buy_orders) + len(sell_orders)
             total_commitment = position_count + order_count
             
-            # Calculate price levels already covered
-            covered_levels = set()
-            for position in self.all_positions.values():
-                if position.exit_time is None:
-                    covered_levels.add(round(position.entry_price, 6))
-            
-            for order_info in self.pending_orders.values():
-                if order_info['status'] == 'open':
-                    covered_levels.add(round(order_info['price'], 6))
-            
             exposure_analysis = {
                 'current_price': current_price,
                 'long_positions': len(long_positions),
                 'short_positions': len(short_positions),
                 'buy_orders': len(buy_orders),
                 'sell_orders': len(sell_orders),
-                'net_position_bias': net_position_bias,  # +ve = more long, -ve = more short
-                'net_order_bias': net_order_bias,       # +ve = more buy orders, -ve = more sell orders
+                'net_position_bias': net_position_bias,
+                'net_order_bias': net_order_bias,
                 'total_exposure_bias': total_exposure_bias,
                 'position_count': position_count,
                 'order_count': order_count,
@@ -803,21 +893,33 @@ class GridStrategy:
                 'covered_levels': covered_levels,
                 'pending_buy_value': pending_buy_value,
                 'pending_sell_value': pending_sell_value,
-                'max_positions': 8,  # Safe limit for 20x leverage
-                'exposure_ratio': total_commitment / self.user_grid_number if self.user_grid_number > 0 else 0
+                'max_positions': 8,
+                'exposure_ratio': total_commitment / self.user_grid_number if self.user_grid_number > 0 else 0,
+                # FIXED: Add live data indicators
+                'live_data_used': True,
+                'live_positions_count': len(live_positions),
+                'live_orders_count': len(live_orders)
             }
+            
+            self.logger.info(f"LIVE Exchange Data Analysis:")
+            self.logger.info(f"  Live Positions: {len(live_positions)} ({len(long_positions)}L / {len(short_positions)}S)")
+            self.logger.info(f"  Live Orders: {len(live_orders)} ({len(buy_orders)}B / {len(sell_orders)}S)")
+            self.logger.info(f"  Total Commitment: {total_commitment}")
+            self.logger.info(f"  Unrealized PnL: ${unrealized_pnl:.2f}")
             
             return exposure_analysis
             
         except Exception as e:
-            self.logger.error(f"Error analyzing current exposure: {e}")
+            self.logger.error(f"Error analyzing LIVE current exposure: {e}")
             return {
                 'current_price': 0, 'long_positions': 0, 'short_positions': 0,
                 'buy_orders': 0, 'sell_orders': 0, 'net_position_bias': 0,
                 'net_order_bias': 0, 'total_exposure_bias': 0, 'position_count': 0,
                 'order_count': 0, 'total_commitment': 0, 'covered_levels': set(),
-                'exposure_ratio': 0
+                'exposure_ratio': 0, 'live_data_used': False
             }
+
+
     
     def _calculate_position_aware_distribution(self, grid_levels: List[float], current_price: float, 
                                              directional_bias: float, exposure_analysis: Dict) -> Tuple[int, int]:
@@ -1030,45 +1132,66 @@ class GridStrategy:
             )
     
     def _analyze_order_relevance(self, current_price: float, dynamic_lower: float, dynamic_upper: float) -> Dict[str, Any]:
-        """Analyze which orders are still relevant to current price action"""
+        """FIXED: Analyze which orders are still relevant using LIVE exchange data"""
         try:
+            # FIXED: Get LIVE orders from exchange instead of internal tracking
+            live_orders = self.exchange.get_open_orders(self.symbol)
+            
             relevant_orders = []
             irrelevant_orders = []
             
-            # Define relevance threshold - orders too far from current price are irrelevant
-            max_distance_pct = 0.05  # 5% max distance from current price
-            max_distance = current_price * max_distance_pct
+            max_distance_pct = 0.08
             
-            # Also check if orders are within dynamic range
-            for order_id, order_info in self.pending_orders.items():
-                if order_info['status'] != 'open':
+            self.logger.info(f"Analyzing LIVE order relevance:")
+            self.logger.info(f"  Live orders from exchange: {len(live_orders)}")
+            self.logger.info(f"  Current price: ${current_price:.6f}")
+            self.logger.info(f"  Dynamic range: ${dynamic_lower:.6f} - ${dynamic_upper:.6f}")
+            
+            for order in live_orders:
+                order_id = order.get('id', '')
+                order_side = order.get('side', '').lower()
+                order_price = float(order.get('price', 0))
+                order_amount = float(order.get('amount', 0))
+                
+                if order_price <= 0 or order_amount <= 0:
                     continue
                 
-                order_price = order_info['price']
                 distance_from_current = abs(order_price - current_price)
                 distance_pct = distance_from_current / current_price
                 
-                # Check multiple relevance criteria
+                # Primary relevance check - STRICT dynamic range enforcement
                 is_relevant = True
                 relevance_reasons = []
                 
-                # 1. Distance from current price
-                if distance_pct > max_distance_pct:
+                # 1. Outside dynamic range = irrelevant
+                if order_price < dynamic_lower or order_price > dynamic_upper:
+                    is_relevant = False
+                    if order_price < dynamic_lower:
+                        relevance_reasons.append(f"below dynamic range (${order_price:.6f} < ${dynamic_lower:.6f})")
+                    else:
+                        relevance_reasons.append(f"above dynamic range (${order_price:.6f} > ${dynamic_upper:.6f})")
+                
+                # 2. Distance from current price
+                elif distance_pct > max_distance_pct:
                     is_relevant = False
                     relevance_reasons.append(f"too far from current ({distance_pct:.1%} > {max_distance_pct:.1%})")
                 
-                # 2. Within dynamic range
-                if order_price < dynamic_lower or order_price > dynamic_upper:
-                    is_relevant = False
-                    relevance_reasons.append("outside dynamic range")
-                
                 # 3. Logical order direction
-                if order_info['type'] == 'buy' and order_price > current_price:
+                elif order_side == 'buy' and order_price > current_price:
                     is_relevant = False
                     relevance_reasons.append("buy order above current price")
-                elif order_info['type'] == 'sell' and order_price < current_price:
+                elif order_side == 'sell' and order_price < current_price:
                     is_relevant = False
                     relevance_reasons.append("sell order below current price")
+                
+                # FIXED: Create order info from live data
+                order_info = {
+                    'order_id': order_id,
+                    'type': order_side,
+                    'price': order_price,
+                    'amount': order_amount,
+                    'live_order': True  # Flag to indicate this is from live data
+                }
                 
                 order_analysis = {
                     'order_id': order_id,
@@ -1081,27 +1204,38 @@ class GridStrategy:
                 
                 if is_relevant:
                     relevant_orders.append(order_analysis)
+                    self.logger.debug(f"✅ Relevant: {order_side.upper()} ${order_price:.6f}")
                 else:
                     irrelevant_orders.append(order_analysis)
+                    self.logger.info(f"❌ Irrelevant: {order_side.upper()} ${order_price:.6f} - {', '.join(relevance_reasons)}")
             
-            return {
+            result = {
                 'relevant_orders': relevant_orders,
                 'irrelevant_orders': irrelevant_orders,
-                'total_orders': len(self.pending_orders),
+                'total_orders': len(live_orders),
                 'relevant_count': len(relevant_orders),
                 'irrelevant_count': len(irrelevant_orders),
-                'cleanup_needed': len(irrelevant_orders) > 0
+                'cleanup_needed': len(irrelevant_orders) > 0,
+                'live_data_used': True
             }
             
+            self.logger.info(f"LIVE Order relevance analysis:")
+            self.logger.info(f"  Total LIVE orders: {result['total_orders']}")
+            self.logger.info(f"  Relevant: {result['relevant_count']}")
+            self.logger.info(f"  Irrelevant: {result['irrelevant_count']} (will be cancelled)")
+            
+            return result
+            
         except Exception as e:
-            self.logger.error(f"Error analyzing order relevance: {e}")
+            self.logger.error(f"Error analyzing LIVE order relevance: {e}")
             return {
                 'relevant_orders': [], 'irrelevant_orders': [], 'total_orders': 0,
-                'relevant_count': 0, 'irrelevant_count': 0, 'cleanup_needed': False
+                'relevant_count': 0, 'irrelevant_count': 0, 'cleanup_needed': False,
+                'live_data_used': False
             }
     
     def _cleanup_irrelevant_orders(self, irrelevant_orders: List[Dict]) -> int:
-        """Cancel orders that are no longer relevant to current price action"""
+        """FIXED: Cancel orders using LIVE order data"""
         try:
             cancelled_count = 0
             
@@ -1111,41 +1245,43 @@ class GridStrategy:
                 reasons = order_analysis['reasons']
                 
                 try:
-                    # Cancel the order
+                    # Cancel the order using live order ID
                     self.exchange.cancel_order(order_id, self.symbol)
                     
-                    # Remove from tracking
+                    # FIXED: Clean up internal tracking if it exists
                     if order_id in self.pending_orders:
+                        # Free investment from internal tracking
+                        internal_order = self.pending_orders[order_id]
+                        margin_used = internal_order.get('actual_margin_used', 0)
+                        if margin_used > 0:
+                            self.total_investment_used -= margin_used
+                            self.total_investment_used = max(0, self.total_investment_used)
+                        
                         del self.pending_orders[order_id]
                     
-                    # Remove from zone orders
-                    zone_id = order_info.get('zone_id')
-                    if zone_id and zone_id in self.active_zones:
-                        zone = self.active_zones[zone_id]
+                    # Remove from zone orders if exists
+                    for zone in self.active_zones.values():
                         if order_id in zone.orders:
                             del zone.orders[order_id]
-                    
-                    # Update investment tracking
-                    margin_used = order_info.get('actual_margin_used', 0)
-                    if margin_used > 0:
-                        self.total_investment_used -= margin_used
-                        self.total_investment_used = max(0, self.total_investment_used)
+                            break
                     
                     cancelled_count += 1
                     
-                    self.logger.info(f"🗑️ Cancelled irrelevant order: {order_info['type'].upper()} ${order_info['price']:.6f} "
-                                   f"({', '.join(reasons)})")
+                    self.logger.info(f"🗑️ Cancelled LIVE order: {order_info['type'].upper()} ${order_info['price']:.6f} "
+                                f"({', '.join(reasons)})")
                     
                 except Exception as e:
-                    self.logger.error(f"Error cancelling order {order_id}: {e}")
+                    self.logger.error(f"Error cancelling LIVE order {order_id}: {e}")
             
             if cancelled_count > 0:
-                self.logger.info(f"Dynamic grid cleanup: {cancelled_count} irrelevant orders cancelled")
+                self.logger.info(f"LIVE order cleanup: {cancelled_count} orders cancelled")
+                # Update investment tracking after cleanup
+                self.logger.info(f"Updated investment usage: ${self.total_investment_used:.2f} / ${self.user_total_investment:.2f}")
             
             return cancelled_count
             
         except Exception as e:
-            self.logger.error(f"Error cleaning up irrelevant orders: {e}")
+            self.logger.error(f"Error cleaning up LIVE irrelevant orders: {e}")
             return 0
     
     def _should_rebalance_grid(self, current_price: float) -> bool:
@@ -1205,27 +1341,29 @@ class GridStrategy:
             return False
     
     def _perform_dynamic_grid_rebalance(self, current_price: float) -> bool:
-        """Perform dynamic grid rebalancing to keep orders relevant"""
+        """Perform dynamic grid rebalancing with proper investment tracking"""
         try:
-            self.logger.info(f"🔄 Performing dynamic grid rebalance at ${current_price:.6f}")
+            self.logger.info(f"🔄 Performing FIXED dynamic grid rebalance at ${current_price:.6f}")
             
             # 1. Calculate new dynamic range
             dynamic_lower, dynamic_upper = self._calculate_dynamic_grid_range(current_price)
-            
             self.logger.info(f"  New dynamic range: ${dynamic_lower:.6f} - ${dynamic_upper:.6f}")
             
             # 2. Analyze current order relevance
             relevance_analysis = self._analyze_order_relevance(current_price, dynamic_lower, dynamic_upper)
-            
             self.logger.info(f"  Order analysis: {relevance_analysis['relevant_count']} relevant, "
-                           f"{relevance_analysis['irrelevant_count']} irrelevant")
+                        f"{relevance_analysis['irrelevant_count']} irrelevant")
             
-            # 3. Cancel irrelevant orders
+            # 3. Cancel irrelevant orders and FREE INVESTMENT
+            investment_freed = 0.0
             if relevance_analysis['cleanup_needed']:
-                cancelled_count = self._cleanup_irrelevant_orders(relevance_analysis['irrelevant_orders'])
+                investment_freed = self._cleanup_irrelevant_orders_with_investment_tracking(
+                    relevance_analysis['irrelevant_orders']
+                )
+                self.logger.info(f"  Investment freed: ${investment_freed:.2f}")
                 
-                # Wait a moment for cancellations to process
-                if cancelled_count > 0:
+                # Wait for cancellations to process
+                if investment_freed > 0:
                     time.sleep(1)
             
             # 4. Create temporary zone for new range
@@ -1238,8 +1376,8 @@ class GridStrategy:
                 investment_per_grid=self.user_investment_per_grid
             )
             
-            # 5. Set up new orders in dynamic range (with position awareness)
-            orders_placed = self._setup_zone_orders_strict(dynamic_zone, current_price)
+            # 5. Set up new orders in dynamic range with available investment
+            orders_placed = self._setup_zone_orders_with_freed_investment(dynamic_zone, current_price)
             
             if orders_placed > 0:
                 # Add dynamic zone to active zones
@@ -1248,16 +1386,201 @@ class GridStrategy:
                 # Deactivate old zones that are no longer relevant
                 self._deactivate_old_zones(dynamic_lower, dynamic_upper)
                 
-                self.logger.info(f"✅ Dynamic grid rebalance complete: {orders_placed} new orders placed")
+                self.logger.info(f"✅ FIXED dynamic grid rebalance complete: {orders_placed} new orders placed")
                 return True
             else:
-                self.logger.warning("⚠️ Dynamic grid rebalance failed: no orders placed")
+                self.logger.warning(f"⚠️ Dynamic grid rebalance failed: no orders placed despite ${investment_freed:.2f} freed")
                 return False
                 
         except Exception as e:
-            self.logger.error(f"Error performing dynamic grid rebalance: {e}")
+            self.logger.error(f"Error performing FIXED dynamic grid rebalance: {e}")
             return False
-    
+    def _cleanup_irrelevant_orders_with_investment_tracking(self, irrelevant_orders: List[Dict]) -> float:
+        """Cancel orders and properly track freed investment"""
+        try:
+            cancelled_count = 0
+            investment_freed = 0.0
+            
+            for order_analysis in irrelevant_orders:
+                order_id = order_analysis['order_id']
+                order_info = order_analysis['order_info']
+                reasons = order_analysis['reasons']
+                
+                try:
+                    # Cancel the order
+                    self.exchange.cancel_order(order_id, self.symbol)
+                    
+                    # Track freed investment BEFORE removing from tracking
+                    margin_used = order_info.get('actual_margin_used', 0)
+                    if margin_used > 0:
+                        investment_freed += margin_used
+                        self.total_investment_used -= margin_used
+                        self.total_investment_used = max(0, self.total_investment_used)
+                    
+                    # Remove from tracking
+                    if order_id in self.pending_orders:
+                        del self.pending_orders[order_id]
+                    
+                    # Remove from zone orders
+                    zone_id = order_info.get('zone_id')
+                    if zone_id and zone_id in self.active_zones:
+                        zone = self.active_zones[zone_id]
+                        if order_id in zone.orders:
+                            del zone.orders[order_id]
+                    
+                    cancelled_count += 1
+                    
+                    self.logger.info(f"🗑️ Cancelled and freed: {order_info['type'].upper()} ${order_info['price']:.6f} "
+                                f"(freed: ${margin_used:.2f}) - {', '.join(reasons)}")
+                    
+                except Exception as e:
+                    self.logger.error(f"Error cancelling order {order_id}: {e}")
+            
+            if cancelled_count > 0:
+                self.logger.info(f"Investment tracking cleanup: {cancelled_count} orders cancelled, "
+                            f"${investment_freed:.2f} freed, new usage: ${self.total_investment_used:.2f}")
+            
+            return investment_freed
+            
+        except Exception as e:
+            self.logger.error(f"Error cleaning up orders with investment tracking: {e}")
+            return 0.0
+
+    def _setup_zone_orders_with_freed_investment(self, zone: GridZone, current_price: float) -> int:
+        """Setup orders for a zone with consideration for recently freed investment"""
+        try:
+            # Log current investment status
+            available_investment = self.user_total_investment - self.total_investment_used
+            self.logger.info(f"Setting up zone with freed investment:")
+            self.logger.info(f"  Available investment: ${available_investment:.2f}")
+            self.logger.info(f"  Used investment: ${self.total_investment_used:.2f} / ${self.user_total_investment:.2f}")
+            
+            if available_investment <= 0:
+                self.logger.warning("No available investment for new orders")
+                return 0
+            
+            grid_levels = self._get_grid_levels(zone)
+            if not grid_levels:
+                self.logger.warning("No grid levels generated")
+                return 0
+            
+            # Get current exposure
+            exposure_analysis = self._analyze_current_exposure()
+            
+            # Calculate order distribution based on available investment
+            max_orders_by_investment = int(available_investment / self.user_investment_per_grid)
+            max_orders_by_capacity = self.max_orders_per_zone - exposure_analysis['total_commitment']
+            max_orders = min(max_orders_by_investment, max_orders_by_capacity, len(grid_levels))
+            
+            if max_orders <= 0:
+                self.logger.warning(f"Cannot place orders: investment limit={max_orders_by_investment}, "
+                                f"capacity limit={max_orders_by_capacity}")
+                return 0
+            
+            self.logger.info(f"Max orders to place: {max_orders} "
+                        f"(investment: {max_orders_by_investment}, capacity: {max_orders_by_capacity})")
+            
+            # Get market intelligence for distribution
+            directional_bias = 0.0
+            if self.enable_samig and hasattr(self, 'market_intel'):
+                try:
+                    market_snapshot = self.market_intel.analyze_market(self.exchange)
+                    directional_bias = getattr(market_snapshot, 'directional_bias', 0.0)
+                except Exception as e:
+                    self.logger.warning(f"Could not get market intelligence: {e}")
+            
+            # Simple order distribution
+            buy_target = max_orders // 2
+            sell_target = max_orders - buy_target
+            
+            # Adjust based on directional bias
+            if directional_bias > 0.3:  # Bullish
+                buy_target = min(buy_target + 1, max_orders)
+                sell_target = max_orders - buy_target
+            elif directional_bias < -0.3:  # Bearish
+                sell_target = min(sell_target + 1, max_orders)
+                buy_target = max_orders - sell_target
+            
+            self.logger.info(f"Order targets: {buy_target}B / {sell_target}S (bias: {directional_bias:.3f})")
+            
+            # Place orders
+            orders_placed = 0
+            buy_orders_placed = 0
+            sell_orders_placed = 0
+            
+            for level_price in grid_levels:
+                if orders_placed >= max_orders:
+                    break
+                
+                # Skip if too close to current price
+                price_diff_pct = abs(level_price - current_price) / current_price
+                if price_diff_pct < 0.002:  # 0.2% minimum gap
+                    continue
+                
+                # Determine order type
+                order_type = None
+                if level_price < current_price and buy_orders_placed < buy_target:
+                    order_type = 'buy'
+                elif level_price > current_price and sell_orders_placed < sell_target:
+                    order_type = 'sell'
+                
+                if not order_type:
+                    continue
+                
+                # Calculate and validate order
+                amount = self._calculate_order_amount_fixed(level_price, zone.investment_per_grid)
+                order_notional = level_price * amount
+                order_margin = order_notional / self.user_leverage
+                
+                # Final investment check
+                if self.total_investment_used + order_margin > self.user_total_investment:
+                    self.logger.warning(f"Investment limit reached during order placement")
+                    break
+                
+                # Place order
+                try:
+                    order = self.exchange.create_limit_order(self.symbol, order_type, amount, level_price)
+                    
+                    order_info = {
+                        'zone_id': zone.zone_id,
+                        'type': order_type,
+                        'price': level_price,
+                        'amount': amount,
+                        'grid_level': 0,
+                        'target_investment': zone.investment_per_grid,
+                        'actual_margin_used': order_margin,
+                        'notional_value': order_notional,
+                        'rebalance_order': True,
+                        'status': 'open'
+                    }
+                    
+                    self.pending_orders[order['id']] = order_info
+                    zone.orders[order['id']] = order_info
+                    
+                    # Update tracking
+                    orders_placed += 1
+                    self.total_investment_used += order_margin
+                    
+                    if order_type == 'buy':
+                        buy_orders_placed += 1
+                    else:
+                        sell_orders_placed += 1
+                    
+                    self.logger.info(f"✅ Rebalance {order_type.upper()}: ${level_price:.6f} "
+                                f"Margin: ${order_margin:.2f}")
+                    
+                except Exception as e:
+                    self.logger.error(f"❌ Failed rebalance {order_type} at ${level_price:.6f}: {e}")
+            
+            self.logger.info(f"Zone setup complete: {orders_placed} orders placed "
+                        f"({buy_orders_placed}B / {sell_orders_placed}S)")
+            self.logger.info(f"Final investment usage: ${self.total_investment_used:.2f} / ${self.user_total_investment:.2f}")
+            
+            return orders_placed
+            
+        except Exception as e:
+            self.logger.error(f"Error setting up zone orders with freed investment: {e}")
+            return 0
     def _deactivate_old_zones(self, new_lower: float, new_upper: float):
         """Deactivate zones that don't overlap with new dynamic range"""
         try:
