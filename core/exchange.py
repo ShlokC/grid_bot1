@@ -59,6 +59,63 @@ class Exchange:
             
         return symbol
     
+    def get_ohlcv(self, symbol: str, timeframe: str = '5m', limit: int = 1400) -> List[List]:
+            """
+            Get OHLCV historical data for KAMA calculation.
+            
+            Args:
+                symbol: Trading symbol
+                timeframe: Timeframe (5m for 5-minute candles)
+                limit: Number of candles to fetch (1400 for KAMA calculations)
+                
+            Returns:
+                List of OHLCV data: [[timestamp, open, high, low, close, volume], ...]
+            """
+            try:
+                symbol_id = self._get_symbol_id(symbol)
+                self.logger.debug(f"Fetching OHLCV for {symbol_id}, timeframe: {timeframe}, limit: {limit}")
+                
+                # Fetch OHLCV data from exchange
+                ohlcv = self.exchange.fetch_ohlcv(symbol_id, timeframe, limit=limit)
+                
+                if not ohlcv:
+                    self.logger.warning(f"No OHLCV data received for {symbol_id}")
+                    return []
+                
+                self.logger.info(f"Fetched {len(ohlcv)} OHLCV candles for {symbol_id}")
+                return ohlcv
+                
+            except Exception as e:
+                self.logger.error(f"Error fetching OHLCV for {symbol} (ID: {self._get_symbol_id(symbol)}): {e}")
+                return []
+    def get_historical_prices(self, symbol: str, timeframe: str = '5m', limit: int = 1400) -> List[float]:
+        """
+        Get historical closing prices for technical analysis.
+        
+        Args:
+            symbol: Trading symbol
+            timeframe: Timeframe (5m for 5-minute candles)  
+            limit: Number of prices to fetch
+            
+        Returns:
+            List of closing prices (most recent last)
+        """
+        try:
+            ohlcv = self.get_ohlcv(symbol, timeframe, limit)
+            if not ohlcv:
+                return []
+            
+            # Extract closing prices (index 4 in OHLCV)
+            prices = [float(candle[4]) for candle in ohlcv]
+            
+            self.logger.info(f"Extracted {len(prices)} historical prices for {symbol}")
+            self.logger.debug(f"Price range: ${min(prices):.6f} - ${max(prices):.6f}")
+            
+            return prices
+            
+        except Exception as e:
+            self.logger.error(f"Error extracting historical prices for {symbol}: {e}")
+            return []
     def get_balance(self) -> Dict:
         """Get account balance."""
         try:

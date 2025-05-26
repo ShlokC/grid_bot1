@@ -110,35 +110,40 @@ class MarketIntelligence:
         self.logger = logging.getLogger(f"{__name__}.MarketIntel")
     
     def analyze_market(self, exchange: Exchange) -> MarketSnapshot:
-        """Analyze market using real KAMA and other indicators"""
+        """Analyze market using KAMA(40) with 5-minute data frequency"""
         try:
             ticker = exchange.get_ticker(self.symbol)
             current_price = float(ticker['last'])
             volume = float(ticker.get('quoteVolume', 0))
             
-            self.price_history.append(current_price)
-            self.volume_history.append(volume)
+            # Only update every 5 minutes to simulate 5-minute candles
+            current_time = time.time()
+            if self.last_analysis_time == 0 or (current_time - self.last_analysis_time) >= 300:  # 300 seconds = 5 minutes
+                self.price_history.append(current_price)
+                self.volume_history.append(volume)
+                self.last_analysis_time = current_time
+                
+                self.logger.debug(f"📊 Updated 5-min KAMA data: Price=${current_price:.6f}, History length={len(self.price_history)}")
             
             # Update market regime indicators
             self.current_volatility_regime = self._calculate_volatility()
             self.current_trend_strength = self._calculate_trend_strength()
             
-            # Calculate KAMA-based momentum
+            # Calculate KAMA(40)-based momentum
             momentum = self._calculate_momentum()
             
-            # Calculate KAMA values for market snapshot
+            # Calculate KAMA(40) values for market snapshot
             kama_value = 0.0
             kama_direction = 'neutral'
             kama_strength = 0.0
             
-            if len(self.price_history) >= 20:
+            if len(self.price_history) >= 45:  # Need enough data for KAMA(40)
                 kama_data = self._calculate_kama_indicators()
                 kama_value = kama_data['value']
                 kama_direction = kama_data['direction']
                 kama_strength = kama_data['strength']
-            
-            self.last_volatility_update = time.time()
-            self.last_trend_update = time.time()
+            else:
+                self.logger.debug(f"Not enough data for KAMA(40): {len(self.price_history)}/45 required")
             
             return MarketSnapshot(
                 timestamp=time.time(),
@@ -154,7 +159,7 @@ class MarketIntelligence:
             )
             
         except Exception as e:
-            self.logger.error(f"Error in market analysis: {e}")
+            self.logger.error(f"Error in KAMA(40) market analysis: {e}")
             return MarketSnapshot(
                 timestamp=time.time(),
                 price=0.0, volume=0.0, volatility=1.0, momentum=0.0, trend_strength=0.0,
@@ -162,8 +167,8 @@ class MarketIntelligence:
             )
     
     def _calculate_momentum(self) -> float:
-        """Calculate momentum using real KAMA instead of fake moving averages"""
-        if len(self.price_history) < 20:
+        """Calculate momentum using KAMA(40) vs current price comparison"""
+        if len(self.price_history) < 45:  # Need more data for KAMA(40)
             return 0.0
         
         try:
@@ -173,18 +178,18 @@ class MarketIntelligence:
             prices = list(self.price_history)
             price_series = pd.Series(prices)
             
-            # Calculate KAMA using pandas-ta
-            kama = ta.kama(price_series)
+            # Calculate KAMA(40) specifically
+            kama = ta.kama(price_series, length=40)
             
             if kama is None or kama.isna().all():
-                return 0.0
+                return self._fallback_momentum()
             
-            # Use KAMA for momentum calculation
+            # Use current price vs KAMA(40) for momentum calculation
             current_price = prices[-1]
             current_kama = float(kama.iloc[-1])
             
             if current_kama > 0:
-                # Price position relative to KAMA
+                # Direct price vs KAMA comparison (not slope)
                 momentum = (current_price - current_kama) / current_kama
                 return max(-1.0, min(1.0, momentum * 2))
             
@@ -194,11 +199,12 @@ class MarketIntelligence:
             self.logger.warning("pandas-ta not available, using fallback momentum")
             return self._fallback_momentum()
         except Exception as e:
-            self.logger.error(f"Error calculating KAMA momentum: {e}")
+            self.logger.error(f"Error calculating KAMA(40) momentum: {e}")
             return self._fallback_momentum()
+
     
     def _calculate_kama_indicators(self) -> Dict[str, Any]:
-        """Calculate KAMA value, direction, and strength"""
+        """Calculate KAMA(40) value, direction, and strength using price vs KAMA comparison"""
         try:
             import pandas as pd
             import pandas_ta as ta
@@ -206,33 +212,42 @@ class MarketIntelligence:
             prices = list(self.price_history)
             price_series = pd.Series(prices)
             
-            # Calculate KAMA
-            kama = ta.kama(price_series)
+            # Calculate KAMA(40) specifically
+            kama = ta.kama(price_series, length=40)
             
             if kama is None or kama.isna().all():
                 return {'value': 0.0, 'direction': 'neutral', 'strength': 0.0}
             
             current_kama = float(kama.iloc[-1])
+            current_price = prices[-1]
             self.kama_history.append(current_kama)
             
-            # Determine KAMA direction and strength
+            # FIXED: Use price vs KAMA comparison instead of slope
             direction = 'neutral'
             strength = 0.0
             
-            if len(kama) >= 5:
-                # Calculate KAMA slope over recent periods
-                recent_kama = kama.iloc[-5:]
-                kama_slope = recent_kama.iloc[-1] - recent_kama.iloc[0]
+            if current_kama > 0:
+                # Calculate distance between price and KAMA
+                price_kama_diff = current_price - current_kama
+                price_kama_pct = abs(price_kama_diff) / current_kama
                 
-                if current_kama > 0:
-                    slope_percentage = kama_slope / current_kama
-                    
-                    if slope_percentage > 0.003:  # 0.3% upward slope
-                        direction = 'bullish'
-                        strength = min(1.0, abs(slope_percentage) * 100)
-                    elif slope_percentage < -0.003:  # 0.3% downward slope
-                        direction = 'bearish'
-                        strength = min(1.0, abs(slope_percentage) * 100)
+                # Determine direction based on price vs KAMA position
+                if current_price > current_kama:
+                    direction = 'bullish'
+                    strength = min(1.0, price_kama_pct * 50)  # Scale strength
+                elif current_price < current_kama:
+                    direction = 'bearish' 
+                    strength = min(1.0, price_kama_pct * 50)  # Scale strength
+                else:
+                    direction = 'neutral'
+                    strength = 0.0
+                
+                # Additional strength boost if trend is consistent
+                if len(self.kama_history) >= 5:
+                    recent_kama_trend = current_kama - self.kama_history[-5]
+                    if (direction == 'bullish' and recent_kama_trend > 0) or \
+                       (direction == 'bearish' and recent_kama_trend < 0):
+                        strength = min(1.0, strength * 1.5)  # Boost strength for consistent trends
             
             return {
                 'value': current_kama,
@@ -241,7 +256,7 @@ class MarketIntelligence:
             }
             
         except Exception as e:
-            self.logger.error(f"Error calculating KAMA indicators: {e}")
+            self.logger.error(f"Error calculating KAMA(40) indicators: {e}")
             return {'value': 0.0, 'direction': 'neutral', 'strength': 0.0}
     
     def _fallback_momentum(self) -> float:
@@ -512,31 +527,65 @@ class GridStrategy:
             self.logger.error(f"Error calculating order amount for price ${price:.6f}: {e}")
             return self.min_amount
     
-    def _calculate_grid_levels(self) -> List[float]:
-        """Calculate grid levels within user-defined range"""
+    def _calculate_grid_levels(self, current_price: float = None) -> List[float]:
+        """Calculate grid levels - adaptive to current price when enabled"""
         try:
             if self.user_grid_number <= 0:
                 return []
             
-            # Calculate interval between grid levels
-            price_range = self.user_price_upper - self.user_price_lower
-            if price_range <= 0:
-                self.logger.error(f"Invalid price range: {self.user_price_lower} - {self.user_price_upper}")
-                return []
+            # If no current price provided or grid adaptation disabled, use original range
+            if current_price is None or not self.enable_grid_adaptation:
+                # Calculate interval between grid levels (original behavior)
+                price_range = self.user_price_upper - self.user_price_lower
+                if price_range <= 0:
+                    self.logger.error(f"Invalid price range: {self.user_price_lower} - {self.user_price_upper}")
+                    return []
+                
+                interval = price_range / self.user_grid_number
+                levels = []
+                
+                # Generate grid levels in original range
+                for i in range(self.user_grid_number + 1):
+                    level = self.user_price_lower + (i * interval)
+                    rounded_level = self._round_price(level)
+                    levels.append(rounded_level)
             
-            interval = price_range / self.user_grid_number
-            levels = []
-            
-            # Generate grid levels
-            for i in range(self.user_grid_number + 1):
-                level = self.user_price_lower + (i * interval)
-                rounded_level = self._round_price(level)
-                levels.append(rounded_level)
+            else:
+                # ADAPTIVE MODE: Generate levels around current price
+                # Calculate the original interval to maintain grid spacing
+                original_range = self.user_price_upper - self.user_price_lower
+                interval = original_range / self.user_grid_number
+                
+                # Create levels centered around current price
+                levels = []
+                half_levels = self.user_grid_number // 2
+                
+                # Generate levels below current price
+                for i in range(half_levels, 0, -1):
+                    level = current_price - (i * interval)
+                    if level > 0:  # Ensure positive price
+                        rounded_level = self._round_price(level)
+                        levels.append(rounded_level)
+                
+                # Add current price level
+                levels.append(self._round_price(current_price))
+                
+                # Generate levels above current price
+                for i in range(1, half_levels + 1):
+                    level = current_price + (i * interval)
+                    rounded_level = self._round_price(level)
+                    levels.append(rounded_level)
+                
+                # If odd number of grids, add one more level above
+                if self.user_grid_number % 2 == 1:
+                    level = current_price + ((half_levels + 1) * interval)
+                    rounded_level = self._round_price(level)
+                    levels.append(rounded_level)
             
             # Remove duplicates and sort
             levels = sorted(list(set(levels)))
             
-            self.logger.debug(f"Generated {len(levels)} grid levels: {levels[:3]}...{levels[-3:] if len(levels) > 6 else levels}")
+            # self.logger.debug(f"Generated {len(levels)} grid levels around ${current_price:.6f if current_price else 'original range'}: {levels[:3]}...{levels[-3:] if len(levels) > 6 else levels}")
             
             return levels
             
@@ -693,86 +742,106 @@ class GridStrategy:
         except Exception as e:
             self.logger.error(f"Error setting up grid: {e}")
             self.running = False
-    
-    def _place_initial_grid_orders(self, current_price: float, available_investment: float) -> int:
-        """Place initial grid orders within user range"""
+    def _log_current_state(self, current_price: float, kama_direction: str, kama_strength: float):
+        """Log current positions and market state for validation"""
         try:
-            # Get grid levels
-            grid_levels = self._calculate_grid_levels()
+            self.logger.info(f"=" * 60)
+            self.logger.info(f"📊 CURRENT MARKET STATE VALIDATION")
+            self.logger.info(f"=" * 60)
+            self.logger.info(f"Current Price: ${current_price:.6f}")
+            self.logger.info(f"KAMA Direction: {kama_direction.upper()}")
+            self.logger.info(f"KAMA Strength: {kama_strength:.3f}")
+            
+            # Log existing positions
+            open_positions = [pos for pos in self.all_positions.values() if pos.is_open()]
+            if open_positions:
+                self.logger.info(f"📍 EXISTING POSITIONS ({len(open_positions)}):")
+                for pos in open_positions:
+                    pnl = pos.calculate_unrealized_pnl(current_price)
+                    pnl_sign = "📈" if pnl >= 0 else "📉"
+                    self.logger.info(f"  {pnl_sign} {pos.side.upper()} @ ${pos.entry_price:.6f} | PnL: ${pnl:.2f}")
+            else:
+                self.logger.info(f"📍 EXISTING POSITIONS: None")
+            
+            # Log existing orders
+            market_data = self._get_live_market_data()
+            if market_data['live_orders']:
+                self.logger.info(f"📋 EXISTING ORDERS ({len(market_data['live_orders'])}):")
+                for order in market_data['live_orders']:
+                    price = float(order.get('price', 0))
+                    side = order.get('side', 'unknown').upper()
+                    distance = price - current_price
+                    direction = "↑" if distance > 0 else "↓"
+                    self.logger.info(f"  {direction} {side} @ ${price:.6f} (${distance:+.6f} from current)")
+            else:
+                self.logger.info(f"📋 EXISTING ORDERS: None")
+                
+            self.logger.info(f"=" * 60)
+            
+        except Exception as e:
+            self.logger.error(f"Error logging current state: {e}")
+
+    def _place_initial_grid_orders(self, current_price: float, available_investment: float) -> int:
+        """Place initial grid orders with comprehensive validation logging"""
+        try:
+            # Get trend direction first
+            kama_direction, kama_strength = self._get_trend_direction_and_strength(current_price)
+            
+            # Log current state for validation
+            self._log_current_state(current_price, kama_direction, kama_strength)
+            
+            # Get adaptive grid levels
+            grid_levels = self._calculate_grid_levels(current_price)
             if not grid_levels:
                 self.logger.error("No grid levels calculated")
                 return 0
             
-            # Calculate how many orders we can place
+            # Calculate order capacity
             max_orders_by_investment = int(available_investment / self.user_investment_per_grid)
             max_orders_by_capacity = min(self.max_total_orders, len(grid_levels))
             max_orders = min(max_orders_by_investment, max_orders_by_capacity)
             
             if max_orders <= 0:
-                self.logger.warning(f"Cannot place orders:")
-                self.logger.warning(f"  By investment: {max_orders_by_investment} (need ${self.user_investment_per_grid:.2f} each)")
-                self.logger.warning(f"  By capacity: {max_orders_by_capacity}")
+                self.logger.warning(f"Cannot place orders - insufficient capacity or investment")
                 return 0
             
-            # Calculate minimum gap to avoid clustering
-            price_range = self.user_price_upper - self.user_price_lower
-            min_gap = price_range / self.user_grid_number * 0.25  # 25% of natural grid spacing
+            min_gap = current_price * 0.002
             
-            # Get market intelligence for order distribution
-            directional_bias = 0.0
-            if self.market_intel:
-                try:
-                    market_snapshot = self.market_intel.analyze_market(self.exchange)
-                    directional_bias = market_snapshot.directional_bias
-                    
-                    self.logger.info(f"📊 Market Intelligence:")
-                    self.logger.info(f"  KAMA: {market_snapshot.kama_direction} (value: {market_snapshot.kama_value:.6f})")
-                    self.logger.info(f"  Directional bias: {directional_bias:.3f}")
-                    self.logger.info(f"  Trend strength: {market_snapshot.trend_strength:.3f}")
-                    
-                except Exception as e:
-                    self.logger.warning(f"Market intelligence failed: {e}")
+            self.logger.info(f"🎯 DIRECTIONAL STRATEGY EXECUTION:")
+            self.logger.info(f"  Max orders to place: {max_orders}")
+            self.logger.info(f"  Available levels: {len(grid_levels)}")
+            self.logger.info(f"  Min gap: ${min_gap:.6f}")
+            self.logger.info(f"")
+            self.logger.info(f"📋 ORDER PLACEMENT DECISIONS:")
             
-            # Calculate order distribution based on bias
-            if abs(directional_bias) > 0.3:
-                if directional_bias > 0:  # Bullish bias
-                    buy_ratio = 0.6
-                else:  # Bearish bias
-                    buy_ratio = 0.4
-            else:  # Neutral market
-                buy_ratio = 0.5
-            
-            buy_target = int(max_orders * buy_ratio)
-            sell_target = max_orders - buy_target
-            
-            self.logger.info(f"🎯 Order targets: {buy_target} buy + {sell_target} sell = {max_orders} total")
-            self.logger.info(f"   Min gap: ${min_gap:.6f} ({min_gap/current_price*100:.2f}% of current price)")
-            
-            # Sort levels by distance from current price (place closest first)
+            # Sort levels by distance from current price
             sorted_levels = sorted(grid_levels, key=lambda x: abs(x - current_price))
             
             orders_placed = 0
             buy_orders_placed = 0
             sell_orders_placed = 0
+            blocked_orders = 0
             
-            for level_price in sorted_levels:
+            for i, level_price in enumerate(sorted_levels):
                 if orders_placed >= max_orders:
+                    self.logger.info(f"🛑 Stopping: Reached max orders limit ({max_orders})")
                     break
                 
                 # Skip levels too close to current price
                 if abs(level_price - current_price) < min_gap:
-                    self.logger.debug(f"Skipping ${level_price:.6f} - too close to current price")
+                    self.logger.debug(f"⏭️ Skipping ${level_price:.6f} - too close to current price")
                     continue
                 
-                # Determine order type based on position relative to current price
-                if level_price < current_price and buy_orders_placed < buy_target:
-                    order_type = OrderType.BUY.value
-                elif level_price > current_price and sell_orders_placed < sell_target:
-                    order_type = OrderType.SELL.value
-                else:
+                self.logger.info(f"Decision {i+1}: Level ${level_price:.6f}")
+                
+                # Use directional logic with detailed logging
+                order_type = self._should_place_order(level_price, current_price, kama_direction, kama_strength)
+                
+                if order_type is None:
+                    blocked_orders += 1
                     continue
                 
-                # Place the order
+                # Attempt to place the order
                 if self._place_single_order(level_price, order_type):
                     orders_placed += 1
                     if order_type == OrderType.BUY.value:
@@ -780,23 +849,153 @@ class GridStrategy:
                     else:
                         sell_orders_placed += 1
                     
-                    self.logger.debug(f"Order {orders_placed}/{max_orders}: {order_type.upper()} @ ${level_price:.6f}")
+                    self.logger.info(f"🎉 ORDER PLACED SUCCESSFULLY!")
+                else:
+                    self.logger.warning(f"❌ ORDER PLACEMENT FAILED")
+                
+                self.logger.info(f"")  # Add spacing between decisions
             
-            self.logger.info(f"📈 Initial grid orders placed:")
-            self.logger.info(f"  Buy orders: {buy_orders_placed}")
-            self.logger.info(f"  Sell orders: {sell_orders_placed}")
-            self.logger.info(f"  Total: {orders_placed}")
+            # Final validation summary
+            self.logger.info(f"=" * 60)
+            self.logger.info(f"📊 FINAL PLACEMENT SUMMARY")
+            self.logger.info(f"=" * 60)
+            self.logger.info(f"Buy orders placed: {buy_orders_placed}")
+            self.logger.info(f"Sell orders placed: {sell_orders_placed}")
+            self.logger.info(f"Total placed: {orders_placed}")
+            self.logger.info(f"Blocked by trend rules: {blocked_orders}")
+            
+            # Strategy validation
+            if kama_strength > 0.5:
+                if kama_direction == 'bearish':
+                    if buy_orders_placed > 0:
+                        self.logger.error(f"🚨 STRATEGY ERROR: {buy_orders_placed} BUY orders in STRONG BEARISH trend!")
+                    else:
+                        self.logger.info(f"✅ STRATEGY VALID: Only SELL orders in bearish trend")
+                elif kama_direction == 'bullish':
+                    if sell_orders_placed > 0:
+                        self.logger.error(f"🚨 STRATEGY ERROR: {sell_orders_placed} SELL orders in STRONG BULLISH trend!")
+                    else:
+                        self.logger.info(f"✅ STRATEGY VALID: Only BUY orders in bullish trend")
+            
+            self.logger.info(f"=" * 60)
             
             return orders_placed
             
         except Exception as e:
             self.logger.error(f"Error placing initial grid orders: {e}")
             return 0
-    
-    def _place_single_order(self, price: float, side: str) -> bool:
-        """Place a single limit order with KAMA intelligence check"""
+    def _should_place_order(self, level_price: float, current_price: float, kama_direction: str, kama_strength: float) -> str:
+        """Determine if and what type of order to place with detailed reasoning"""
+        
+        distance = level_price - current_price
+        direction_symbol = "↑" if distance > 0 else "↓"
+        
+        # For strong bearish trends
+        if kama_strength > 0.5 and kama_direction == 'bearish':
+            if level_price > current_price:
+                reason = f"BEARISH TREND: SELL {direction_symbol} @ ${level_price:.6f} (SHORT when price bounces up)"
+                self.logger.info(f"✅ {reason}")
+                return OrderType.SELL.value
+            else:
+                reason = f"BEARISH TREND: BLOCKED BUY {direction_symbol} @ ${level_price:.6f} (would fight downtrend)"
+                self.logger.info(f"🚫 {reason}")
+                return None
+                
+        # For strong bullish trends
+        elif kama_strength > 0.5 and kama_direction == 'bullish':
+            if level_price < current_price:
+                reason = f"BULLISH TREND: BUY {direction_symbol} @ ${level_price:.6f} (LONG when price dips down)"
+                self.logger.info(f"✅ {reason}")
+                return OrderType.BUY.value
+            else:
+                reason = f"BULLISH TREND: BLOCKED SELL {direction_symbol} @ ${level_price:.6f} (would fight uptrend)"
+                self.logger.info(f"🚫 {reason}")
+                return None
+        
+        # For weaker trends - heavily biased
+        elif kama_direction == 'bearish':
+            if level_price > current_price:
+                reason = f"WEAK BEARISH: SELL {direction_symbol} @ ${level_price:.6f} (preferred direction)"
+                self.logger.info(f"✅ {reason}")
+                return OrderType.SELL.value
+            elif level_price < current_price:
+                import random
+                if random.random() < 0.1:  # 10% chance
+                    reason = f"WEAK BEARISH: BUY {direction_symbol} @ ${level_price:.6f} (10% counter-trend allowed)"
+                    self.logger.info(f"⚠️ {reason}")
+                    return OrderType.BUY.value
+                else:
+                    reason = f"WEAK BEARISH: BLOCKED BUY {direction_symbol} @ ${level_price:.6f} (90% block rate)"
+                    self.logger.info(f"🚫 {reason}")
+                    return None
+        elif kama_direction == 'bullish':
+            if level_price < current_price:
+                reason = f"WEAK BULLISH: BUY {direction_symbol} @ ${level_price:.6f} (preferred direction)"
+                self.logger.info(f"✅ {reason}")
+                return OrderType.BUY.value
+            elif level_price > current_price:
+                import random
+                if random.random() < 0.1:  # 10% chance
+                    reason = f"WEAK BULLISH: SELL {direction_symbol} @ ${level_price:.6f} (10% counter-trend allowed)"
+                    self.logger.info(f"⚠️ {reason}")
+                    return OrderType.SELL.value
+                else:
+                    reason = f"WEAK BULLISH: BLOCKED SELL {direction_symbol} @ ${level_price:.6f} (90% block rate)"
+                    self.logger.info(f"🚫 {reason}")
+                    return None
+        else:
+            # Neutral market
+            if level_price < current_price:
+                reason = f"NEUTRAL: BUY {direction_symbol} @ ${level_price:.6f} (traditional grid)"
+                self.logger.info(f"🔄 {reason}")
+                return OrderType.BUY.value
+            elif level_price > current_price:
+                reason = f"NEUTRAL: SELL {direction_symbol} @ ${level_price:.6f} (traditional grid)"
+                self.logger.info(f"🔄 {reason}")
+                return OrderType.SELL.value
+        
+        return None
+
+    def _get_trend_direction_and_strength(self, current_price: float) -> tuple[str, float]:
+        """Get current trend direction and strength from KAMA(40) vs price comparison"""
+        if not self.market_intel:
+            return 'neutral', 0.0
+        
         try:
-            # INTELLIGENCE CHECK - Prevent counter-trend orders
+            market_snapshot = self.market_intel.analyze_market(self.exchange)
+            
+            # Enhanced logging for KAMA(40) analysis
+            self.logger.info(f"🔍 KAMA(40) Analysis:")
+            self.logger.info(f"  Current Price: ${current_price:.6f}")
+            self.logger.info(f"  KAMA(40) Value: ${market_snapshot.kama_value:.6f}")
+            
+            if market_snapshot.kama_value > 0:
+                price_vs_kama = "ABOVE" if current_price > market_snapshot.kama_value else "BELOW"
+                distance_pct = abs(current_price - market_snapshot.kama_value) / market_snapshot.kama_value * 100
+                self.logger.info(f"  Price vs KAMA: {price_vs_kama} ({distance_pct:.2f}% distance)")
+            
+            self.logger.info(f"  Direction: {market_snapshot.kama_direction.upper()}")
+            self.logger.info(f"  Strength: {market_snapshot.kama_strength:.3f}")
+            
+            # Additional validation
+            if len(self.market_intel.price_history) < 45:
+                self.logger.warning(f"⚠️ Insufficient data for KAMA(40): {len(self.market_intel.price_history)}/45")
+                return 'neutral', 0.0
+            
+            return market_snapshot.kama_direction, market_snapshot.kama_strength
+            
+        except Exception as e:
+            self.logger.error(f"Error getting KAMA(40) trend direction: {e}")
+            return 'neutral', 0.0
+    def _place_single_order(self, price: float, side: str) -> bool:
+        """Place single order with enhanced validation logging"""
+        try:
+            # Log the order attempt
+            distance = price - float(self.exchange.get_ticker(self.symbol)['last'])
+            direction = "↑" if distance > 0 else "↓"
+            self.logger.info(f"🔄 Attempting to place: {side.upper()} {direction} @ ${price:.6f}")
+            
+            # Enhanced directional intelligence check (existing code)
             if self.market_intel:
                 try:
                     current_price = float(self.exchange.get_ticker(self.symbol)['last'])
@@ -804,55 +1003,39 @@ class GridStrategy:
                     
                     kama_strength = market_snapshot.kama_strength
                     kama_direction = market_snapshot.kama_direction
-                    distance_pct = abs(price - current_price) / current_price
                     
-                    # STRONG MOMENTUM RULES (Strength > 0.7)
-                    if kama_strength > 0.7:
-                        if kama_direction == 'bearish' and side == 'sell':
-                            self.logger.info(f"🧠 INTELLIGENCE BLOCK: {side.upper()} @ ${price:.6f}")
-                            self.logger.info(f"   Reason: STRONG bearish momentum ({kama_strength:.3f}) - avoid selling into downtrend")
+                    if kama_strength > 0.4:
+                        if kama_direction == 'bearish' and side == 'buy' and price < current_price:
+                            self.logger.info(f"🚫 INTELLIGENCE BLOCK: {side.upper()} @ ${price:.6f}")
+                            self.logger.info(f"   Reason: Bearish trend - blocking buy orders below price")
                             return False
-                        elif kama_direction == 'bullish' and side == 'buy':
-                            self.logger.info(f"🧠 INTELLIGENCE BLOCK: {side.upper()} @ ${price:.6f}")
-                            self.logger.info(f"   Reason: STRONG bullish momentum ({kama_strength:.3f}) - avoid buying into uptrend")
-                            return False
-                    
-                    # MEDIUM MOMENTUM RULES (Strength 0.4-0.7)
-                    elif kama_strength > 0.4:
-                        is_counter_trend = (
-                            (kama_direction == 'bearish' and side == 'sell' and distance_pct > 0.02) or
-                            (kama_direction == 'bullish' and side == 'buy' and distance_pct > 0.02)
-                        )
-                        if is_counter_trend:
-                            self.logger.info(f"🧠 INTELLIGENCE BLOCK: {side.upper()} @ ${price:.6f}")
-                            self.logger.info(f"   Reason: MEDIUM {kama_direction} momentum - avoid counter-trend >2%")
+                        elif kama_direction == 'bullish' and side == 'sell' and price > current_price:
+                            self.logger.info(f"🚫 INTELLIGENCE BLOCK: {side.upper()} @ ${price:.6f}")
+                            self.logger.info(f"   Reason: Bullish trend - blocking sell orders above price")
                             return False
                     
                 except Exception as e:
                     self.logger.warning(f"Intelligence check failed: {e}")
             
-            # Calculate order amount
+            # Calculate order amount and validate
             amount = self._calculate_order_amount(price)
-            
-            # Validate order parameters
-            if amount < self.min_amount:
-                self.logger.warning(f"Order amount {amount:.6f} below minimum {self.min_amount}")
-                return False
-            
             notional_value = price * amount
-            if notional_value < self.min_cost:
-                self.logger.warning(f"Order notional ${notional_value:.2f} below minimum ${self.min_cost}")
+            margin_needed = round(notional_value / self.user_leverage, 2)
+            
+            # Check available investment
+            current_market_data = self._get_live_market_data()
+            available_investment = current_market_data['available_investment']
+            
+            if margin_needed > available_investment:
+                self.logger.warning(f"💰 INSUFFICIENT FUNDS: Need ${margin_needed:.2f}, Have ${available_investment:.2f}")
                 return False
             
-            # Place the order
+            # Place the actual order
             order = self.exchange.create_limit_order(self.symbol, side, amount, price)
             
             if not order or 'id' not in order:
-                self.logger.error(f"Failed to place {side} order - invalid response")
+                self.logger.error(f"❌ EXCHANGE ERROR: Failed to place {side} order")
                 return False
-            
-            # Calculate margin used
-            margin_used = round(notional_value / self.user_leverage, 2)
             
             # Store order information
             order_info = {
@@ -860,21 +1043,23 @@ class GridStrategy:
                 'price': price,
                 'amount': amount,
                 'notional_value': notional_value,
-                'margin_used': margin_used,
+                'margin_used': margin_needed,
                 'timestamp': time.time(),
                 'status': 'open'
             }
             
             self.pending_orders[order['id']] = order_info
             
-            self.logger.info(f"✅ SMART {side.upper()}: ${price:.6f} x {amount:.6f} (margin: ${margin_used:.2f})")
+            # Success logging
+            self.logger.info(f"✅ ORDER CONFIRMED: {side.upper()} @ ${price:.6f}")
+            self.logger.info(f"   Amount: {amount:.6f} | Margin: ${margin_needed:.2f}")
+            self.logger.info(f"   Order ID: {order['id']}")
             
             return True
             
         except Exception as e:
-            self.logger.error(f"❌ Failed to place {side} order at ${price:.6f}: {e}")
+            self.logger.error(f"❌ EXCEPTION placing {side} order at ${price:.6f}: {e}")
             return False
-    
     def update_grid(self):
         """Main grid update loop - simplified without complex rebalancing"""
         try:
@@ -909,9 +1094,10 @@ class GridStrategy:
     def _maintain_grid_coverage(self, current_price: float):
         """Ensure grid has adequate coverage within user range"""
         try:
-            # Only add orders if price is within user range
-            if current_price < self.user_price_lower or current_price > self.user_price_upper:
-                return
+            # FIXED: Removed restriction - grid should follow price movement anywhere
+            # OLD CODE REMOVED:
+            # if current_price < self.user_price_lower or current_price > self.user_price_upper:
+            #     return
             
             # Get current market data
             market_data = self._get_live_market_data()
@@ -922,33 +1108,75 @@ class GridStrategy:
             
             if market_data['total_commitment'] >= self.max_total_orders:
                 return
-            
+            self._cancel_distant_orders(current_price, market_data)
             # Find gaps in grid coverage and fill them
             self._fill_grid_gaps(current_price, market_data)
             
         except Exception as e:
             self.logger.error(f"Error maintaining grid coverage: {e}")
-    
+
+    def _cancel_distant_orders(self, current_price: float, market_data: Dict[str, Any]):
+        """Cancel orders that are too far from current price to make room for closer ones"""
+        try:
+            if not market_data['live_orders']:
+                return
+            # Define "too far" as more than 2% from current price
+            max_distance_pct = 0.02  # 2%
+            max_distance = current_price * max_distance_pct
+
+            orders_to_cancel = []
+
+            for order in market_data['live_orders']:
+                order_price = float(order.get('price', 0))
+                distance = abs(order_price - current_price)
+
+                # If order is more than 2% away from current price, consider canceling
+                if distance > max_distance:
+                    orders_to_cancel.append(order)
+            
+            # Only cancel if we have too many distant orders (keep some for range coverage)
+            if len(orders_to_cancel) > 2:  # Cancel max 2 distant orders at a time
+                # Sort by distance (cancel furthest first) and limit to 2
+                orders_to_cancel.sort(key=lambda x: abs(float(x.get('price', 0)) - current_price), reverse=True)
+                
+                for order in orders_to_cancel[:2]:  # Cancel max 2 at a time
+                    try:
+                        self.exchange.cancel_order(order['id'], self.symbol)
+                        order_price = float(order.get('price', 0))
+                        distance_pct = abs(order_price - current_price) / current_price * 100
+                        self.logger.info(f"🗑️ Cancelled distant order: {order.get('side', 'unknown')} @ ${order_price:.6f} ({distance_pct:.2f}% from current)")
+                        
+                        # Remove from internal tracking
+                        if order['id'] in self.pending_orders:
+                            del self.pending_orders[order['id']]
+                            
+                    except Exception as e:
+                        self.logger.error(f"Error cancelling distant order {order['id']}: {e}")
+                        
+        except Exception as e:
+            self.logger.error(f"Error cancelling distant orders: {e}")
     def _fill_grid_gaps(self, current_price: float, market_data: Dict[str, Any]):
-        """Fill gaps in grid coverage within user range"""
+        """Fill gaps in grid coverage with DIRECTIONAL AWARENESS"""
         try:
             # Get current covered prices
             covered_prices = market_data['covered_prices']
             
-            # Get grid levels
-            grid_levels = self._calculate_grid_levels()
+            # Get adaptive grid levels that move with current price
+            grid_levels = self._calculate_grid_levels(current_price)
             if not grid_levels:
                 return
             
-            # Calculate minimum gap
-            price_range = self.user_price_upper - self.user_price_lower
-            min_gap = price_range / self.user_grid_number * 0.3
+            # Much smaller minimum gap - only to avoid exact duplicates
+            min_gap = current_price * 0.001  # 0.1% of current price
+            
+            # FIXED: Get current trend direction
+            kama_direction, kama_strength = self._get_trend_direction_and_strength(current_price)
             
             # Find levels that need orders
             levels_needing_orders = []
             
             for level_price in grid_levels:
-                # Skip if too close to current price
+                # Skip if extremely close (to avoid exact duplicates)
                 if abs(level_price - current_price) < min_gap:
                     continue
                 
@@ -962,16 +1190,26 @@ class GridStrategy:
             if not levels_needing_orders:
                 return
             
-            # Sort by distance from current price
+            # Sort by distance from current price (CLOSEST FIRST)
             levels_needing_orders.sort(key=lambda x: abs(x - current_price))
             
-            # Place one order at the most appropriate level
-            for level_price in levels_needing_orders[:1]:  # Only place one at a time
-                side = OrderType.BUY.value if level_price < current_price else OrderType.SELL.value
+            # Place orders closest to current price first with directional logic
+            orders_placed = 0
+            for level_price in levels_needing_orders[:3]:  # Try up to 3 orders
+                # FIXED: Use directional logic instead of simple buy/sell based on price
+                order_type = self._should_place_order(level_price, current_price, kama_direction, kama_strength)
                 
-                if self._place_single_order(level_price, side):
-                    self.logger.info(f"🔄 Added grid coverage: {side} @ ${level_price:.6f}")
-                    break
+                if order_type is None:
+                    continue  # Skip this level based on trend direction
+                
+                if self._place_single_order(level_price, order_type):
+                    distance = abs(level_price - current_price)
+                    self.logger.info(f"🔄 Added DIRECTIONAL coverage: {order_type.upper()} @ ${level_price:.6f} (distance: ${distance:.6f})")
+                    orders_placed += 1
+                    
+                    # Don't place too many at once
+                    if orders_placed >= 2:
+                        break
                     
         except Exception as e:
             self.logger.error(f"Error filling grid gaps: {e}")
