@@ -120,7 +120,11 @@ class MarketIntelligence:
         try:
             # FIXED: First fetch OHLCV data to populate price_history properly
             current_time = time.time()
-            
+            self.logger.info(f"🧠 STARTING MARKET ANALYSIS:")
+            self.logger.info(f"   Symbol: {self.symbol}")
+            self.logger.info(f"   Price history length: {len(self.price_history)}")
+            self.logger.info(f"   Last OHLCV fetch: {(current_time - self.last_ohlcv_fetch):.1f}s ago")
+            self.logger.info(f"   OHLCV data fetched: {self.ohlcv_data_fetched}")
             # Fetch OHLCV data if cache expired or first fetch
             if (current_time - self.last_ohlcv_fetch > self.ohlcv_cache_duration) or not self.ohlcv_data_fetched:
                 self._fetch_historical_data(exchange)
@@ -181,7 +185,9 @@ class MarketIntelligence:
         """FIXED: Fetch historical OHLCV data from exchange"""
         try:
             self.logger.info(f"Fetching OHLCV data for {self.symbol}...")
-            
+            self.logger.info(f"📊 FETCHING OHLCV DATA:")
+            self.logger.info(f"   Symbol: {self.symbol}")
+            self.logger.info(f"   Requesting 100 candles of 5m timeframe")
             # Use the existing get_ohlcv method from exchange
             ohlcv_data = exchange.get_ohlcv(self.symbol, timeframe='5m', limit=100)
             
@@ -215,6 +221,9 @@ class MarketIntelligence:
     
     def _calculate_momentum(self) -> float:
         """Calculate momentum using real KAMA instead of fake moving averages"""
+        self.logger.info(f"🔢 CALCULATING KAMA MOMENTUM:")
+        self.logger.info(f"   Price history length: {len(self.price_history)}")
+        self.logger.info(f"   Required for KAMA: 45 points minimum")
         if len(self.price_history) < 20:
             required = 45  # KAMA(40) + buffer
             available = len(self.price_history)
@@ -229,20 +238,32 @@ class MarketIntelligence:
             price_series = pd.Series(prices)
             
             # Calculate KAMA using pandas-ta
-            kama = ta.kama(price_series)
+            kama = ta.kama(price_series, length=40)
             
             if kama is None or kama.isna().all():
-                self.logger.warning("pandas-ta KAMA calculation failed, using fallback")
+                self.logger.error(f"❌ PANDAS-TA KAMA CALCULATION FAILED - Using fallback")
                 return self._fallback_momentum()
             
             # Use KAMA for momentum calculation
             current_price = prices[-1]
             current_kama = float(kama.iloc[-1])
-            
+            self.logger.info(f"✅ KAMA CALCULATION SUCCESS:")
+            self.logger.info(f"   Current price: ${current_price}")
+            self.logger.info(f"   Current KAMA: ${current_kama}")
             if current_kama > 0:
                 # Price position relative to KAMA
                 momentum = (current_price - current_kama) / current_kama
-                return max(-1.0, min(1.0, momentum * 2))
+                final_momentum = max(-1.0, min(1.0, momentum * 2))
+            
+                self.logger.info(f"📈 MOMENTUM RESULT: {final_momentum:+.3f}")
+                if final_momentum > 0.1:
+                    self.logger.info(f"   → BULLISH MOMENTUM")
+                elif final_momentum < -0.1:
+                    self.logger.info(f"   → BEARISH MOMENTUM")
+                else:
+                    self.logger.info(f"   → NEUTRAL MOMENTUM")
+                    
+                return final_momentum
             
             return 0.0
             
@@ -437,8 +458,10 @@ class GridStrategy:
         # Market intelligence
         if self.enable_samig:
             self.market_intel = MarketIntelligence(symbol)
+            self.logger.info(f"🧠 SAMIG ENABLED: MarketIntelligence initialized for {symbol}")
         else:
             self.market_intel = None
+            self.logger.info(f"🚫 SAMIG DISABLED: No market intelligence")
         
         # State management
         self.running = False
@@ -451,15 +474,25 @@ class GridStrategy:
         
         # Market information
         self._fetch_market_info()
+        self._log_initialization()
         
-        self.logger.info(f"🚀 Simplified Grid Strategy Initialized:")
-        self.logger.info(f"  Symbol: {symbol} → {self.symbol}")
-        self.logger.info(f"  Range: ${self.user_price_lower:.6f} - ${self.user_price_upper:.6f}")
-        self.logger.info(f"  Grid levels: {self.user_grid_number}")
-        self.logger.info(f"  Investment per grid: ${self.user_investment_per_grid:.2f}")
-        self.logger.info(f"  Total investment: ${self.user_total_investment:.2f}")
-        self.logger.info(f"  Leverage: {self.user_leverage}x")
-        self.logger.info(f"  SAMIG enabled: {self.enable_samig}")
+    def _log_initialization(self):
+            """Enhanced initialization logging"""
+            self.logger.info("=" * 80)
+            self.logger.info(f"🚀 GRID STRATEGY INITIALIZED - {self.grid_id[:8]}")
+            self.logger.info("=" * 80)
+            self.logger.info(f"📊 CONFIGURATION:")
+            self.logger.info(f"   Symbol: {self.original_symbol} → {self.symbol}")
+            self.logger.info(f"   Price Range: ${self.user_price_lower:.6f} - ${self.user_price_upper:.6f}")
+            self.logger.info(f"   Grid Levels: {self.user_grid_number}")
+            self.logger.info(f"   Investment per Grid: ${self.user_investment_per_grid:.2f}")
+            self.logger.info(f"   Total Investment: ${self.user_total_investment:.2f}")
+            self.logger.info(f"   Leverage: {self.user_leverage}x")
+            self.logger.info(f"   Take Profit: {self.take_profit_pnl}%")
+            self.logger.info(f"   Stop Loss: {self.stop_loss_pnl}%")
+            self.logger.info(f"   SAMIG: {'✅ ENABLED' if self.enable_samig else '❌ DISABLED'}")
+            self.logger.info(f"   Grid Adaptation: {'✅ ENABLED' if self.enable_grid_adaptation else '❌ DISABLED'}")
+            self.logger.info("=" * 80)
     
     def _fetch_market_info(self):
         """Fetch market precision and limits from exchange"""
@@ -601,27 +634,37 @@ class GridStrategy:
             return []
     
     def _get_live_market_data(self) -> Dict[str, Any]:
-        """Get live exchange data for accurate investment calculation"""
+        """Enhanced market data retrieval with detailed logging"""
         try:
+            self.logger.debug("🔍 Fetching live market data...")
+            
             # Get live positions and orders
             live_positions = self.exchange.get_positions(self.symbol)
             live_orders = self.exchange.get_open_orders(self.symbol)
+            # ADD THIS LINE to fix untracked orders:
+            self._sync_order_tracking(live_orders)
             
-            # Clean up stale internal tracking
+            # ENHANCED: Log current market state
+            self.logger.info(f"📊 CURRENT MARKET STATE:")
+            self.logger.info(f"   Live Orders: {len(live_orders)}")
+            self.logger.info(f"   Live Positions: {len([p for p in live_positions if float(p.get('contracts', 0)) != 0])}")
+            
+            # Clean up stale internal tracking with detailed logging
             live_order_ids = {order['id'] for order in live_orders}
             stale_orders = []
             
             for order_id in list(self.pending_orders.keys()):
                 if order_id not in live_order_ids:
                     stale_orders.append(order_id)
+                    order_info = self.pending_orders[order_id]
+                    self.logger.warning(f"🧹 STALE ORDER DETECTED: {order_id[:8]} ({order_info.get('type', 'unknown')} @ ${order_info.get('price', 0):.6f})")
             
             # Remove stale orders
             for order_id in stale_orders:
                 if order_id in self.pending_orders:
                     del self.pending_orders[order_id]
-                    self.logger.debug(f"Cleaned stale order: {order_id}")
             
-            # Calculate position margin usage
+            # ENHANCED: Detailed position analysis
             position_margin = 0.0
             active_positions = 0
             
@@ -629,25 +672,38 @@ class GridStrategy:
                 size = float(position.get('contracts', 0))
                 if size != 0:
                     entry_price = float(position.get('entryPrice', 0))
+                    side = position.get('side', 'unknown')
+                    unrealized_pnl = float(position.get('unrealizedPnl', 0))
+                    
                     if entry_price > 0:
                         position_notional = abs(size) * entry_price
                         margin = round(position_notional / self.user_leverage, 2)
                         position_margin += margin
                         active_positions += 1
-            
-            # Calculate order margin usage
+                        
+                        self.logger.info(f"📍 POSITION: {side.upper()} {abs(size):.6f} @ ${entry_price:.6f} (PnL: ${unrealized_pnl:.2f}, Margin: ${margin:.2f})")
+
+            # ENHANCED: Detailed order analysis
             order_margin = 0.0
             active_orders = 0
             
             for order in live_orders:
                 price = float(order.get('price', 0))
                 amount = float(order.get('amount', 0))
+                side = order.get('side', 'unknown')
+                order_id = order.get('id', 'unknown')
+                
                 if price > 0 and amount > 0:
                     order_notional = price * amount
                     margin = round(order_notional / self.user_leverage, 2)
                     order_margin += margin
                     active_orders += 1
-            
+                    
+                    # Check if this order is in our tracking
+                    tracked_status = "✅ TRACKED" if order_id in self.pending_orders else "❌ UNTRACKED"
+                    
+                    self.logger.info(f"📋 ORDER: {side.upper()} {amount:.6f} @ ${price:.6f} (ID: {order_id[:8]}, Margin: ${margin:.2f}) [{tracked_status}]")
+
             # Calculate totals
             total_margin_used = round(position_margin + order_margin, 2)
             available_investment = round(self.user_total_investment - total_margin_used, 2)
@@ -655,7 +711,7 @@ class GridStrategy:
             # Update internal tracking
             self.total_investment_used = total_margin_used
             
-            # Create price coverage set
+            # Create price coverage set with logging
             covered_prices = set()
             for order in live_orders:
                 price = float(order.get('price', 0))
@@ -667,7 +723,18 @@ class GridStrategy:
                     entry_price = float(position.get('entryPrice', 0))
                     if entry_price > 0:
                         covered_prices.add(self._round_price(entry_price))
+
+            # ENHANCED: Summary logging
+            self.logger.info(f"💰 INVESTMENT SUMMARY:")
+            self.logger.info(f"   Position Margin: ${position_margin:.2f}")
+            self.logger.info(f"   Order Margin: ${order_margin:.2f}")
+            self.logger.info(f"   Total Used: ${total_margin_used:.2f}")
+            self.logger.info(f"   Available: ${available_investment:.2f}")
+            self.logger.info(f"   Utilization: {(total_margin_used/self.user_total_investment*100):.1f}%")
             
+            if len(stale_orders) > 0:
+                self.logger.warning(f"🧹 Cleaned {len(stale_orders)} stale order records")
+
             market_data = {
                 'live_orders': live_orders,
                 'live_positions': live_positions,
@@ -682,20 +749,10 @@ class GridStrategy:
                 'stale_orders_cleaned': len(stale_orders)
             }
             
-            if len(stale_orders) > 0:
-                self.logger.info(f"🧹 Cleaned {len(stale_orders)} stale order records")
-            
-            self.logger.debug(f"💰 Investment Status:")
-            self.logger.debug(f"  Position margin: ${position_margin:.2f}")
-            self.logger.debug(f"  Order margin: ${order_margin:.2f}")
-            self.logger.debug(f"  Total used: ${total_margin_used:.2f}")
-            self.logger.debug(f"  Available: ${available_investment:.2f}")
-            
             return market_data
             
         except Exception as e:
-            self.logger.error(f"Error getting live market data: {e}")
-            # Return safe defaults
+            self.logger.error(f"❌ Error getting live market data: {e}")
             return {
                 'live_orders': [], 'live_positions': [], 'position_margin': 0.0, 'order_margin': 0.0,
                 'total_margin_used': self.user_total_investment, 'available_investment': 0.0,
@@ -850,97 +907,189 @@ class GridStrategy:
             return 0
     
     def _place_single_order(self, price: float, side: str) -> bool:
-        """Place a single limit order with KAMA intelligence check"""
+        """Enhanced order placement with comprehensive logging and validation"""
         try:
-            # INTELLIGENCE CHECK - Prevent counter-trend orders
+            self.logger.info(f"🎯 ATTEMPTING ORDER PLACEMENT:")
+            self.logger.info(f"   Type: {side.upper()}")
+            self.logger.info(f"   Price: ${price:.6f}")
+            
+            # Get current market price for context
+            ticker = self.exchange.get_ticker(self.symbol)
+            current_price = float(ticker['last'])
+            price_diff_pct = ((price - current_price) / current_price) * 100
+            
+            self.logger.info(f"   Current Price: ${current_price:.6f}")
+            self.logger.info(f"   Price Difference: {price_diff_pct:+.2f}%")
+            
+            # ENHANCED: Market intelligence check with detailed logging
             if self.market_intel:
                 try:
-                    current_price = float(self.exchange.get_ticker(self.symbol)['last'])
                     market_snapshot = self.market_intel.analyze_market(self.exchange)
+                    
+                    self.logger.info(f"🧠 MARKET INTELLIGENCE CHECK:")
+                    self.logger.info(f"   KAMA Direction: {market_snapshot.kama_direction}")
+                    self.logger.info(f"   KAMA Strength: {market_snapshot.kama_strength:.3f}")
+                    self.logger.info(f"   Directional Bias: {market_snapshot.directional_bias:.3f}")
+                    self.logger.info(f"   Volatility: {market_snapshot.volatility:.2f}")
                     
                     kama_strength = market_snapshot.kama_strength
                     kama_direction = market_snapshot.kama_direction
                     distance_pct = abs(price - current_price) / current_price
                     
-                    # STRONG MOMENTUM RULES (Strength > 0.7)
+                    # STRONG MOMENTUM RULES
                     if kama_strength > 0.7:
                         if kama_direction == 'bearish' and side == 'sell':
-                            self.logger.info(f"🧠 INTELLIGENCE BLOCK: {side.upper()} @ ${price:.6f}")
-                            self.logger.info(f"   Reason: STRONG bearish momentum ({kama_strength:.3f}) - avoid selling into downtrend")
+                            self.logger.warning(f"🚫 INTELLIGENCE BLOCK: {side.upper()} @ ${price:.6f}")
+                            self.logger.warning(f"   Reason: STRONG bearish momentum ({kama_strength:.3f}) - avoid selling into downtrend")
                             return False
                         elif kama_direction == 'bullish' and side == 'buy':
-                            self.logger.info(f"🧠 INTELLIGENCE BLOCK: {side.upper()} @ ${price:.6f}")
-                            self.logger.info(f"   Reason: STRONG bullish momentum ({kama_strength:.3f}) - avoid buying into uptrend")
+                            self.logger.warning(f"🚫 INTELLIGENCE BLOCK: {side.upper()} @ ${price:.6f}")
+                            self.logger.warning(f"   Reason: STRONG bullish momentum ({kama_strength:.3f}) - avoid buying into uptrend")
                             return False
                     
-                    # MEDIUM MOMENTUM RULES (Strength 0.4-0.7)
+                    # MEDIUM MOMENTUM RULES
                     elif kama_strength > 0.4:
                         is_counter_trend = (
                             (kama_direction == 'bearish' and side == 'sell' and distance_pct > 0.02) or
                             (kama_direction == 'bullish' and side == 'buy' and distance_pct > 0.02)
                         )
                         if is_counter_trend:
-                            self.logger.info(f"🧠 INTELLIGENCE BLOCK: {side.upper()} @ ${price:.6f}")
-                            self.logger.info(f"   Reason: MEDIUM {kama_direction} momentum - avoid counter-trend >2%")
+                            self.logger.warning(f"🚫 INTELLIGENCE BLOCK: {side.upper()} @ ${price:.6f}")
+                            self.logger.warning(f"   Reason: MEDIUM {kama_direction} momentum - avoid counter-trend >2%")
                             return False
                     
+                    self.logger.info(f"✅ INTELLIGENCE CHECK PASSED")
+                    
                 except Exception as e:
-                    self.logger.warning(f"Intelligence check failed: {e}")
+                    self.logger.warning(f"⚠️ Intelligence check failed: {e}")
             
-            # Calculate order amount
+            # Calculate order amount with validation logging
             amount = self._calculate_order_amount(price)
+            notional_value = price * amount
+            margin_required = round(notional_value / self.user_leverage, 2)
+            
+            self.logger.info(f"📊 ORDER CALCULATIONS:")
+            self.logger.info(f"   Amount: {amount:.6f}")
+            self.logger.info(f"   Notional: ${notional_value:.2f}")
+            self.logger.info(f"   Margin Required: ${margin_required:.2f}")
             
             # Validate order parameters
             if amount < self.min_amount:
-                self.logger.warning(f"Order amount {amount:.6f} below minimum {self.min_amount}")
+                self.logger.error(f"❌ Order amount {amount:.6f} below minimum {self.min_amount}")
                 return False
             
-            notional_value = price * amount
             if notional_value < self.min_cost:
-                self.logger.warning(f"Order notional ${notional_value:.2f} below minimum ${self.min_cost}")
+                self.logger.error(f"❌ Order notional ${notional_value:.2f} below minimum ${self.min_cost}")
                 return False
+            
+            # ENHANCED: Pre-order validation
+            self.logger.info(f"✅ ORDER VALIDATION PASSED - Placing order...")
             
             # Place the order
             order = self.exchange.create_limit_order(self.symbol, side, amount, price)
             
             if not order or 'id' not in order:
-                self.logger.error(f"Failed to place {side} order - invalid response")
+                self.logger.error(f"❌ Failed to place {side} order - invalid response")
                 return False
             
-            # Calculate margin used
-            margin_used = round(notional_value / self.user_leverage, 2)
-            
-            # Store order information
+            # Store order information with enhanced tracking
             order_info = {
                 'type': side,
                 'price': price,
                 'amount': amount,
                 'notional_value': notional_value,
-                'margin_used': margin_used,
+                'margin_used': margin_required,
                 'timestamp': time.time(),
-                'status': 'open'
+                'status': 'open',
+                'current_price_at_placement': current_price,
+                'price_diff_pct_at_placement': price_diff_pct
             }
             
             self.pending_orders[order['id']] = order_info
             
-            self.logger.info(f"✅ SMART {side.upper()}: ${price:.6f} x {amount:.6f} (margin: ${margin_used:.2f})")
+            self.logger.info(f"✅ ORDER PLACED SUCCESSFULLY:")
+            self.logger.info(f"   Order ID: {order['id'][:8]}...")
+            self.logger.info(f"   Type: {side.upper()}")
+            self.logger.info(f"   Price: ${price:.6f}")
+            self.logger.info(f"   Amount: {amount:.6f}")
+            self.logger.info(f"   Margin Used: ${margin_required:.2f}")
+            self.logger.info(f"   Total Pending Orders: {len(self.pending_orders)}")
             
             return True
             
         except Exception as e:
-            self.logger.error(f"❌ Failed to place {side} order at ${price:.6f}: {e}")
+            self.logger.error(f"❌ FAILED to place {side} order at ${price:.6f}: {e}")
             return False
-    
+    def _sync_order_tracking(self, live_orders: List[Dict]) -> int:
+        """
+        Synchronize internal order tracking with live exchange orders.
+        This fixes the "UNTRACKED" order issue with minimal code changes.
+        
+        Returns:
+            int: Number of orders added to tracking
+        """
+        added_orders = 0
+        
+        try:
+            live_order_ids = {order['id'] for order in live_orders}
+            
+            # Add untracked orders to our tracking
+            for order in live_orders:
+                order_id = order['id']
+                
+                if order_id not in self.pending_orders:
+                    # This is an untracked order - add it to our tracking
+                    price = float(order.get('price', 0))
+                    amount = float(order.get('amount', 0))
+                    side = order.get('side', 'unknown')
+                    
+                    if price > 0 and amount > 0:
+                        notional_value = price * amount
+                        margin_used = round(notional_value / self.user_leverage, 2)
+                        
+                        # Add to tracking with minimal required info
+                        self.pending_orders[order_id] = {
+                            'type': side,
+                            'price': price,
+                            'amount': amount,
+                            'notional_value': notional_value,
+                            'margin_used': margin_used,
+                            'timestamp': time.time(),
+                            'status': 'open',
+                            'recovered': True  # Mark as recovered order
+                        }
+                        
+                        added_orders += 1
+                        self.logger.info(f"✅ RECOVERED ORDER: {side.upper()} {amount:.6f} @ ${price:.6f} (ID: {order_id[:8]})")
+            
+            if added_orders > 0:
+                self.logger.info(f"🔄 ORDER SYNC: Added {added_orders} untracked orders to internal tracking")
+            
+            return added_orders
+            
+        except Exception as e:
+            self.logger.error(f"❌ Error syncing order tracking: {e}")
+            return 0
     def update_grid(self):
-        """Main grid update loop - simplified without complex rebalancing"""
+        """Enhanced main grid update loop with comprehensive logging"""
         try:
             with self.update_lock:
                 if not self.running:
                     return
                 
+                update_start_time = time.time()
+                self.logger.debug(f"🔄 GRID UPDATE CYCLE START")
+                
                 # Get current market price
                 ticker = self.exchange.get_ticker(self.symbol)
                 current_price = float(ticker['last'])
+                
+                self.logger.debug(f"   Current Price: ${current_price:.6f}")
+                self.logger.debug(f"   Grid Range: ${self.user_price_lower:.6f} - ${self.user_price_upper:.6f}")
+                
+                # Check if price is within range
+                within_range = self.user_price_lower <= current_price <= self.user_price_upper
+                self.logger.debug(f"   Within Range: {'✅ YES' if within_range else '❌ NO'}")
                 
                 # Update filled orders and positions
                 self._update_orders_and_positions()
@@ -957,80 +1106,124 @@ class GridStrategy:
                 # Check take profit and stop loss
                 self._check_tp_sl()
                 
+                update_duration = time.time() - update_start_time
                 self.last_update_time = time.time()
                 
+                self.logger.debug(f"🔄 GRID UPDATE CYCLE COMPLETE ({update_duration:.2f}s)")
+                
         except Exception as e:
-            self.logger.error(f"Error updating grid: {e}")
+            self.logger.error(f"❌ Error updating grid: {e}")
+            import traceback
+            self.logger.error(f"Traceback: {traceback.format_exc()}")
     
     def _maintain_grid_coverage(self, current_price: float):
         """Ensure grid has adequate coverage within user range"""
         try:
+            self.logger.info(f"🔄 CHECKING GRID COVERAGE:")
+            self.logger.info(f"   Current Price: ${current_price:.6f}")
+            self.logger.info(f"   User Range: ${self.user_price_lower:.6f} - ${self.user_price_upper:.6f}")
+            
             # Only add orders if price is within user range
             if current_price < self.user_price_lower or current_price > self.user_price_upper:
+                self.logger.warning(f"⚠️ PRICE OUTSIDE USER RANGE - No new orders will be placed")
                 return
+            else:
+                self.logger.info(f"✅ PRICE WITHIN RANGE - Checking for gaps")
             
             # Get current market data
             market_data = self._get_live_market_data()
             
+            self.logger.info(f"💰 GRID COVERAGE CHECK:")
+            self.logger.info(f"   Available Investment: ${market_data['available_investment']:.2f}")
+            self.logger.info(f"   Required per Grid: ${self.user_investment_per_grid:.2f}")
+            self.logger.info(f"   Total Commitment: {market_data['total_commitment']}/{self.max_total_orders}")
+            
             # Check if we have investment and capacity for more orders
             if market_data['available_investment'] < self.user_investment_per_grid:
+                self.logger.warning(f"⚠️ INSUFFICIENT INVESTMENT for new orders")
                 return
             
             if market_data['total_commitment'] >= self.max_total_orders:
+                self.logger.warning(f"⚠️ MAX ORDER CAPACITY REACHED")
                 return
+            
+            self.logger.info(f"✅ CAPACITY AVAILABLE - Looking for grid gaps")
             
             # Find gaps in grid coverage and fill them
             self._fill_grid_gaps(current_price, market_data)
             
         except Exception as e:
-            self.logger.error(f"Error maintaining grid coverage: {e}")
+            self.logger.error(f"❌ Error maintaining grid coverage: {e}")
     
     def _fill_grid_gaps(self, current_price: float, market_data: Dict[str, Any]):
         """Fill gaps in grid coverage within user range"""
         try:
+            self.logger.info(f"🔍 ANALYZING GRID GAPS:")
+            
             # Get current covered prices
             covered_prices = market_data['covered_prices']
+            self.logger.info(f"   Currently covered prices: {len(covered_prices)} levels")
+            for price in sorted(covered_prices):
+                self.logger.info(f"     ${price:.6f}")
             
             # Get grid levels
             grid_levels = self._calculate_grid_levels()
             if not grid_levels:
+                self.logger.error(f"❌ NO GRID LEVELS CALCULATED")
                 return
+            
+            self.logger.info(f"   Target grid levels: {len(grid_levels)} levels")
+            for i, level in enumerate(grid_levels):
+                self.logger.info(f"     Level {i+1}: ${level:.6f}")
             
             # Calculate minimum gap
             price_range = self.user_price_upper - self.user_price_lower
             min_gap = price_range / self.user_grid_number * 0.3
+            self.logger.info(f"   Minimum gap: ${min_gap:.6f}")
             
             # Find levels that need orders
             levels_needing_orders = []
             
             for level_price in grid_levels:
                 # Skip if too close to current price
-                if abs(level_price - current_price) < min_gap:
+                distance_to_current = abs(level_price - current_price)
+                if distance_to_current < min_gap:
+                    self.logger.debug(f"   Skip ${level_price:.6f}: Too close to current (${distance_to_current:.6f} < ${min_gap:.6f})")
                     continue
                 
                 # Skip if already covered
                 is_covered = any(abs(level_price - covered) < min_gap for covered in covered_prices)
                 if is_covered:
+                    self.logger.debug(f"   Skip ${level_price:.6f}: Already covered")
                     continue
                 
                 levels_needing_orders.append(level_price)
+                side = "BUY" if level_price < current_price else "SELL"
+                self.logger.info(f"   GAP FOUND: {side} needed @ ${level_price:.6f}")
             
             if not levels_needing_orders:
+                self.logger.info(f"✅ NO GAPS FOUND - Grid coverage is adequate")
                 return
+            
+            self.logger.info(f"🎯 ATTEMPTING TO FILL {len(levels_needing_orders)} GAPS:")
             
             # Sort by distance from current price
             levels_needing_orders.sort(key=lambda x: abs(x - current_price))
             
             # Place one order at the most appropriate level
             for level_price in levels_needing_orders[:1]:  # Only place one at a time
-                side = OrderType.BUY.value if level_price < current_price else OrderType.SELL.value
+                side = "buy" if level_price < current_price else "sell"
+                
+                self.logger.info(f"🎯 TRYING TO PLACE: {side.upper()} @ ${level_price:.6f}")
                 
                 if self._place_single_order(level_price, side):
-                    self.logger.info(f"🔄 Added grid coverage: {side} @ ${level_price:.6f}")
+                    self.logger.info(f"✅ GAP FILLED: {side.upper()} @ ${level_price:.6f}")
                     break
-                    
+                else:
+                    self.logger.warning(f"❌ FAILED TO FILL GAP: {side.upper()} @ ${level_price:.6f}")
+                        
         except Exception as e:
-            self.logger.error(f"Error filling grid gaps: {e}")
+            self.logger.error(f"❌ Error filling grid gaps: {e}")
     
     def _update_orders_and_positions(self):
         """Check for filled orders and update position tracking"""
@@ -1156,18 +1349,31 @@ class GridStrategy:
             self.logger.error(f"Error closing position from counter order: {e}")
     
     def _maintain_counter_orders(self, current_price: float):
-        """Create counter orders for open positions"""
+        """Enhanced counter order maintenance with detailed logging"""
         try:
-            for position in self.all_positions.values():
-                # Skip closed positions or positions that already have counter orders
-                if not position.is_open() or position.has_counter_order:
+            open_positions = [pos for pos in self.all_positions.values() if pos.is_open()]
+            
+            if not open_positions:
+                self.logger.debug("No open positions requiring counter orders")
+                return
+            
+            self.logger.info(f"🔄 COUNTER ORDER MAINTENANCE:")
+            self.logger.info(f"   Current Price: ${current_price:.6f}")
+            self.logger.info(f"   Open Positions: {len(open_positions)}")
+            
+            for i, position in enumerate(open_positions, 1):
+                if position.has_counter_order:
+                    self.logger.debug(f"   Position {i}: Already has counter order")
                     continue
                 
-                # Create counter order
+                self.logger.info(f"   Position {i}: {position.side.upper()} @ ${position.entry_price:.6f} (Size: {position.quantity:.6f})")
+                self.logger.info(f"   -> Creating counter order...")
+                
+                # Create counter order with logging
                 self._create_counter_order_for_position(position, current_price)
                 
         except Exception as e:
-            self.logger.error(f"Error maintaining counter orders: {e}")
+            self.logger.error(f"❌ Error maintaining counter orders: {e}")
     
     def _create_counter_order_for_position(self, position: GridPosition, current_price: float):
         """Create counter order for a specific position"""
@@ -1229,35 +1435,54 @@ class GridStrategy:
             self.logger.error(f"Error creating counter order for position {position.position_id}: {e}")
     
     def _update_pnl(self, current_price: float):
-        """Update unrealized and total PnL"""
+        """Enhanced PnL calculation with detailed logging"""
         try:
             total_unrealized = 0.0
             total_realized = 0.0
             
-            # Calculate PnL for all positions
-            for position in self.all_positions.values():
-                if position.is_open():
-                    # Update unrealized PnL for open positions
-                    position.unrealized_pnl = position.calculate_unrealized_pnl(current_price)
-                    total_unrealized += position.unrealized_pnl
-                else:
-                    # Add realized PnL from closed positions
-                    total_realized += position.realized_pnl
+            open_positions = [pos for pos in self.all_positions.values() if pos.is_open()]
+            closed_positions = [pos for pos in self.all_positions.values() if not pos.is_open()]
+            
+            # Calculate PnL for open positions
+            if open_positions:
+                self.logger.debug(f"📊 OPEN POSITIONS PnL @ ${current_price:.6f}:")
+                
+                for pos in open_positions:
+                    pos.unrealized_pnl = pos.calculate_unrealized_pnl(current_price)
+                    total_unrealized += pos.unrealized_pnl
+                    
+                    pnl_pct = (pos.unrealized_pnl / (pos.entry_price * pos.quantity)) * 100
+                    self.logger.debug(f"   {pos.side.upper()} @ ${pos.entry_price:.6f}: ${pos.unrealized_pnl:.2f} ({pnl_pct:+.2f}%)")
+
+            # Add realized PnL from closed positions
+            for pos in closed_positions:
+                total_realized += pos.realized_pnl
             
             # Update total PnL
+            previous_pnl = self.total_pnl
             self.total_pnl = total_realized + total_unrealized
+            pnl_change = self.total_pnl - previous_pnl
             
-            # Log PnL status periodically
-            if self.last_update_time == 0 or time.time() - self.last_update_time > 300:  # Every 5 minutes
+            # Log PnL summary periodically or on significant changes
+            should_log = (
+                self.last_update_time == 0 or 
+                time.time() - self.last_update_time > 300 or  # Every 5 minutes
+                abs(pnl_change) > 10  # Or significant change
+            )
+            
+            if should_log:
                 pnl_percentage = (self.total_pnl / self.user_total_investment * 100) if self.user_total_investment > 0 else 0
                 
-                self.logger.info(f"📊 PnL Update:")
-                self.logger.info(f"   Realized: ${total_realized:.2f}")
-                self.logger.info(f"   Unrealized: ${total_unrealized:.2f}")
-                self.logger.info(f"   Total: ${self.total_pnl:.2f} ({pnl_percentage:.2f}%)")
+                self.logger.info(f"💰 PnL SUMMARY:")
+                self.logger.info(f"   Realized PnL: ${total_realized:.2f}")
+                self.logger.info(f"   Unrealized PnL: ${total_unrealized:.2f}")
+                self.logger.info(f"   Total PnL: ${self.total_pnl:.2f} ({pnl_percentage:.2f}%)")
+                self.logger.info(f"   Open Positions: {len(open_positions)}")
+                self.logger.info(f"   Closed Positions: {len(closed_positions)}")
+                self.logger.info(f"   Total Trades: {self.total_trades}")
             
         except Exception as e:
-            self.logger.error(f"Error updating PnL: {e}")
+            self.logger.error(f"❌ Error updating PnL: {e}")
     
     def _check_tp_sl(self):
         """Check take profit and stop loss conditions"""

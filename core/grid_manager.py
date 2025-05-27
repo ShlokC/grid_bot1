@@ -33,17 +33,35 @@ class GridManager:
         self.total_grids_created = 0
         self.max_concurrent_grids = 3  # Reasonable limit for most users
         self.max_total_investment = 1000.0  # Default safety limit
-        
+        self.monitor_cycle_count = 0
+        self.last_monitor_summary = 0
         # Thread for monitoring grids
         self.monitor_thread = None
         self.running = False
         
         # Load existing grids from data store
         self._load_grids()
+        # ENHANCED: Comprehensive initialization logging
+        self._log_manager_initialization()
         
-        self.logger.info(f"GridManager initialized with limits:")
-        self.logger.info(f"  Max concurrent grids: {self.max_concurrent_grids}")
-        self.logger.info(f"  Max total investment: ${self.max_total_investment:.2f}")
+    def _log_manager_initialization(self):
+            """Enhanced manager initialization logging"""
+            self.logger.info("=" * 100)
+            self.logger.info("🏭 GRID MANAGER INITIALIZED")
+            self.logger.info("=" * 100)
+            self.logger.info(f"📊 LIMITS & CONFIGURATION:")
+            self.logger.info(f"   Max Concurrent Grids: {self.max_concurrent_grids}")
+            self.logger.info(f"   Max Total Investment: ${self.max_total_investment:.2f}")
+            self.logger.info(f"   Current Grids Loaded: {len(self.grids)}")
+            self.logger.info(f"   Total Investment Used: ${self.total_investment_across_all_grids:.2f}")
+            
+            if self.grids:
+                self.logger.info(f"🎯 LOADED GRIDS:")
+                for grid_id, grid in self.grids.items():
+                    status = "🟢 RUNNING" if grid.running else "🔴 STOPPED"
+                    self.logger.info(f"   {grid_id[:8]} ({grid.original_symbol}): ${grid.user_total_investment:.2f} [{status}]")
+            
+            self.logger.info("=" * 100)
     
     def _load_grids(self) -> None:
         """Load existing grids from data store with enhanced validation."""
@@ -327,45 +345,71 @@ class GridManager:
             return ""
     
     def start_grid(self, grid_id: str) -> bool:
-        """
-        Start a grid strategy with enhanced validation and safety checks.
-        
-        Args:
-            grid_id: Grid identifier
-                
-        Returns:
-            bool: Success status
-        """
+        """Enhanced grid starting with comprehensive validation and logging"""
         try:
             if grid_id not in self.grids:
-                self.logger.error(f"Grid {grid_id} not found")
+                self.logger.error(f"❌ Grid {grid_id} not found")
                 return False
                 
             grid = self.grids[grid_id]
             
-            # Make sure the grid is not already running
             if grid.running:
-                self.logger.info(f"Grid {grid_id} is already running")
+                self.logger.info(f"ℹ️ Grid {grid_id[:8]} is already running")
                 return True
+
+            self.logger.info("=" * 80)
+            self.logger.info(f"🚀 STARTING GRID: {grid_id[:8]}")
+            self.logger.info("=" * 80)
             
-            # Additional safety check - verify grid limits before starting
+            # ENHANCED: Pre-start validation with detailed logging
             if not self._validate_grid_before_start(grid):
-                self.logger.error(f"Grid {grid_id} failed pre-start validation")
+                self.logger.error(f"❌ Grid {grid_id[:8]} failed pre-start validation")
                 return False
             
-            self.logger.info(f"Starting grid {grid_id} with VALIDATED parameters:")
-            self.logger.info(f"  Symbol: {grid.original_symbol}")
-            self.logger.info(f"  Grid count: {grid.user_grid_number} (STRICT LIMIT)")
-            self.logger.info(f"  Investment: ${grid.user_total_investment:.2f} (STRICT LIMIT)")
-            self.logger.info(f"  Price range: ${grid.user_price_lower:.6f} - ${grid.user_price_upper:.6f}")
-            self.logger.info(f"  Leverage: {grid.user_leverage}x")
+            # ENHANCED: Check exchange connectivity
+            try:
+                ticker = self.exchange.get_ticker(grid.symbol)
+                current_price = float(ticker['last'])
+                
+                self.logger.info(f"📊 PRE-START MARKET CHECK:")
+                self.logger.info(f"   Symbol: {grid.original_symbol} ({grid.symbol})")
+                self.logger.info(f"   Current Price: ${current_price:.6f}")
+                self.logger.info(f"   Grid Range: ${grid.user_price_lower:.6f} - ${grid.user_price_upper:.6f}")
+                
+                if current_price < grid.user_price_lower or current_price > grid.user_price_upper:
+                    self.logger.warning(f"⚠️ Current price is outside grid range!")
+                    self.logger.warning(f"   Price may need to move into range for optimal performance")
+                else:
+                    self.logger.info(f"✅ Current price is within grid range")
+                    
+            except Exception as e:
+                self.logger.error(f"❌ Failed to get market data for {grid.symbol}: {e}")
+                return False
+            
+            # ENHANCED: Account balance check
+            try:
+                balance = self.exchange.get_balance()
+                if 'USDT' in balance.get('free', {}):
+                    available_balance = float(balance['free']['USDT'])
+                    self.logger.info(f"💰 Account Balance Check:")
+                    self.logger.info(f"   Available USDT: ${available_balance:.2f}")
+                    self.logger.info(f"   Required Investment: ${grid.user_total_investment:.2f}")
+                    
+                    if available_balance < grid.user_total_investment:
+                        self.logger.warning(f"⚠️ Insufficient balance for full investment")
+                        self.logger.warning(f"   Consider reducing investment amount")
+                
+            except Exception as e:
+                self.logger.warning(f"⚠️ Could not verify account balance: {e}")
+            
+            self.logger.info(f"🎯 STARTING GRID SETUP...")
             
             # Call setup_grid to place the orders
             grid.setup_grid()
             
             # Check if grid was started successfully
             if not grid.running:
-                self.logger.error(f"Grid {grid_id} setup failed to start the grid")
+                self.logger.error(f"❌ Grid {grid_id[:8]} setup failed to start the grid")
                 return False
                 
             # Update grid status in data store
@@ -374,16 +418,17 @@ class GridManager:
             # Start monitor thread if not running
             self._ensure_monitor_running()
             
-            self.logger.info(f"Grid started successfully: {grid_id}")
+            self.logger.info(f"✅ GRID STARTED SUCCESSFULLY: {grid_id[:8]}")
             self._log_global_status()
             
             return True
             
         except Exception as e:
-            self.logger.error(f"Error starting grid {grid_id}: {e}")
+            self.logger.error(f"❌ Error starting grid {grid_id}: {e}")
             import traceback
             self.logger.error(f"Traceback: {traceback.format_exc()}")
             return False
+
     
     def _validate_grid_before_start(self, grid: GridStrategy) -> bool:
         """Validate grid configuration before starting."""
@@ -425,34 +470,48 @@ class GridManager:
             return False
     
     def _log_global_status(self):
-        """Log current global status."""
+        """Enhanced global status logging"""
         try:
             active_grids = sum(1 for grid in self.grids.values() if grid.running)
             total_grids = len(self.grids)
+            total_pnl = sum(grid.total_pnl for grid in self.grids.values())
             
-            self.logger.info(f"Global GridManager Status:")
-            self.logger.info(f"  Active grids: {active_grids}/{total_grids}")
-            self.logger.info(f"  Total investment: ${self.total_investment_across_all_grids:.2f}")
+            self.logger.info("📊 GLOBAL STATUS SUMMARY:")
+            self.logger.info(f"   Active Grids: {active_grids}/{total_grids}")
+            self.logger.info(f"   Total Investment: ${self.total_investment_across_all_grids:.2f}")
+            self.logger.info(f"   Available Capacity: ${self.max_total_investment - self.total_investment_across_all_grids:.2f}")
+            self.logger.info(f"   Combined PnL: ${total_pnl:.2f}")
+            
+            if total_grids > 0:
+                avg_pnl_pct = (total_pnl / self.total_investment_across_all_grids * 100) if self.total_investment_across_all_grids > 0 else 0
+                self.logger.info(f"   Average PnL: {avg_pnl_pct:.2f}%")
             
         except Exception as e:
-            self.logger.error(f"Error logging global status: {e}")
+            self.logger.error(f"❌ Error logging global status: {e}")
     
     def stop_grid(self, grid_id: str) -> bool:
-        """
-        Stop a grid strategy with enhanced persistence.
-        
-        Args:
-            grid_id: Grid identifier
-                
-        Returns:
-            bool: Success status
-        """
+        """Enhanced grid stopping with detailed logging"""
         try:
             if grid_id not in self.grids:
-                self.logger.error(f"Grid {grid_id} not found")
+                self.logger.error(f"❌ Grid {grid_id} not found")
                 return False
                 
             grid = self.grids[grid_id]
+            
+            self.logger.info("=" * 80)
+            self.logger.info(f"🛑 STOPPING GRID: {grid_id[:8]}")
+            self.logger.info("=" * 80)
+            
+            # Get final status before stopping
+            final_status = grid.get_status()
+            
+            self.logger.info(f"📊 FINAL GRID STATUS:")
+            self.logger.info(f"   Symbol: {grid.original_symbol}")
+            self.logger.info(f"   Investment: ${grid.user_total_investment:.2f}")
+            self.logger.info(f"   Final PnL: ${final_status.get('pnl', 0):.2f} ({final_status.get('pnl_percentage', 0):.2f}%)")
+            self.logger.info(f"   Total Trades: {final_status.get('trades_count', 0)}")
+            self.logger.info(f"   Active Orders: {final_status.get('orders_count', 0)}")
+            self.logger.info(f"   Active Positions: {final_status.get('active_positions', 0)}")
             
             # Stop grid
             grid.stop_grid()
@@ -460,13 +519,13 @@ class GridManager:
             # Update grid status in data store
             self.data_store.save_grid(grid_id, grid.get_status())
             
-            self.logger.info(f"Stopped grid: {grid_id}")
+            self.logger.info(f"✅ Grid {grid_id[:8]} stopped successfully")
             self._log_global_status()
             
             return True
             
         except Exception as e:
-            self.logger.error(f"Error stopping grid {grid_id}: {e}")
+            self.logger.error(f"❌ Error stopping grid {grid_id}: {e}")
             return False
     
     def delete_grid(self, grid_id: str) -> bool:
@@ -526,20 +585,47 @@ class GridManager:
             return None
     
     def get_all_grids_status(self) -> List[Dict]:
-        """Get the status of all grid strategies with global summary."""
+        """Enhanced grid status retrieval with comprehensive information"""
         try:
-            grid_statuses = [grid.get_status() for grid in self.grids.values()]
+            grid_statuses = []
             
-            # Add global summary to each status (for debugging)
-            for status in grid_statuses:
-                status['global_investment_used'] = self.total_investment_across_all_grids
-                status['global_grid_count'] = len(self.grids)
-                status['global_active_count'] = sum(1 for grid in self.grids.values() if grid.running)
+            for grid in self.grids.values():
+                try:
+                    status = grid.get_status()
+                    
+                    # ENHANCED: Add additional computed fields
+                    status['global_investment_used'] = self.total_investment_across_all_grids
+                    status['global_grid_count'] = len(self.grids)
+                    status['global_active_count'] = sum(1 for g in self.grids.values() if g.running)
+                    status['investment_utilization_pct'] = (self.total_investment_across_all_grids / self.max_total_investment * 100)
+                    
+                    # Add health indicators
+                    pnl_pct = status.get('pnl_percentage', 0)
+                    if pnl_pct >= 2.0:
+                        status['health_status'] = 'excellent'
+                    elif pnl_pct >= 0:
+                        status['health_status'] = 'good'
+                    elif pnl_pct >= -2.0:
+                        status['health_status'] = 'caution'
+                    else:
+                        status['health_status'] = 'critical'
+                    
+                    grid_statuses.append(status)
+                    
+                except Exception as e:
+                    self.logger.error(f"❌ Error getting status for grid {grid.grid_id}: {e}")
+                    # Add error status
+                    grid_statuses.append({
+                        'grid_id': grid.grid_id,
+                        'symbol': getattr(grid, 'original_symbol', 'unknown'),
+                        'error': str(e),
+                        'health_status': 'error'
+                    })
             
             return grid_statuses
             
         except Exception as e:
-            self.logger.error(f"Error getting all grids status: {e}")
+            self.logger.error(f"❌ Error getting all grids status: {e}")
             return []
     
     def get_global_status(self) -> Dict:
@@ -574,31 +660,92 @@ class GridManager:
             self.logger.error(f"Error ensuring monitor running: {e}")
     
     def _monitor_grids(self) -> None:
-        """Monitor and update all running grid strategies."""
+        """Enhanced grid monitoring with detailed logging and error recovery"""
+        self.logger.info("🔍 Grid monitor thread started")
+        
         try:
             while self.running:
-                active_count = 0
+                monitor_start_time = time.time()
+                self.monitor_cycle_count += 1
                 
+                active_count = 0
+                error_count = 0
+                
+                # ENHANCED: Log monitor cycle start
+                should_log_summary = (
+                    time.time() - self.last_monitor_summary > 1800 or  # Every 30 minutes
+                    self.monitor_cycle_count % 60 == 1  # Every 60 cycles
+                )
+                
+                if should_log_summary:
+                    self.logger.info(f"🔍 MONITOR CYCLE #{self.monitor_cycle_count}")
+                    self.logger.info(f"   Active Grids: {sum(1 for g in self.grids.values() if g.running)}/{len(self.grids)}")
+                    self.logger.info(f"   Total Investment: ${self.total_investment_across_all_grids:.2f}")
+                
+                # Process each grid
                 for grid_id, grid in list(self.grids.items()):
                     if grid.running:
                         active_count += 1
                         try:
-                            # Update grid
+                            # Update grid with timing
+                            update_start = time.time()
                             grid.update_grid()
+                            update_duration = time.time() - update_start
+                            
+                            # Log slow updates
+                            if update_duration > 5.0:
+                                self.logger.warning(f"⚠️ Slow grid update: {grid_id[:8]} took {update_duration:.2f}s")
+                            
                             # Save updated grid status
                             self.data_store.save_grid(grid_id, grid.get_status())
+                            
+                            # ENHANCED: Log grid health periodically
+                            if should_log_summary:
+                                status = grid.get_status()
+                                pnl_pct = status.get('pnl_percentage', 0)
+                                orders_count = status.get('orders_count', 0)
+                                positions_count = status.get('active_positions', 0)
+                                
+                                health = "🟢 HEALTHY"
+                                if pnl_pct < -2.0:
+                                    health = "🟡 CAUTION"
+                                if pnl_pct < -5.0:
+                                    health = "🔴 CRITICAL"
+                                
+                                self.logger.info(f"   Grid {grid_id[:8]} ({grid.original_symbol}): "
+                                               f"PnL {pnl_pct:+.2f}%, {orders_count} orders, {positions_count} positions [{health}]")
+                            
                         except Exception as e:
-                            self.logger.error(f"Error updating grid {grid_id}: {e}")
+                            error_count += 1
+                            self.logger.error(f"❌ Error updating grid {grid_id[:8]}: {e}")
+                            
+                            # ENHANCED: Error recovery for problematic grids
+                            if should_log_summary:
+                                self.logger.error(f"   Grid {grid_id[:8]} has encountered {error_count} errors")
+                                if error_count > 10:
+                                    self.logger.critical(f"🚨 Grid {grid_id[:8]} has too many errors - consider stopping")
+
+                monitor_duration = time.time() - monitor_start_time
                 
-                # Log periodic status
-                if active_count > 0:
-                    self.logger.debug(f"Monitor cycle complete: {active_count} active grids")
+                # ENHANCED: Log monitor performance
+                if should_log_summary:
+                    self.logger.info(f"🔍 Monitor cycle complete: {active_count} active grids, "
+                                   f"{error_count} errors, {monitor_duration:.2f}s duration")
+                    self.last_monitor_summary = time.time()
+                
+                # Log slow monitor cycles
+                if monitor_duration > 30.0:
+                    self.logger.warning(f"⚠️ Slow monitor cycle: {monitor_duration:.2f}s")
                 
                 # Check every 10 seconds
                 time.sleep(10)
                 
         except Exception as e:
-            self.logger.error(f"Error in monitor_grids: {e}")
+            self.logger.error(f"❌ Critical error in monitor_grids: {e}")
+            import traceback
+            self.logger.error(f"Traceback: {traceback.format_exc()}")
+        finally:
+            self.logger.warning("🔍 Grid monitor thread stopped")
     
     def stop_all_grids(self) -> None:
         """Stop all grid strategies and monitor thread."""
