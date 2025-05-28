@@ -17,6 +17,11 @@ from dataclasses import dataclass, field
 from collections import deque
 from decimal import Decimal, ROUND_DOWN, ROUND_UP
 from enum import Enum
+import numpy as _np
+_np.NaN = _np.nan
+import numpy as np
+import pandas as pd
+import pandas_ta as ta
 
 # Import exchange interface
 from core.exchange import Exchange
@@ -125,6 +130,7 @@ class MarketIntelligence:
             self.logger.info(f"   Price history length: {len(self.price_history)}")
             self.logger.info(f"   Last OHLCV fetch: {(current_time - self.last_ohlcv_fetch):.1f}s ago")
             self.logger.info(f"   OHLCV data fetched: {self.ohlcv_data_fetched}")
+            
             # Fetch OHLCV data if cache expired or first fetch
             if (current_time - self.last_ohlcv_fetch > self.ohlcv_cache_duration) or not self.ohlcv_data_fetched:
                 self._fetch_historical_data(exchange)
@@ -143,19 +149,13 @@ class MarketIntelligence:
             self.current_volatility_regime = self._calculate_volatility()
             self.current_trend_strength = self._calculate_trend_strength()
             
-            # Calculate KAMA-based momentum
-            momentum = self._calculate_momentum()
+            # Calculate KAMA-based momentum (this now also calculates and stores KAMA indicators)
+            momentum = self._calculate_momentum(exchange)
             
-            # Calculate KAMA values for market snapshot
-            kama_value = 0.0
-            kama_direction = 'neutral'
-            kama_strength = 0.0
-            
-            if len(self.price_history) >= 20:
-                kama_data = self._calculate_kama_indicators()
-                kama_value = kama_data['value']
-                kama_direction = kama_data['direction']
-                kama_strength = kama_data['strength']
+            # Use stored KAMA values (previously calculated in _calculate_kama_indicators)
+            kama_value = getattr(self, 'current_kama_value', 0.0)
+            kama_direction = getattr(self, 'current_kama_direction', 'neutral')
+            kama_strength = getattr(self, 'current_kama_strength', 0.0)
             
             self.last_volatility_update = time.time()
             self.last_trend_update = time.time()
@@ -189,7 +189,7 @@ class MarketIntelligence:
             self.logger.info(f"   Symbol: {self.symbol}")
             self.logger.info(f"   Requesting 100 candles of 5m timeframe")
             # Use the existing get_ohlcv method from exchange
-            ohlcv_data = exchange.get_ohlcv(self.symbol, timeframe='5m', limit=100)
+            ohlcv_data = exchange.get_ohlcv(self.symbol, timeframe='5m', limit=1400)
             
             if not ohlcv_data:
                 self.logger.warning(f"No OHLCV data received for {self.symbol}")
@@ -219,50 +219,105 @@ class MarketIntelligence:
             self.logger.error(f"Error fetching OHLCV data: {e}")
             # Don't clear existing data on error
     
-    def _calculate_momentum(self) -> float:
-        """Calculate momentum using real KAMA instead of fake moving averages"""
+    def _calculate_momentum(self, exchange) -> float:
+        """Calculate momentum using pandas-ta KAMA with full historical data"""
         self.logger.info(f"🔢 CALCULATING KAMA MOMENTUM:")
         self.logger.info(f"   Price history length: {len(self.price_history)}")
-        self.logger.info(f"   Required for KAMA: 45 points minimum")
-        if len(self.price_history) < 20:
-            required = 45  # KAMA(40) + buffer
-            available = len(self.price_history)
-            self.logger.warning(f"⚠️ Insufficient data for KAMA(40): {available}/{required}")
-            return 0.0
+        
+        # Initialize KAMA indicators
+        self.current_kama_value = 0.0
+        self.current_kama_direction = 'neutral'
+        self.current_kama_strength = 0.0
         
         try:
             import pandas as pd
             import pandas_ta as ta
             
-            prices = list(self.price_history)
-            price_series = pd.Series(prices)
+            # Get FULL historical data from exchange, not just deque
+            full_ohlcv = exchange.get_ohlcv(self.symbol, timeframe='5m', limit=1400)
             
-            # Calculate KAMA using pandas-ta
-            kama = ta.kama(price_series, length=40)
-            
-            if kama is None or kama.isna().all():
-                self.logger.error(f"❌ PANDAS-TA KAMA CALCULATION FAILED - Using fallback")
+            if not full_ohlcv or len(full_ohlcv) < 50:
+                self.logger.warning(f"⚠️ Insufficient OHLCV data: {len(full_ohlcv) if full_ohlcv else 0}")
                 return self._fallback_momentum()
             
-            # Use KAMA for momentum calculation
-            current_price = prices[-1]
-            current_kama = float(kama.iloc[-1])
-            self.logger.info(f"✅ KAMA CALCULATION SUCCESS:")
-            self.logger.info(f"   Current price: ${current_price}")
-            self.logger.info(f"   Current KAMA: ${current_kama}")
-            if current_kama > 0:
-                # Price position relative to KAMA
-                momentum = (current_price - current_kama) / current_kama
-                final_momentum = max(-1.0, min(1.0, momentum * 2))
+            # Extract closing prices from OHLCV data
+            closing_prices = [float(candle[4]) for candle in full_ohlcv]  # Index 4 = close price
+            current_price = closing_prices[-1]
             
-                self.logger.info(f"📈 MOMENTUM RESULT: {final_momentum:+.3f}")
-                if final_momentum > 0.1:
+            # self.logger.info(f"📊 USING FULL DATASET:")
+            # self.logger.info(f"   Total OHLCV candles: {len(full_ohlcv)}")
+            # self.logger.info(f"   Total closing prices: {len(closing_prices)}")
+            # self.logger.info(f"   Current price: ${current_price:.6f}")
+            
+            # Create pandas series with full dataset
+            price_series = pd.Series(closing_prices)
+            
+            # Calculate KAMA with TradingView parameters: period=10, fast=2, slow=30
+            kama_series = ta.kama(price_series, length=10, fast=2, slow=30)
+            
+            if kama_series is None or kama_series.isna().all():
+                self.logger.error(f"❌ PANDAS-TA KAMA CALCULATION FAILED")
+                return self._fallback_momentum()
+            
+            # Get the latest KAMA value
+            current_kama = float(kama_series.iloc[-1])
+            self.current_kama_value = current_kama
+            
+            # Update price history deque with current price only
+            if len(self.price_history) == 0 or self.price_history[-1] != current_price:
+                self.price_history.append(current_price)
+            
+            # Store KAMA in history
+            self.kama_history.append(current_kama)
+            
+            # self.logger.info(f"✅ PANDAS-TA KAMA WITH FULL DATA:")
+            # self.logger.info(f"   Current price: ${current_price:.6f}")
+            # self.logger.info(f"   Current KAMA: ${current_kama:.6f}")
+            
+            # Calculate KAMA direction from recent KAMA values
+            if len(kama_series) >= 10:
+                kama_10_ago = float(kama_series.iloc[-10])
+                kama_5_ago = float(kama_series.iloc[-5])
+                
+                # Calculate slope over 5 periods
+                kama_slope_5 = (current_kama - kama_5_ago) / kama_5_ago
+                # Calculate slope over 10 periods  
+                kama_slope_10 = (current_kama - kama_10_ago) / kama_10_ago
+                
+                # self.logger.info(f"   KAMA 5-period slope: {kama_slope_5:+.6f}")
+                # self.logger.info(f"   KAMA 10-period slope: {kama_slope_10:+.6f}")
+                
+                # Determine direction based on slopes
+                if kama_slope_5 > 0.001 and kama_slope_10 > 0.001:
+                    self.current_kama_direction = 'bullish'
+                    self.current_kama_strength = min(1.0, max(abs(kama_slope_5), abs(kama_slope_10)) * 100)
+                elif kama_slope_5 < -0.001 and kama_slope_10 < -0.001:
+                    self.current_kama_direction = 'bearish'
+                    self.current_kama_strength = min(1.0, max(abs(kama_slope_5), abs(kama_slope_10)) * 100)
+                else:
+                    # Mixed signals or flat
+                    self.current_kama_direction = 'neutral'
+                    self.current_kama_strength = 0.0
+            
+            # Calculate momentum - price position relative to KAMA
+            if current_kama > 0:
+                momentum_pct = (current_price - current_kama) / current_kama
+                final_momentum = max(-1.0, min(1.0, momentum_pct * 5))  # Amplify for sensitivity
+                
+                # self.logger.info(f"📈 MOMENTUM CALCULATION:")
+                # self.logger.info(f"   Price vs KAMA: {momentum_pct * 100:+.3f}%")
+                # self.logger.info(f"   Raw momentum: {momentum_pct:+.6f}")
+                # self.logger.info(f"   Final momentum: {final_momentum:+.3f}")
+                # self.logger.info(f"   KAMA Direction: {self.current_kama_direction}")
+                # self.logger.info(f"   KAMA Strength: {self.current_kama_strength:.3f}")
+                
+                if final_momentum > 0.025:
                     self.logger.info(f"   → BULLISH MOMENTUM")
-                elif final_momentum < -0.1:
+                elif final_momentum < -0.025:
                     self.logger.info(f"   → BEARISH MOMENTUM")
                 else:
                     self.logger.info(f"   → NEUTRAL MOMENTUM")
-                    
+                
                 return final_momentum
             
             return 0.0
@@ -271,7 +326,7 @@ class MarketIntelligence:
             self.logger.warning("pandas-ta not available, using fallback momentum")
             return self._fallback_momentum()
         except Exception as e:
-            self.logger.error(f"Error calculating KAMA momentum: {e}")
+            self.logger.error(f"Error calculating KAMA with full data: {e}")
             return self._fallback_momentum()
     
     def _calculate_kama_indicators(self) -> Dict[str, Any]:
@@ -921,7 +976,58 @@ class GridStrategy:
             self.logger.info(f"   Current Price: ${current_price:.6f}")
             self.logger.info(f"   Price Difference: {price_diff_pct:+.2f}%")
             
-            # ENHANCED: Market intelligence check with detailed logging
+            # ADDED: Smart Last Order Logic - Check total investment usage approaching 80%
+            market_data = self._get_live_market_data()
+            total_investment_used = market_data['total_margin_used']
+            available_investment = market_data['available_investment']
+            investment_utilization = (total_investment_used / self.user_total_investment) * 100
+            
+            # Check if we're near 80% AND can only place 1 more order
+            can_place_orders = int(available_investment / self.user_investment_per_grid)
+            
+            if investment_utilization >= 75.0 and can_place_orders <= 1:
+                # Determine dominant position direction from existing positions
+                live_positions = market_data['live_positions']
+                net_position_value = 0.0
+                
+                for position in live_positions:
+                    size = float(position.get('contracts', 0))
+                    entry_price = float(position.get('entryPrice', 0))
+                    if size != 0 and entry_price > 0:
+                        position_value = size * entry_price
+                        if position.get('side', '').lower() == 'long':
+                            net_position_value += position_value
+                        else:
+                            net_position_value -= position_value
+                
+                # If no positions yet, allow the order
+                if net_position_value == 0:
+                    self.logger.info(f"✅ NO DOMINANT POSITION - Order allowed")
+                else:
+                    # Determine dominant direction
+                    dominant_direction = 'long' if net_position_value > 0 else 'short'
+                    
+                    # Check if this order is same direction as dominant position
+                    is_same_direction = False
+                    if dominant_direction == 'long' and side == 'buy':
+                        is_same_direction = True
+                    elif dominant_direction == 'short' and side == 'sell':
+                        is_same_direction = True
+                    
+                    if is_same_direction:
+                        self.logger.warning(f"🚫 LAST ORDER PROTECTION:")
+                        self.logger.warning(f"   Investment Used: {investment_utilization:.1f}% (approaching 80%)")
+                        self.logger.warning(f"   Remaining Capacity: {can_place_orders} order(s)")
+                        self.logger.warning(f"   Dominant Position: {dominant_direction.upper()}")
+                        self.logger.warning(f"   Blocked Order: {side.upper()} (same direction)")
+                        self.logger.warning(f"   Preserving capacity for opposite-direction orders")
+                        return False
+                    else:
+                        self.logger.info(f"✅ LAST ORDER CHECK PASSED:")
+                        self.logger.info(f"   Investment Used: {investment_utilization:.1f}%")
+                        self.logger.info(f"   Order: {side.upper()} (opposite to {dominant_direction.upper()} position)")
+            
+            # FIXED: Market intelligence check with CORRECT logic
             if self.market_intel:
                 try:
                     market_snapshot = self.market_intel.analyze_market(self.exchange)
@@ -936,22 +1042,26 @@ class GridStrategy:
                     kama_direction = market_snapshot.kama_direction
                     distance_pct = abs(price - current_price) / current_price
                     
-                    # STRONG MOMENTUM RULES
+                    # CORRECTED LOGIC: Block counter-trend orders
                     if kama_strength > 0.7:
-                        if kama_direction == 'bearish' and side == 'sell':
+                        # In BEARISH trend: Block BUY orders (don't buy into falling market)
+                        if kama_direction == 'bearish' and side == 'buy':
                             self.logger.warning(f"🚫 INTELLIGENCE BLOCK: {side.upper()} @ ${price:.6f}")
-                            self.logger.warning(f"   Reason: STRONG bearish momentum ({kama_strength:.3f}) - avoid selling into downtrend")
+                            self.logger.warning(f"   Reason: STRONG bearish momentum ({kama_strength:.3f}) - avoid buying into downtrend")
                             return False
-                        elif kama_direction == 'bullish' and side == 'buy':
+                        # In BULLISH trend: Block SELL orders (don't sell into rising market)  
+                        elif kama_direction == 'bullish' and side == 'sell':
                             self.logger.warning(f"🚫 INTELLIGENCE BLOCK: {side.upper()} @ ${price:.6f}")
-                            self.logger.warning(f"   Reason: STRONG bullish momentum ({kama_strength:.3f}) - avoid buying into uptrend")
+                            self.logger.warning(f"   Reason: STRONG bullish momentum ({kama_strength:.3f}) - avoid selling into uptrend")
                             return False
                     
-                    # MEDIUM MOMENTUM RULES
+                    # MEDIUM MOMENTUM RULES (also corrected)
                     elif kama_strength > 0.4:
                         is_counter_trend = (
-                            (kama_direction == 'bearish' and side == 'sell' and distance_pct > 0.02) or
-                            (kama_direction == 'bullish' and side == 'buy' and distance_pct > 0.02)
+                            # Block BUY in bearish trend if distance > 2%
+                            (kama_direction == 'bearish' and side == 'buy' and distance_pct > 0.02) or
+                            # Block SELL in bullish trend if distance > 2%
+                            (kama_direction == 'bullish' and side == 'sell' and distance_pct > 0.02)
                         )
                         if is_counter_trend:
                             self.logger.warning(f"🚫 INTELLIGENCE BLOCK: {side.upper()} @ ${price:.6f}")
@@ -992,7 +1102,10 @@ class GridStrategy:
                 self.logger.error(f"❌ Failed to place {side} order - invalid response")
                 return False
             
-            # Store order information with enhanced tracking
+            # Store order information with enhanced tracking (ADDED: importance score)
+            distance_from_current = abs(price - current_price)
+            importance_score = 1.0 / (1.0 + distance_from_current)  # Closer orders = higher importance
+            
             order_info = {
                 'type': side,
                 'price': price,
@@ -1002,7 +1115,9 @@ class GridStrategy:
                 'timestamp': time.time(),
                 'status': 'open',
                 'current_price_at_placement': current_price,
-                'price_diff_pct_at_placement': price_diff_pct
+                'price_diff_pct_at_placement': price_diff_pct,
+                'importance_score': importance_score,
+                'distance_from_current': distance_from_current
             }
             
             self.pending_orders[order['id']] = order_info
@@ -1013,6 +1128,7 @@ class GridStrategy:
             self.logger.info(f"   Price: ${price:.6f}")
             self.logger.info(f"   Amount: {amount:.6f}")
             self.logger.info(f"   Margin Used: ${margin_required:.2f}")
+            self.logger.info(f"   Importance Score: {importance_score:.3f}")
             self.logger.info(f"   Total Pending Orders: {len(self.pending_orders)}")
             
             return True
@@ -1020,6 +1136,7 @@ class GridStrategy:
         except Exception as e:
             self.logger.error(f"❌ FAILED to place {side} order at ${price:.6f}: {e}")
             return False
+
     def _sync_order_tracking(self, live_orders: List[Dict]) -> int:
         """
         Synchronize internal order tracking with live exchange orders.
@@ -1123,10 +1240,39 @@ class GridStrategy:
             self.logger.info(f"   Current Price: ${current_price:.6f}")
             self.logger.info(f"   User Range: ${self.user_price_lower:.6f} - ${self.user_price_upper:.6f}")
             
-            # Only add orders if price is within user range
+            # Check if price is outside user range and adapt if enabled
             if current_price < self.user_price_lower or current_price > self.user_price_upper:
-                self.logger.warning(f"⚠️ PRICE OUTSIDE USER RANGE - No new orders will be placed")
-                return
+                if self.enable_grid_adaptation:
+                    self.logger.info(f"🔄 GRID ADAPTATION ENABLED - Updating range")
+                    
+                    # Calculate range size to maintain
+                    range_size = self.user_price_upper - self.user_price_lower
+                    
+                    # Update user range bounds based on current price
+                    if current_price < self.user_price_lower:
+                        # Price below range - shift range down
+                        new_upper = self.user_price_lower + (range_size * 0.1)  # Small overlap
+                        new_lower = new_upper - range_size
+                        self.logger.info(f"   Price below range - shifting down")
+                    else:
+                        # Price above range - shift range up  
+                        new_lower = self.user_price_upper - (range_size * 0.1)  # Small overlap
+                        new_upper = new_lower + range_size
+                        self.logger.info(f"   Price above range - shifting up")
+                    
+                    # Update the user range bounds
+                    old_lower, old_upper = self.user_price_lower, self.user_price_upper
+                    self.user_price_lower = self._round_price(new_lower)
+                    self.user_price_upper = self._round_price(new_upper)
+                    
+                    self.logger.info(f"📊 RANGE ADAPTED:")
+                    self.logger.info(f"   Old Range: ${old_lower:.6f} - ${old_upper:.6f}")
+                    self.logger.info(f"   New Range: ${self.user_price_lower:.6f} - ${self.user_price_upper:.6f}")
+                    self.logger.info(f"   Current Price: ${current_price:.6f} (now within range)")
+                    
+                else:
+                    self.logger.warning(f"⚠️ PRICE OUTSIDE USER RANGE - No new orders will be placed")
+                    return
             else:
                 self.logger.info(f"✅ PRICE WITHIN RANGE - Checking for gaps")
             
@@ -1226,19 +1372,268 @@ class GridStrategy:
             self.logger.error(f"❌ Error filling grid gaps: {e}")
     
     def _update_orders_and_positions(self):
-        """Check for filled orders and update position tracking"""
+        """Check for filled orders, validate existing orders against KAMA, manage margin limits, and update position tracking"""
         try:
             # Get current open orders
             open_orders = self.exchange.get_open_orders(self.symbol)
             open_order_ids = {order['id'] for order in open_orders}
             
-            # Check each pending order
+            # ADDED: Smart Last Order Management - Cancel same-direction orders when approaching 80% with only 1 order capacity left
+            market_data = self._get_live_market_data()
+            total_investment_used = market_data['total_margin_used']
+            available_investment = market_data['available_investment']
+            investment_utilization = (total_investment_used / self.user_total_investment) * 100
+            
+            # Check if we're near 80% AND can only place 1 more order
+            can_place_orders = int(available_investment / self.user_investment_per_grid)
+            
+            if investment_utilization >= 75.0 and can_place_orders <= 1 and open_orders:
+                # Determine dominant position direction from existing positions
+                live_positions = market_data['live_positions']
+                net_position_value = 0.0
+                
+                for position in live_positions:
+                    size = float(position.get('contracts', 0))
+                    entry_price = float(position.get('entryPrice', 0))
+                    if size != 0 and entry_price > 0:
+                        position_value = size * entry_price
+                        if position.get('side', '').lower() == 'long':
+                            net_position_value += position_value
+                        else:
+                            net_position_value -= position_value
+                
+                # Only cancel if we have a dominant position
+                if net_position_value != 0:
+                    dominant_direction = 'long' if net_position_value > 0 else 'short'
+                    
+                    # Get current price for distance calculations
+                    ticker = self.exchange.get_ticker(self.symbol)
+                    current_price = float(ticker['last'])
+                    
+                    # Find same-direction orders to potentially cancel
+                    same_direction_orders = []
+                    for order in open_orders:
+                        order_side = order.get('side', '').lower()
+                        order_price = float(order.get('price', 0))
+                        order_id = order.get('id', '')
+                        
+                        # Check if order is in same direction as dominant position
+                        is_same_direction = False
+                        if dominant_direction == 'long' and order_side == 'buy':
+                            is_same_direction = True
+                        elif dominant_direction == 'short' and order_side == 'sell':
+                            is_same_direction = True
+                        
+                        if is_same_direction and order_price > 0:
+                            distance_from_current = abs(order_price - current_price)
+                            importance_score = self.pending_orders.get(order_id, {}).get('importance_score', 0.5)
+                            
+                            same_direction_orders.append({
+                                'id': order_id,
+                                'side': order_side,
+                                'price': order_price,
+                                'distance_from_current': distance_from_current,
+                                'importance_score': importance_score
+                            })
+                    
+                    # Cancel the least important same-direction order to preserve capacity for opposite direction
+                    if same_direction_orders:
+                        # Sort by importance (lowest importance first = furthest + oldest)
+                        same_direction_orders.sort(key=lambda x: (x['importance_score'], -x['distance_from_current']))
+                        
+                        # Cancel the least important order
+                        order_to_cancel = same_direction_orders[0]
+                        
+                        try:
+                            self.logger.warning(f"📊 LAST ORDER CAPACITY MANAGEMENT:")
+                            self.logger.warning(f"   Investment Used: {investment_utilization:.1f}% (approaching 80%)")
+                            self.logger.warning(f"   Remaining Capacity: {can_place_orders} order(s)")
+                            self.logger.warning(f"   Dominant Direction: {dominant_direction.upper()}")
+                            self.logger.warning(f"   Cancelling: {order_to_cancel['side'].upper()} @ ${order_to_cancel['price']:.6f}")
+                            self.logger.warning(f"   Reason: Preserving capacity for opposite-direction orders (importance: {order_to_cancel['importance_score']:.3f})")
+                            
+                            self.exchange.cancel_order(order_to_cancel['id'], self.symbol)
+                            
+                            # Remove from internal tracking
+                            if order_to_cancel['id'] in self.pending_orders:
+                                del self.pending_orders[order_to_cancel['id']]
+                            
+                            self.logger.info(f"✅ Freed capacity for opposite-direction orders: {order_to_cancel['id'][:8]}")
+                            
+                            # Refresh open orders after cancellation
+                            time.sleep(1)
+                            open_orders = self.exchange.get_open_orders(self.symbol)
+                            open_order_ids = {order['id'] for order in open_orders}
+                            
+                        except Exception as e:
+                            self.logger.error(f"❌ Failed to cancel order {order_to_cancel['id'][:8]}: {e}")
+            
+            # ADDED: Continuous KAMA validation of existing orders and positions
+            if self.market_intel:
+                try:
+                    # Get current market price for position loss calculations
+                    ticker = self.exchange.get_ticker(self.symbol)
+                    market_snapshot = self.market_intel.analyze_market(self.exchange)
+                    kama_direction = market_snapshot.kama_direction
+                    kama_strength = market_snapshot.kama_strength
+                    
+                    # Only cancel orders if KAMA signal is strong enough and there are orders to check
+                    if kama_strength > 0.5 and open_orders:
+                        orders_to_cancel = []
+                        
+                        for order in open_orders:
+                            order_side = order.get('side', '').lower()
+                            order_id = order.get('id', '')
+                            order_price = float(order.get('price', 0))
+                            
+                            # Check if order direction conflicts with KAMA trend
+                            should_cancel = False
+                            cancel_reason = ""
+                            
+                            if kama_direction == 'bearish' and order_side == 'buy':
+                                should_cancel = True
+                                cancel_reason = f"BUY order conflicts with BEARISH KAMA trend (strength: {kama_strength:.3f})"
+                            elif kama_direction == 'bullish' and order_side == 'sell':
+                                should_cancel = True
+                                cancel_reason = f"SELL order conflicts with BULLISH KAMA trend (strength: {kama_strength:.3f})"
+                            
+                            if should_cancel:
+                                orders_to_cancel.append({
+                                    'id': order_id,
+                                    'side': order_side,
+                                    'price': order_price,
+                                    'reason': cancel_reason
+                                })
+                        
+                        # Cancel conflicting orders
+                        for order_info in orders_to_cancel:
+                            try:
+                                self.logger.warning(f"🚫 KAMA CONFLICT DETECTED:")
+                                self.logger.warning(f"   Order: {order_info['side'].upper()} @ ${order_info['price']:.6f}")
+                                self.logger.warning(f"   Reason: {order_info['reason']}")
+                                
+                                self.exchange.cancel_order(order_info['id'], self.symbol)
+                                
+                                # Remove from internal tracking
+                                if order_info['id'] in self.pending_orders:
+                                    del self.pending_orders[order_info['id']]
+                                
+                                self.logger.info(f"✅ Cancelled conflicting order: {order_info['id'][:8]}")
+                                
+                            except Exception as e:
+                                self.logger.error(f"❌ Failed to cancel order {order_info['id'][:8]}: {e}")
+                        
+                        if orders_to_cancel:
+                            # Refresh open orders after cancellations
+                            time.sleep(1)  # Brief pause for cancellations to process
+                            open_orders = self.exchange.get_open_orders(self.symbol)
+                            open_order_ids = {order['id'] for order in open_orders}
+                    
+                    # CONSERVATIVE: Only close positions when trend is VERY strong and against us with no reversal signs  
+                    if kama_strength > 0.8:  # Much higher threshold - only very strong trends
+                        live_positions = self.exchange.get_positions(self.symbol)
+                        positions_to_close = []
+                        
+                        for position in live_positions:
+                            size = float(position.get('contracts', 0))
+                            if size != 0:  # Only check non-zero positions
+                                position_side = position.get('side', '').lower()
+                                entry_price = float(position.get('entryPrice', 0))
+                                unrealized_pnl = float(position.get('unrealizedPnl', 0))
+                                current_price = float(ticker['last'])
+                                
+                                # Calculate loss percentage from entry
+                                if entry_price > 0:
+                                    loss_pct = abs(unrealized_pnl) / (abs(size) * entry_price) * 100
+                                else:
+                                    loss_pct = 0
+                                
+                                # Check if position is in significant loss AND trend is very strong against it
+                                should_close = False
+                                close_reason = ""
+                                
+                                # LONG position: Close only if VERY strong bearish trend AND significant loss
+                                if (position_side == 'long' and kama_direction == 'bearish' and 
+                                    unrealized_pnl < 0 and loss_pct > 3.0):  # Only if losing >3%
+                                    
+                                    # Check for reversal signs - don't close if KAMA strength is weakening
+                                    if (not hasattr(self, 'prev_kama_strength') or 
+                                        kama_strength >= getattr(self, 'prev_kama_strength', 0)):
+                                        should_close = True
+                                        close_reason = f"LONG position with VERY STRONG bearish trend (strength: {kama_strength:.3f}) and {loss_pct:.1f}% loss"
+                                
+                                # SHORT position: Close only if VERY strong bullish trend AND significant loss  
+                                elif (position_side == 'short' and kama_direction == 'bullish' and 
+                                    unrealized_pnl < 0 and loss_pct > 3.0):  # Only if losing >3%
+                                    
+                                    # Check for reversal signs - don't close if KAMA strength is weakening
+                                    if (not hasattr(self, 'prev_kama_strength') or 
+                                        kama_strength >= getattr(self, 'prev_kama_strength', 0)):
+                                        should_close = True
+                                        close_reason = f"SHORT position with VERY STRONG bullish trend (strength: {kama_strength:.3f}) and {loss_pct:.1f}% loss"
+                                
+                                if should_close:
+                                    positions_to_close.append({
+                                        'side': position_side,
+                                        'size': abs(size),
+                                        'entry_price': entry_price,
+                                        'unrealized_pnl': unrealized_pnl,
+                                        'loss_pct': loss_pct,
+                                        'reason': close_reason
+                                    })
+                        
+                        # Close positions only if criteria are met
+                        for pos_info in positions_to_close:
+                            try:
+                                self.logger.warning(f"🚨 CRITICAL POSITION RISK DETECTED:")
+                                self.logger.warning(f"   Position: {pos_info['side'].upper()} {pos_info['size']:.6f} @ ${pos_info['entry_price']:.6f}")
+                                self.logger.warning(f"   Loss: ${pos_info['unrealized_pnl']:.2f} ({pos_info['loss_pct']:.1f}%)")
+                                self.logger.warning(f"   Reason: {pos_info['reason']}")
+                                
+                                # Determine close side (opposite of position)
+                                close_side = 'sell' if pos_info['side'] == 'long' else 'buy'
+                                
+                                # Close position with market order
+                                close_order = self.exchange.create_market_order(self.symbol, close_side, pos_info['size'])
+                                
+                                if close_order:
+                                    self.logger.info(f"✅ Closed high-risk position: {pos_info['side'].upper()} {pos_info['size']:.6f}")
+                                    
+                                    # Update internal position tracking if exists
+                                    for position_id, grid_pos in self.all_positions.items():
+                                        if (grid_pos.is_open() and 
+                                            abs(grid_pos.entry_price - pos_info['entry_price']) < 0.000001 and
+                                            abs(grid_pos.quantity - pos_info['size']) < 0.000001):
+                                            
+                                            # Mark position as closed
+                                            grid_pos.exit_time = time.time()
+                                            grid_pos.exit_price = float(close_order.get('average', pos_info['entry_price']))
+                                            grid_pos.realized_pnl = pos_info['unrealized_pnl']
+                                            grid_pos.unrealized_pnl = 0.0
+                                            grid_pos.has_counter_order = False
+                                            grid_pos.counter_order_id = None
+                                            
+                                            self.logger.info(f"📝 Updated internal position tracking: {position_id[:8]}")
+                                            break
+                                else:
+                                    self.logger.error(f"❌ Failed to close position: {pos_info['side'].upper()}")
+                                    
+                            except Exception as e:
+                                self.logger.error(f"❌ Failed to close position {pos_info['side'].upper()}: {e}")
+                    
+                    # Store KAMA strength for next comparison (to detect weakening trends)
+                    self.prev_kama_strength = kama_strength
+                            
+                except Exception as e:
+                    self.logger.error(f"❌ Error in KAMA order validation: {e}")
+            
+            # Check each pending order for fills (existing logic)
             filled_order_ids = []
             for order_id in list(self.pending_orders.keys()):
                 if order_id not in open_order_ids:
                     filled_order_ids.append(order_id)
             
-            # Process filled orders
+            # Process filled orders (existing logic)
             for order_id in filled_order_ids:
                 try:
                     order_status = self.exchange.get_order_status(order_id, self.symbol)
@@ -1258,7 +1653,7 @@ class GridStrategy:
                         
         except Exception as e:
             self.logger.error(f"Error updating orders and positions: {e}")
-    
+        
     def _process_filled_order(self, order_id: str, order_status: Dict):
         """Process a filled order and create position or close existing position"""
         try:
