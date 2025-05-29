@@ -648,7 +648,7 @@ class GridManager:
             self.logger.error(f"Error ensuring monitor running: {e}")
     
     def _monitor_grids(self) -> None:
-        """MODIFIED: Enhanced grid monitoring with parallel processing"""
+        """FIXED: Enhanced grid monitoring with proper parallel processing and timeout handling"""
         self.logger.info("🔍 Grid monitor thread started with parallel processing")
         
         try:
@@ -670,43 +670,58 @@ class GridManager:
                     self.logger.info(f"   Total Investment: ${self.total_investment_across_all_grids:.2f}")
                 
                 if active_grids:
-                    # MODIFIED: Process grids in parallel using ThreadPoolExecutor
+                    # FIXED: Process grids in parallel using ThreadPoolExecutor with proper timeout handling
                     futures = []
                     for grid_id, grid in active_grids:
                         future = self.thread_pool.submit(self._update_single_grid, grid_id, grid)
-                        futures.append(future)
+                        futures.append((future, grid_id))
                     
-                    # Wait for all grid updates to complete (with timeout)
-                    completed_futures = concurrent.futures.as_completed(futures, timeout=60)
+                    # FIXED: Use wait() instead of as_completed() to handle timeouts properly
+                    done_futures, pending_futures = concurrent.futures.wait(
+                        [f[0] for f in futures], 
+                        timeout=60,  # Global timeout for all grids
+                        return_when=concurrent.futures.ALL_COMPLETED
+                    )
                     
                     success_count = 0
                     error_count = 0
+                    timeout_count = 0
                     
-                    for future in completed_futures:
+                    # Process completed futures
+                    for future, grid_id in futures:
                         try:
-                            result = future.result(timeout=5)  # Individual grid timeout
-                            if result:
-                                success_count += 1
+                            if future in done_futures:
+                                # Future completed (either success or exception)
+                                result = future.result(timeout=1)  # Quick result retrieval
+                                if result:
+                                    success_count += 1
+                                else:
+                                    error_count += 1
                             else:
-                                error_count += 1
+                                # Future didn't complete in time
+                                self.logger.warning(f"Grid {grid_id[:8]} update timed out")
+                                timeout_count += 1
+                                # Cancel the pending future
+                                future.cancel()
+                                
                         except concurrent.futures.TimeoutError:
-                            self.logger.error(f"Grid update timed out")
-                            error_count += 1
+                            self.logger.warning(f"Grid {grid_id[:8]} result retrieval timed out")
+                            timeout_count += 1
                         except Exception as e:
-                            self.logger.error(f"Grid update failed: {e}")
+                            self.logger.error(f"Grid {grid_id[:8]} update failed: {e}")
                             error_count += 1
                     
                     monitor_duration = time.time() - monitor_start_time
                     
-                    # ENHANCED: Log monitor performance
+                    # ENHANCED: Log monitor performance with timeout info
                     if should_log_summary:
                         self.logger.info(f"🔍 Parallel monitor cycle complete: {success_count} success, "
-                                       f"{error_count} errors, {monitor_duration:.2f}s duration")
+                                    f"{error_count} errors, {timeout_count} timeouts, {monitor_duration:.2f}s duration")
                         self.last_monitor_summary = time.time()
                     
-                    # Log slow monitor cycles
-                    if monitor_duration > 30.0:
-                        self.logger.warning(f"⚠️ Slow monitor cycle: {monitor_duration:.2f}s")
+                    # Log slow monitor cycles or timeout issues
+                    if monitor_duration > 30.0 or timeout_count > 0:
+                        self.logger.warning(f"⚠️ Monitor cycle issues: {monitor_duration:.2f}s duration, {timeout_count} timeouts")
                 
                 # Check every 10 seconds
                 time.sleep(10)

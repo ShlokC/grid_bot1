@@ -246,76 +246,77 @@ class MarketIntelligence:
             self.logger.error(f"Error fetching OHLCV data: {e}")
     
     def _calculate_momentum(self, exchange) -> float:
-        """Calculate momentum using pandas-ta KAMA with full historical data"""
-        # Initialize KAMA indicators
-        self.current_kama_value = 0.0
-        self.current_kama_direction = 'neutral'
-        self.current_kama_strength = 0.0
-        
+        """Calculate momentum using pandas-ta KAMA with proper Efficiency Ratio"""
         try:
             import pandas as pd
             import pandas_ta as ta
             
-            # Get FULL historical data from exchange, not just deque
-            full_ohlcv = exchange.get_ohlcv(self.symbol, timeframe='5m', limit=1400)
+            # Get historical data
+            full_ohlcv = exchange.get_ohlcv(self.symbol, timeframe='5m', limit=200)  # Reduced from 1400
             
-            if not full_ohlcv or len(full_ohlcv) < 50:
+            if not full_ohlcv or len(full_ohlcv) < 20:
                 self.logger.warning(f"Insufficient OHLCV data: {len(full_ohlcv) if full_ohlcv else 0}")
                 return self._fallback_momentum()
             
-            # Extract closing prices from OHLCV data
-            closing_prices = [float(candle[4]) for candle in full_ohlcv]  # Index 4 = close price
+            # Extract closing prices
+            closing_prices = [float(candle[4]) for candle in full_ohlcv]
             current_price = closing_prices[-1]
             
-            # Create pandas series with full dataset
+            # Create pandas series
             price_series = pd.Series(closing_prices)
             
-            # Calculate KAMA with TradingView parameters: period=10, fast=2, slow=30
+            # Calculate KAMA using pandas-ta
             kama_series = ta.kama(price_series, length=10, fast=2, slow=30)
             
             if kama_series is None or kama_series.isna().all():
-                self.logger.error(f"PANDAS-TA KAMA calculation failed")
+                self.logger.error(f"KAMA calculation failed")
                 return self._fallback_momentum()
             
-            # Get the latest KAMA value
+            # Get current KAMA value
             current_kama = float(kama_series.iloc[-1])
             self.current_kama_value = current_kama
             
-            # Update price history deque with current price only
-            if len(self.price_history) == 0 or self.price_history[-1] != current_price:
-                self.price_history.append(current_price)
-            
-            # Store KAMA in history
-            self.kama_history.append(current_kama)
-            
-            # Calculate KAMA direction from recent KAMA values
-            if len(kama_series) >= 10:
-                kama_10_ago = float(kama_series.iloc[-10])
-                kama_5_ago = float(kama_series.iloc[-5])
+            # Calculate Efficiency Ratio (ER) - this is the standard strength measure
+            period = 10
+            if len(price_series) >= period:
+                # Direction = absolute change over period
+                direction = abs(price_series.iloc[-1] - price_series.iloc[-period])
                 
-                # Calculate slope over 5 periods
-                kama_slope_5 = (current_kama - kama_5_ago) / kama_5_ago
-                # Calculate slope over 10 periods  
-                kama_slope_10 = (current_kama - kama_10_ago) / kama_10_ago
+                # Volatility = sum of absolute daily changes over period
+                volatility = price_series.diff().abs().tail(period).sum()
                 
-                # Determine direction based on slopes
-                if kama_slope_5 > 0.001 and kama_slope_10 > 0.001:
+                # Efficiency Ratio = Direction / Volatility (0 to 1)
+                efficiency_ratio = direction / volatility if volatility > 0 else 0
+                
+                # Cap ER at 1.0 (can exceed in some edge cases)
+                self.current_kama_strength = min(1.0, efficiency_ratio)
+            else:
+                self.current_kama_strength = 0.0
+            
+            # Calculate direction from KAMA rate of change
+            if len(kama_series) >= 3:
+                kama_change = kama_series.iloc[-1] - kama_series.iloc[-3]
+                kama_change_pct = kama_change / kama_series.iloc[-3] if kama_series.iloc[-3] != 0 else 0
+                
+                # Simple direction logic with minimal threshold
+                if kama_change_pct > 0.0001:  # 0.01% threshold
                     self.current_kama_direction = 'bullish'
-                    self.current_kama_strength = min(1.0, max(abs(kama_slope_5), abs(kama_slope_10)) * 100)
-                elif kama_slope_5 < -0.001 and kama_slope_10 < -0.001:
+                elif kama_change_pct < -0.0001:
                     self.current_kama_direction = 'bearish'
-                    self.current_kama_strength = min(1.0, max(abs(kama_slope_5), abs(kama_slope_10)) * 100)
                 else:
                     self.current_kama_direction = 'neutral'
-                    self.current_kama_strength = 0.0
+            else:
+                self.current_kama_direction = 'neutral'
             
-            # Calculate momentum - price position relative to KAMA
+            # Calculate momentum - price relative to KAMA
             if current_kama > 0:
                 momentum_pct = (current_price - current_kama) / current_kama
-                final_momentum = max(-1.0, min(1.0, momentum_pct * 5))  # Amplify for sensitivity
+                final_momentum = max(-1.0, min(1.0, momentum_pct * 3))  # Scale factor of 3
                 
-                momentum_status = "BULLISH" if final_momentum > 0.025 else "BEARISH" if final_momentum < -0.025 else "NEUTRAL"
-                self.logger.info(f"KAMA: ${current_kama:.6f}, Direction: {self.current_kama_direction}, Strength: {self.current_kama_strength:.3f}, Momentum: {momentum_status}")
+                momentum_status = "BULLISH" if final_momentum > 0.02 else "BEARISH" if final_momentum < -0.02 else "NEUTRAL"
+                
+                self.logger.info(f"KAMA: ${current_kama:.6f}, Direction: {self.current_kama_direction}, "
+                            f"ER: {self.current_kama_strength:.4f}, Momentum: {momentum_status}")
                 
                 return final_momentum
             
@@ -868,21 +869,43 @@ class GridStrategy:
                     kama_direction = market_snapshot.kama_direction
                     distance_pct = abs(price - current_price) / current_price
                     
-                    # Determine order type
+                    # FIXED: Determine order type with position awareness
                     is_profit_taking_order = False
                     is_risky_new_position = False
                     
                     if side == 'sell' and price > current_price:
-                        is_profit_taking_order = True
+                        # Check if we have existing long positions this could close
+                        live_positions = market_data['live_positions']
+                        has_long_positions = any(
+                            float(pos.get('contracts', 0)) > 0 and pos.get('side', '').lower() == 'long'
+                            for pos in live_positions
+                        )
+                        
+                        if has_long_positions:
+                            is_profit_taking_order = True
+                        else:
+                            is_risky_new_position = True  # Would create new short position
+                            
                     elif side == 'buy' and price < current_price:
-                        is_profit_taking_order = True
+                        # Check if we have existing short positions this could close
+                        live_positions = market_data['live_positions']
+                        has_short_positions = any(
+                            float(pos.get('contracts', 0)) > 0 and pos.get('side', '').lower() == 'short'
+                            for pos in live_positions
+                        )
+                        
+                        if has_short_positions:
+                            is_profit_taking_order = True
+                        else:
+                            is_risky_new_position = False  # Normal long entry
+                            
                     elif side == 'sell' and price < current_price:
-                        is_risky_new_position = True
+                        is_risky_new_position = True  # New short entry
                     elif side == 'buy' and price > current_price:
-                        is_risky_new_position = True
+                        is_risky_new_position = True  # Chasing the market
                     
                     # Enhanced blocking logic
-                    if kama_strength > 0.7 and is_risky_new_position:
+                    if kama_strength > 0.3 and is_risky_new_position:
                         should_block = False
                         
                         # In BEARISH trend: Block new LONG positions
@@ -892,7 +915,7 @@ class GridStrategy:
                         
                         # In BULLISH trend: Block new SHORT positions
                         elif kama_direction == 'bullish':
-                            if side == 'sell' and price < current_price:
+                            if side == 'sell' and not is_profit_taking_order:
                                 should_block = True
                         
                         if should_block:
@@ -944,7 +967,7 @@ class GridStrategy:
             self.pending_orders[order['id']] = order_info
             
             self.logger.info(f"Order placed: {side.upper()} {amount:.6f} @ ${price:.6f} ({price_diff_pct:+.2f}%), "
-                           f"Margin: ${margin_required:.2f}, ID: {order['id'][:8]}")
+                        f"Margin: ${margin_required:.2f}, ID: {order['id'][:8]}")
             
             return True
             
@@ -1209,7 +1232,7 @@ class GridStrategy:
                         self.user_price_upper = self._round_price(market_snapshot.bollinger_upper)
                     
                     # Only cancel orders if KAMA signal is strong enough
-                    if kama_strength > 0.7 and open_orders:
+                    if kama_strength > 0.3 and open_orders:
                         live_positions = market_data['live_positions']
                         current_price = float(ticker['last'])
                         
@@ -1281,7 +1304,7 @@ class GridStrategy:
                             open_order_ids = {order['id'] for order in open_orders}
                     
                     # Position risk management for very strong trends
-                    if kama_strength > 0.8:
+                    if kama_strength > 0.4:
                         live_positions = self.exchange.get_positions(self.symbol)
                         positions_to_close = []
                         
@@ -1302,10 +1325,10 @@ class GridStrategy:
                                 should_close = False
                                 
                                 if (position_side == 'long' and kama_direction == 'bearish' and 
-                                    unrealized_pnl < 0 and loss_pct > 3.0):
+                                    unrealized_pnl < 0 and loss_pct > 1.0):
                                     should_close = True
                                 elif (position_side == 'short' and kama_direction == 'bullish' and 
-                                    unrealized_pnl < 0 and loss_pct > 3.0):
+                                    unrealized_pnl < 0 and loss_pct > 1.0):
                                     should_close = True
                                 
                                 if should_close:
