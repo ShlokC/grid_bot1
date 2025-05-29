@@ -400,19 +400,17 @@ class GridStrategy:
     """
     
     def __init__(self, 
-                 exchange: Exchange, 
-                 symbol: str, 
-                 price_lower: float, 
-                 price_upper: float,
-                 grid_number: int,
-                 investment: float,
-                 take_profit_pnl: float,
-                 stop_loss_pnl: float,
-                 grid_id: str,
-                 leverage: float = 20.0,
-                 enable_grid_adaptation: bool = True,
-                 enable_samig: bool = False):
-        """Initialize simplified grid strategy"""
+             exchange: Exchange, 
+             symbol: str, 
+             grid_number: int,
+             investment: float,
+             take_profit_pnl: float,
+             stop_loss_pnl: float,
+             grid_id: str,
+             leverage: float = 20.0,
+             enable_grid_adaptation: bool = True,
+             enable_samig: bool = False):
+        """Initialize simplified grid strategy with BB-based range"""
         
         # Setup logging
         self.logger = logging.getLogger(__name__)
@@ -422,9 +420,43 @@ class GridStrategy:
         self.original_symbol = symbol
         self.symbol = exchange._get_symbol_id(symbol) if hasattr(exchange, '_get_symbol_id') else symbol
         
-        # User parameters (immutable)
-        self.user_price_lower = float(price_lower)
-        self.user_price_upper = float(price_upper)
+        # MOVED: Market information (needed for _round_price)
+        self._fetch_market_info()
+        
+        # Initialize market intelligence for BB calculation (always needed now)
+        self.market_intel = MarketIntelligence(symbol)
+        
+        # Get initial BB-based range
+        try:
+            ticker = self.exchange.get_ticker(self.symbol)
+            current_price = float(ticker['last'])
+            market_snapshot = self.market_intel.analyze_market(self.exchange)
+            
+            if market_snapshot.bollinger_upper > 0 and market_snapshot.bollinger_lower > 0:
+                self.user_price_lower = self._round_price(market_snapshot.bollinger_lower)
+                self.user_price_upper = self._round_price(market_snapshot.bollinger_upper)
+            else:
+                # Fallback: use current price ±10%
+                self.user_price_lower = self._round_price(current_price * 0.9)
+                self.user_price_upper = self._round_price(current_price * 1.1)
+                
+            self.logger.info(f"BB Range initialized: ${self.user_price_lower:.6f} - ${self.user_price_upper:.6f}")
+            
+        except Exception as e:
+            self.logger.error(f"Failed to initialize BB range: {e}")
+            # Emergency fallback
+            try:
+                ticker = self.exchange.get_ticker(self.symbol)
+                current_price = float(ticker['last'])
+                self.user_price_lower = self._round_price(current_price * 0.9)
+                self.user_price_upper = self._round_price(current_price * 1.1)
+            except Exception as e2:
+                self.logger.error(f"Emergency fallback failed: {e2}")
+                # Set basic defaults without rounding
+                self.user_price_lower = 1.0
+                self.user_price_upper = 100.0
+        
+        # User parameters (BB-based now)
         self.user_grid_number = int(grid_number)
         self.user_total_investment = float(investment)
         self.user_investment_per_grid = self.user_total_investment / self.user_grid_number
@@ -445,13 +477,6 @@ class GridStrategy:
         # Investment tracking
         self.total_investment_used = 0.0
         
-        # Market intelligence
-        if self.enable_samig:
-            self.market_intel = MarketIntelligence(symbol)
-            self.logger.info(f"SAMIG enabled for {symbol}")
-        else:
-            self.market_intel = None
-        
         # State management
         self.running = False
         self.total_trades = 0
@@ -461,13 +486,10 @@ class GridStrategy:
         # Threading
         self.update_lock = threading.Lock()
         
-        # Market information
-        self._fetch_market_info()
-        
-        self.logger.info(f"Grid initialized: {self.original_symbol}, Range: ${self.user_price_lower:.6f}-${self.user_price_upper:.6f}, "
+        self.logger.info(f"Grid initialized: {self.original_symbol}, BB Range: ${self.user_price_lower:.6f}-${self.user_price_upper:.6f}, "
                         f"Levels: {self.user_grid_number}, Investment: ${self.user_total_investment:.2f}, "
                         f"Leverage: {self.user_leverage}x, SAMIG: {self.enable_samig}")
-    
+        
     def _fetch_market_info(self):
         """Fetch market precision and limits from exchange"""
         try:
@@ -1142,6 +1164,61 @@ class GridStrategy:
             open_orders = self.exchange.get_open_orders(self.symbol)
             open_order_ids = {order['id'] for order in open_orders}
             
+            # ADDED: Always update BB range and cancel orders outside BB
+            try:
+                market_snapshot = self.market_intel.analyze_market(self.exchange)
+                
+                if market_snapshot.bollinger_upper > 0 and market_snapshot.bollinger_lower > 0:
+                    new_bb_lower = self._round_price(market_snapshot.bollinger_lower)
+                    new_bb_upper = self._round_price(market_snapshot.bollinger_upper)
+                    
+                    # Update range if BB changed significantly
+                    range_changed = (abs(new_bb_lower - self.user_price_lower) / self.user_price_lower > 0.01 or
+                                abs(new_bb_upper - self.user_price_upper) / self.user_price_upper > 0.01)
+                    
+                    if range_changed:
+                        old_lower, old_upper = self.user_price_lower, self.user_price_upper
+                        self.user_price_lower = new_bb_lower
+                        self.user_price_upper = new_bb_upper
+                        
+                        self.logger.info(f"BB Range updated: ${old_lower:.6f}-${old_upper:.6f} → ${self.user_price_lower:.6f}-${self.user_price_upper:.6f}")
+                    
+                    # Cancel orders outside BB range
+                    bb_margin = (self.user_price_upper - self.user_price_lower) * 0.01  # 1% margin
+                    orders_to_cancel = []
+                    
+                    for order in open_orders:
+                        order_price = float(order.get('price', 0))
+                        order_id = order.get('id', '')
+                        
+                        if (order_price < self.user_price_lower - bb_margin or 
+                            order_price > self.user_price_upper + bb_margin):
+                            orders_to_cancel.append({
+                                'id': order_id,
+                                'price': order_price,
+                                'side': order.get('side', 'unknown')
+                            })
+                    
+                    # Cancel orders outside BB range
+                    for order_info in orders_to_cancel:
+                        try:
+                            self.logger.info(f"BB cleanup: Cancelling {order_info['side'].upper()} @ ${order_info['price']:.6f} (outside BB range)")
+                            self.exchange.cancel_order(order_info['id'], self.symbol)
+                            
+                            if order_info['id'] in self.pending_orders:
+                                del self.pending_orders[order_info['id']]
+                                
+                        except Exception as e:
+                            self.logger.error(f"Failed to cancel BB order {order_info['id'][:8]}: {e}")
+                    
+                    if orders_to_cancel:
+                        time.sleep(1)  # Wait for cancellations
+                        open_orders = self.exchange.get_open_orders(self.symbol)
+                        open_order_ids = {order['id'] for order in open_orders}
+                        
+            except Exception as e:
+                self.logger.error(f"Error in BB range update: {e}")
+            
             # Position-based capacity management
             market_data = self._get_live_market_data()
             position_margin = market_data['position_margin']
@@ -1226,11 +1303,6 @@ class GridStrategy:
                     kama_direction = market_snapshot.kama_direction
                     kama_strength = market_snapshot.kama_strength
                     
-                    # Update Bollinger Band-based range
-                    if market_snapshot.bollinger_upper > 0 and market_snapshot.bollinger_lower > 0:  
-                        self.user_price_lower = self._round_price(market_snapshot.bollinger_lower)
-                        self.user_price_upper = self._round_price(market_snapshot.bollinger_upper)
-                    
                     # Only cancel orders if KAMA signal is strong enough
                     if kama_strength > 0.3 and open_orders:
                         live_positions = market_data['live_positions']
@@ -1304,7 +1376,7 @@ class GridStrategy:
                             open_order_ids = {order['id'] for order in open_orders}
                     
                     # Position risk management for very strong trends
-                    if kama_strength > 0.4:
+                    if kama_strength > 0.1:
                         live_positions = self.exchange.get_positions(self.symbol)
                         positions_to_close = []
                         

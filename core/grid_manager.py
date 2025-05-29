@@ -90,12 +90,10 @@ class GridManager:
                         self.logger.warning(f"Skipping grid {grid_id} with invalid parameters")
                         continue
                     
-                    # Create grid instance
+                    # Create grid instance WITHOUT price_lower and price_upper
                     grid = GridStrategy(
                         exchange=self.exchange,
                         symbol=grid_config['symbol'],
-                        price_lower=float(grid_config['price_lower']),
-                        price_upper=float(grid_config['price_upper']),
                         grid_number=grid_number,
                         investment=investment,
                         take_profit_pnl=float(grid_config['take_profit_pnl']),
@@ -116,7 +114,7 @@ class GridManager:
                     loaded_count += 1
                     total_loaded_investment += investment
                     
-                    self.logger.info(f"Loaded grid: {grid_id} ({grid_config['symbol']}) - ${investment:.2f}")
+                    self.logger.info(f"Loaded grid: {grid_id} ({grid_config['symbol']}) - ${investment:.2f} (BB-based range)")
                     
                 except Exception as e:
                     self.logger.error(f"Error loading grid {grid_id}: {e}")
@@ -134,7 +132,8 @@ class GridManager:
     def _validate_grid_config_for_loading(self, grid_config: Dict) -> bool:
         """Validate grid configuration before loading."""
         try:
-            required_fields = ['symbol', 'price_lower', 'price_upper', 'grid_number', 'investment']
+            # Updated required fields (removed price_lower and price_upper)
+            required_fields = ['symbol', 'grid_number', 'investment']
             
             for field in required_fields:
                 if field not in grid_config:
@@ -142,10 +141,6 @@ class GridManager:
                     return False
             
             # Validate numeric values
-            if float(grid_config['price_lower']) >= float(grid_config['price_upper']):
-                self.logger.error("Invalid price range")
-                return False
-            
             if int(grid_config['grid_number']) <= 0:
                 self.logger.error("Invalid grid number")
                 return False
@@ -190,8 +185,6 @@ class GridManager:
         try:
             # Extract parameters
             symbol = kwargs.get('symbol', '')
-            price_lower = float(kwargs.get('price_lower', 0))
-            price_upper = float(kwargs.get('price_upper', 0))
             grid_number = int(kwargs.get('grid_number', 0))
             investment = float(kwargs.get('investment', 0))
             leverage = float(kwargs.get('leverage', 1.0))
@@ -199,15 +192,6 @@ class GridManager:
             # Validate symbol
             if not symbol or len(symbol.strip()) == 0:
                 self.logger.error("Symbol cannot be empty")
-                return False
-            
-            # Validate price range
-            if price_lower <= 0 or price_upper <= 0:
-                self.logger.error("Prices must be positive")
-                return False
-            
-            if price_lower >= price_upper:
-                self.logger.error(f"Lower price ({price_lower}) must be less than upper price ({price_upper})")
                 return False
             
             # Validate grid number
@@ -249,16 +233,14 @@ class GridManager:
             return False
     
     def create_grid(self, 
-                   symbol: str, 
-                   price_lower: float, 
-                   price_upper: float,
-                   grid_number: int,
-                   investment: float,
-                   take_profit_pnl: float,
-                   stop_loss_pnl: float,
-                   leverage: float = 20.0,
-                   enable_grid_adaptation: bool = True,
-                   enable_samig: bool = False) -> str:
+               symbol: str, 
+               grid_number: int,
+               investment: float,
+               take_profit_pnl: float,
+               stop_loss_pnl: float,
+               leverage: float = 20.0,
+               enable_grid_adaptation: bool = True,
+               enable_samig: bool = False) -> str:
         """Create a new grid strategy with symbol duplication check."""
         try:
             # ADDED: Check for duplicate symbols
@@ -270,8 +252,6 @@ class GridManager:
             # CRITICAL: Validate all parameters first
             if not self._validate_grid_parameters(
                 symbol=symbol,
-                price_lower=price_lower,
-                price_upper=price_upper,
                 grid_number=grid_number,
                 investment=investment,
                 leverage=leverage
@@ -289,7 +269,6 @@ class GridManager:
             
             self.logger.info(f"Creating grid with VALIDATED parameters:")
             self.logger.info(f"  Symbol: {symbol}")
-            self.logger.info(f"  Price Range: ${price_lower:.6f} - ${price_upper:.6f}")
             self.logger.info(f"  Grid Count: {grid_number} (VALIDATED)")
             self.logger.info(f"  Investment: ${investment:.2f} (VALIDATED)")
             self.logger.info(f"  Leverage: {leverage}x")
@@ -300,8 +279,6 @@ class GridManager:
             grid = GridStrategy(
                 exchange=self.exchange,
                 symbol=symbol,
-                price_lower=float(price_lower),
-                price_upper=float(price_upper),
                 grid_number=int(grid_number),
                 investment=float(investment),
                 take_profit_pnl=float(take_profit_pnl),
@@ -324,7 +301,7 @@ class GridManager:
             
             self.logger.info(f"Grid created successfully: {grid_id}")
             self.logger.info(f"Global stats - Total grids: {len(self.grids)}, "
-                           f"Total investment: ${self.total_investment_across_all_grids:.2f}")
+                        f"Total investment: ${self.total_investment_across_all_grids:.2f}")
             
             return grid_id
             
