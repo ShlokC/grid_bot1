@@ -4,20 +4,20 @@ Data storage module for grid bot that persists data in JSON format.
 import json
 import os
 import logging
+import shutil
+from threading import Lock
 from typing import Dict, List, Any, Optional
 from datetime import datetime
-import shutil
 
 class DataStore:
     def __init__(self, data_dir: str = 'data'):
-        """
-        Initialize the data store.
-        
-        Args:
-            data_dir: Directory to store data files
-        """
+        """Initialize the data store with file locking support."""
         self.logger = logging.getLogger(__name__)
         self.data_dir = data_dir
+        
+        # ADDED: Thread safety for file operations
+        self.file_locks = {}
+        self.global_lock = Lock()
         
         # Ensure data directory exists
         os.makedirs(data_dir, exist_ok=True)
@@ -31,7 +31,12 @@ class DataStore:
         self.grids = self._load_json(self.grids_file, {})
         self.orders = self._load_json(self.orders_file, {})
         self.positions = self._load_json(self.positions_file, {})
-    
+    def _get_file_lock(self, file_path: str) -> Lock:
+        """ADDED: Get or create file-specific lock"""
+        with self.global_lock:
+            if file_path not in self.file_locks:
+                self.file_locks[file_path] = Lock()
+            return self.file_locks[file_path]
     def _load_json(self, file_path: str, default_value: Any) -> Any:
         """Load data from a JSON file."""
         try:
@@ -44,32 +49,35 @@ class DataStore:
             return default_value
     
     def _save_json(self, file_path: str, data: Any) -> bool:
-        """Save data to a JSON file with enhanced error handling."""
-        try:
-            # Create a backup of the existing file if it exists
-            if os.path.exists(file_path):
-                backup_path = f"{file_path}.bak"
-                try:
-                    shutil.copy2(file_path, backup_path)
-                    self.logger.debug(f"Created backup of {file_path}")
-                except Exception as e:
-                    self.logger.warning(f"Failed to create backup of {file_path}: {e}")
-            
-            # Write to a temporary file first to prevent corruption
-            temp_path = f"{file_path}.tmp"
-            with open(temp_path, 'w') as f:
-                json.dump(data, f, indent=2)
-            
-            # Replace the original file with the temporary file
-            if os.path.exists(temp_path):
+        """MODIFIED: Save data to a JSON file with thread safety."""
+        file_lock = self._get_file_lock(file_path)
+        
+        with file_lock:
+            try:
+                # Create a backup of the existing file if it exists
                 if os.path.exists(file_path):
-                    os.remove(file_path)
-                os.rename(temp_path, file_path)
+                    backup_path = f"{file_path}.bak"
+                    try:
+                        shutil.copy2(file_path, backup_path)
+                        self.logger.debug(f"Created backup of {file_path}")
+                    except Exception as e:
+                        self.logger.warning(f"Failed to create backup of {file_path}: {e}")
                 
-            return True
-        except Exception as e:
-            self.logger.error(f"Error saving {file_path}: {e}")
-            return False
+                # Write to a temporary file first to prevent corruption
+                temp_path = f"{file_path}.tmp"
+                with open(temp_path, 'w') as f:
+                    json.dump(data, f, indent=2)
+                
+                # Replace the original file with the temporary file
+                if os.path.exists(temp_path):
+                    if os.path.exists(file_path):
+                        os.remove(file_path)
+                    os.rename(temp_path, file_path)
+                    
+                return True
+            except Exception as e:
+                self.logger.error(f"Error saving {file_path}: {e}")
+                return False
     
     def save_grid(self, grid_id: str, grid_data: Dict) -> bool:
         """

@@ -2,6 +2,8 @@
 Grid Manager module for managing multiple grid strategies with STRICT LIMITS.
 Fixed to prevent investment multiplication and grid count bugs.
 """
+import concurrent.futures
+from concurrent.futures import ThreadPoolExecutor
 import logging
 import threading
 import time
@@ -14,13 +16,7 @@ from core.data_store import DataStore
 
 class GridManager:
     def __init__(self, exchange: Exchange, data_store: DataStore):
-        """
-        Initialize the grid manager with enhanced limit enforcement.
-        
-        Args:
-            exchange: Exchange instance
-            data_store: Data store instance
-        """
+        """Initialize the grid manager with parallel execution support."""
         self.logger = logging.getLogger(__name__)
         self.exchange = exchange
         self.data_store = data_store
@@ -28,20 +24,23 @@ class GridManager:
         # Dictionary to store grid instances
         self.grids: Dict[str, GridStrategy] = {}
         
+        # ADDED: Thread pool for parallel grid processing
+        self.thread_pool = ThreadPoolExecutor(max_workers=5, thread_name_prefix="GridWorker")
+        
         # CRITICAL: Global investment and grid tracking
         self.total_investment_across_all_grids = 0.0
         self.total_grids_created = 0
-        self.max_concurrent_grids = 3  # Reasonable limit for most users
-        self.max_total_investment = 1000.0  # Default safety limit
+        self.max_concurrent_grids = 10  # INCREASED for multi-symbol
+        self.max_total_investment = 5000.0  # INCREASED for multi-symbol
         self.monitor_cycle_count = 0
         self.last_monitor_summary = 0
+        
         # Thread for monitoring grids
         self.monitor_thread = None
         self.running = False
         
         # Load existing grids from data store
         self._load_grids()
-        # ENHANCED: Comprehensive initialization logging
         self._log_manager_initialization()
         
     def _log_manager_initialization(self):
@@ -260,25 +259,14 @@ class GridManager:
                    leverage: float = 20.0,
                    enable_grid_adaptation: bool = True,
                    enable_samig: bool = False) -> str:
-        """
-        Create a new grid strategy with STRICT validation and limits.
-        
-        Args:
-            symbol: Trading pair (e.g., 'BTC/USDT')
-            price_lower: Lower price boundary
-            price_upper: Upper price boundary
-            grid_number: Number of grid levels
-            investment: Total investment amount
-            take_profit_pnl: Take profit PnL percentage
-            stop_loss_pnl: Stop loss PnL percentage
-            leverage: Trading leverage (e.g., 1.0, 10.0, etc.)
-            enable_grid_adaptation: Whether to adapt grid when price moves outside boundaries
-            enable_samig: Enable SAMIG intelligent adaptation
-            
-        Returns:
-            str: Grid ID if successful, empty string if failed
-        """
+        """Create a new grid strategy with symbol duplication check."""
         try:
+            # ADDED: Check for duplicate symbols
+            for existing_grid in self.grids.values():
+                if existing_grid.original_symbol.upper() == symbol.upper() and existing_grid.running:
+                    self.logger.error(f"Active grid already exists for symbol {symbol}")
+                    return ""
+            
             # CRITICAL: Validate all parameters first
             if not self._validate_grid_parameters(
                 symbol=symbol,
@@ -660,82 +648,65 @@ class GridManager:
             self.logger.error(f"Error ensuring monitor running: {e}")
     
     def _monitor_grids(self) -> None:
-        """Enhanced grid monitoring with detailed logging and error recovery"""
-        self.logger.info("🔍 Grid monitor thread started")
+        """MODIFIED: Enhanced grid monitoring with parallel processing"""
+        self.logger.info("🔍 Grid monitor thread started with parallel processing")
         
         try:
             while self.running:
                 monitor_start_time = time.time()
                 self.monitor_cycle_count += 1
                 
-                active_count = 0
-                error_count = 0
+                # Get active grids
+                active_grids = [(grid_id, grid) for grid_id, grid in list(self.grids.items()) if grid.running]
                 
-                # ENHANCED: Log monitor cycle start
                 should_log_summary = (
                     time.time() - self.last_monitor_summary > 1800 or  # Every 30 minutes
                     self.monitor_cycle_count % 60 == 1  # Every 60 cycles
                 )
                 
-                if should_log_summary:
+                if should_log_summary and active_grids:
                     self.logger.info(f"🔍 MONITOR CYCLE #{self.monitor_cycle_count}")
-                    self.logger.info(f"   Active Grids: {sum(1 for g in self.grids.values() if g.running)}/{len(self.grids)}")
+                    self.logger.info(f"   Active Grids: {len(active_grids)}/{len(self.grids)}")
                     self.logger.info(f"   Total Investment: ${self.total_investment_across_all_grids:.2f}")
                 
-                # Process each grid
-                for grid_id, grid in list(self.grids.items()):
-                    if grid.running:
-                        active_count += 1
+                if active_grids:
+                    # MODIFIED: Process grids in parallel using ThreadPoolExecutor
+                    futures = []
+                    for grid_id, grid in active_grids:
+                        future = self.thread_pool.submit(self._update_single_grid, grid_id, grid)
+                        futures.append(future)
+                    
+                    # Wait for all grid updates to complete (with timeout)
+                    completed_futures = concurrent.futures.as_completed(futures, timeout=60)
+                    
+                    success_count = 0
+                    error_count = 0
+                    
+                    for future in completed_futures:
                         try:
-                            # Update grid with timing
-                            update_start = time.time()
-                            grid.update_grid()
-                            update_duration = time.time() - update_start
-                            
-                            # Log slow updates
-                            if update_duration > 5.0:
-                                self.logger.warning(f"⚠️ Slow grid update: {grid_id[:8]} took {update_duration:.2f}s")
-                            
-                            # Save updated grid status
-                            self.data_store.save_grid(grid_id, grid.get_status())
-                            
-                            # ENHANCED: Log grid health periodically
-                            if should_log_summary:
-                                status = grid.get_status()
-                                pnl_pct = status.get('pnl_percentage', 0)
-                                orders_count = status.get('orders_count', 0)
-                                positions_count = status.get('active_positions', 0)
-                                
-                                health = "🟢 HEALTHY"
-                                if pnl_pct < -2.0:
-                                    health = "🟡 CAUTION"
-                                if pnl_pct < -5.0:
-                                    health = "🔴 CRITICAL"
-                                
-                                self.logger.info(f"   Grid {grid_id[:8]} ({grid.original_symbol}): "
-                                               f"PnL {pnl_pct:+.2f}%, {orders_count} orders, {positions_count} positions [{health}]")
-                            
-                        except Exception as e:
+                            result = future.result(timeout=5)  # Individual grid timeout
+                            if result:
+                                success_count += 1
+                            else:
+                                error_count += 1
+                        except concurrent.futures.TimeoutError:
+                            self.logger.error(f"Grid update timed out")
                             error_count += 1
-                            self.logger.error(f"❌ Error updating grid {grid_id[:8]}: {e}")
-                            
-                            # ENHANCED: Error recovery for problematic grids
-                            if should_log_summary:
-                                self.logger.error(f"   Grid {grid_id[:8]} has encountered {error_count} errors")
-                                if error_count > 10:
-                                    self.logger.critical(f"🚨 Grid {grid_id[:8]} has too many errors - consider stopping")
-
-                monitor_duration = time.time() - monitor_start_time
-                
-                # ENHANCED: Log monitor performance
-                if should_log_summary:
-                    self.logger.info(f"🔍 Monitor cycle complete: {active_count} active grids, "
-                                   f"{error_count} errors, {monitor_duration:.2f}s duration")
-                    self.last_monitor_summary = time.time()
-                
-                # Log slow monitor cycles
-                if monitor_duration > 30.0:
-                    self.logger.warning(f"⚠️ Slow monitor cycle: {monitor_duration:.2f}s")
+                        except Exception as e:
+                            self.logger.error(f"Grid update failed: {e}")
+                            error_count += 1
+                    
+                    monitor_duration = time.time() - monitor_start_time
+                    
+                    # ENHANCED: Log monitor performance
+                    if should_log_summary:
+                        self.logger.info(f"🔍 Parallel monitor cycle complete: {success_count} success, "
+                                       f"{error_count} errors, {monitor_duration:.2f}s duration")
+                        self.last_monitor_summary = time.time()
+                    
+                    # Log slow monitor cycles
+                    if monitor_duration > 30.0:
+                        self.logger.warning(f"⚠️ Slow monitor cycle: {monitor_duration:.2f}s")
                 
                 # Check every 10 seconds
                 time.sleep(10)
@@ -746,9 +717,28 @@ class GridManager:
             self.logger.error(f"Traceback: {traceback.format_exc()}")
         finally:
             self.logger.warning("🔍 Grid monitor thread stopped")
-    
+    def _update_single_grid(self, grid_id: str, grid: GridStrategy) -> bool:
+        """ADDED: Update a single grid (called by thread pool)"""
+        try:
+            # Update grid with timing
+            update_start = time.time()
+            grid.update_grid()
+            update_duration = time.time() - update_start
+            
+            # Log slow updates
+            if update_duration > 5.0:
+                self.logger.warning(f"⚠️ Slow grid update: {grid_id[:8]} took {update_duration:.2f}s")
+            
+            # Save updated grid status
+            self.data_store.save_grid(grid_id, grid.get_status())
+            
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"❌ Error updating grid {grid_id[:8]}: {e}")
+            return False
     def stop_all_grids(self) -> None:
-        """Stop all grid strategies and monitor thread."""
+        """Stop all grid strategies and cleanup thread pool."""
         try:
             self.logger.info("Stopping all grids")
             
@@ -761,11 +751,15 @@ class GridManager:
             for grid_id in list(self.grids.keys()):
                 self.stop_grid(grid_id)
             
-            self.logger.info("All grids stopped")
+            # ADDED: Shutdown thread pool
+            self.thread_pool.shutdown(wait=True, timeout=30)
+            
+            self.logger.info("All grids stopped and thread pool shutdown")
             self._log_global_status()
             
         except Exception as e:
             self.logger.error(f"Error stopping all grids: {e}")
+
     
     def update_grid_config(self, 
                           grid_id: str, 
