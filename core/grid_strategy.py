@@ -801,8 +801,8 @@ class GridStrategy:
             
             # Calculate minimum gap to avoid clustering
             price_range = self.user_price_upper - self.user_price_lower
-            min_gap = price_range / self.user_grid_number * 0.25  # 25% of natural grid spacing
-            
+            min_gap = price_range / self.user_grid_number * 0.1  # 10% of natural grid spacing
+
             # Get market intelligence for order distribution
             directional_bias = 0.0
             if self.market_intel:
@@ -878,7 +878,18 @@ class GridStrategy:
             
             # Get live positions for profit order determination
             live_positions = market_data['live_positions']
-            
+            # Calculate total unrealized PnL
+            total_unrealized_pnl = 0.0
+            for pos in live_positions:
+                if 'unrealizedPnl' in pos:
+                    total_unrealized_pnl += float(pos['unrealizedPnl'])
+            # Position-aware order blocking
+            if total_unrealized_pnl > self.user_investment_per_grid:
+                if (side == 'buy' and any(pos.get('side') == 'long' for pos in live_positions) or 
+                    side == 'sell' and any(pos.get('side') == 'short' for pos in live_positions)):
+                    self.logger.info(f"Position-aware block: Avoided adding to winning positions")
+                    return False
+                
             # Check if we're near 80% AND can only place 1 more order
             can_place_orders = int(available_investment / self.user_investment_per_grid)
             
@@ -1170,7 +1181,7 @@ class GridStrategy:
             
             # Calculate minimum gap
             price_range = self.user_price_upper - self.user_price_lower
-            min_gap = price_range / self.user_grid_number * 0.3
+            min_gap = price_range / self.user_grid_number * 0.1
             
             # Find levels that need orders
             levels_needing_orders = []
