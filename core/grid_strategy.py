@@ -1307,8 +1307,8 @@ class GridStrategy:
                     new_bb_upper = self._round_price(market_snapshot.bollinger_upper)
                     
                     # Update range if BB changed significantly
-                    range_changed = (abs(new_bb_lower - self.user_price_lower) / self.user_price_lower > 0.02 or
-                                abs(new_bb_upper - self.user_price_upper) / self.user_price_upper > 0.02)
+                    range_changed = (abs(new_bb_lower - self.user_price_lower) / self.user_price_lower > 0.01 or
+                                abs(new_bb_upper - self.user_price_upper) / self.user_price_upper > 0.01)
                     
                     if range_changed:
                         old_lower, old_upper = self.user_price_lower, self.user_price_upper
@@ -1318,7 +1318,7 @@ class GridStrategy:
                         self.logger.info(f"BB Range updated: ${old_lower:.6f}-${old_upper:.6f} → ${self.user_price_lower:.6f}-${self.user_price_upper:.6f}")
                     
                     # Cancel orders outside BB range (WITH PROTECTION)
-                    bb_margin = (self.user_price_upper - self.user_price_lower) * 0.02  # 2% margin
+                    bb_margin = (self.user_price_upper - self.user_price_lower) * 0.01  # 1% margin
                     orders_to_cancel = []
                     
                     for order in open_orders:
