@@ -1173,8 +1173,8 @@ class GridStrategy:
                     new_bb_upper = self._round_price(market_snapshot.bollinger_upper)
                     
                     # Update range if BB changed significantly
-                    range_changed = (abs(new_bb_lower - self.user_price_lower) / self.user_price_lower > 0.01 or
-                                abs(new_bb_upper - self.user_price_upper) / self.user_price_upper > 0.01)
+                    range_changed = (abs(new_bb_lower - self.user_price_lower) / self.user_price_lower > 0.02 or
+                                abs(new_bb_upper - self.user_price_upper) / self.user_price_upper > 0.02)
                     
                     if range_changed:
                         old_lower, old_upper = self.user_price_lower, self.user_price_upper
@@ -1184,7 +1184,7 @@ class GridStrategy:
                         self.logger.info(f"BB Range updated: ${old_lower:.6f}-${old_upper:.6f} → ${self.user_price_lower:.6f}-${self.user_price_upper:.6f}")
                     
                     # Cancel orders outside BB range
-                    bb_margin = (self.user_price_upper - self.user_price_lower) * 0.01  # 1% margin
+                    bb_margin = (self.user_price_upper - self.user_price_lower) * 0.02  # 2% margin
                     orders_to_cancel = []
                     
                     for order in open_orders:
@@ -1397,10 +1397,10 @@ class GridStrategy:
                                 should_close = False
                                 
                                 if (position_side == 'long' and kama_direction == 'bearish' and 
-                                    unrealized_pnl < 0 and loss_pct > 1.0):
+                                    unrealized_pnl < 0 and loss_pct > 2.0):
                                     should_close = True
                                 elif (position_side == 'short' and kama_direction == 'bullish' and 
-                                    unrealized_pnl < 0 and loss_pct > 1.0):
+                                    unrealized_pnl < 0 and loss_pct > 2.0):
                                     should_close = True
                                 
                                 if should_close:
