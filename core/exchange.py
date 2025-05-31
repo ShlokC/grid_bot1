@@ -30,6 +30,26 @@ class Exchange:
         except Exception as e:
             self.logger.error(f"Failed to load markets: {e}")
             raise
+    def create_stop_market_order(self, symbol: str, side: str, amount: float, stop_price: float) -> Dict:
+        """Create a stop-market order (stop-loss) with rate limiting."""
+        try:
+            symbol_id = self._get_symbol_id(symbol)
+            self.logger.debug(f"Creating {side} stop-market order for symbol ID: {symbol_id} at stop price: {stop_price}")
+            
+            # Use CCXT's create_order with stop_market type
+            return self._rate_limited_request(
+                self.exchange.create_order,
+                symbol_id, 
+                'stop_market',  # Order type
+                side, 
+                amount, 
+                None,  # No limit price for stop-market
+                None,  # No limit price
+                {'stopPrice': stop_price}  # Stop trigger price
+            )
+        except Exception as e:
+            self.logger.error(f"Error creating {side} stop-market order for {symbol} (ID: {self._get_symbol_id(symbol)}): {e}")
+            raise
     def _rate_limited_request(self, func, *args, **kwargs):
         """ADDED: Rate-limited API request wrapper"""
         with self.rate_limiter:

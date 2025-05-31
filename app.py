@@ -182,9 +182,7 @@ def create_grid():
             
             # Create grid
             grid_id = grid_manager.create_grid(
-                symbol=symbol,
-                price_lower=price_lower,
-                price_upper=price_upper,
+                symbol=symbol,                
                 grid_number=grid_number,
                 investment=investment,
                 take_profit_pnl=take_profit_pnl,

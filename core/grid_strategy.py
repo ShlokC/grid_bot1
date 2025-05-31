@@ -108,7 +108,7 @@ class MarketIntelligence:
         
         # OHLCV data cache to avoid excessive API calls
         self.last_ohlcv_fetch = 0
-        self.ohlcv_cache_duration = 300  # 5 minutes
+        self.ohlcv_cache_duration = 30  # 30 seconds
         self.ohlcv_data_fetched = False
         
         # Market regime tracking
@@ -202,9 +202,9 @@ class MarketIntelligence:
                 
                 if bb_data is not None and not bb_data.empty:
                     # Get the latest Bollinger Band values
-                    bollinger_lower = float(bb_data.iloc[-1]['BBL_20_2.0'])
-                    bollinger_middle = float(bb_data.iloc[-1]['BBM_20_2.0'])  
-                    bollinger_upper = float(bb_data.iloc[-1]['BBU_20_2.0'])
+                    bollinger_lower = float(bb_data.iloc[-1]['BBL_10_2.0'])
+                    bollinger_middle = float(bb_data.iloc[-1]['BBM_10_2.0'])  
+                    bollinger_upper = float(bb_data.iloc[-1]['BBU_10_2.0'])
                     
                     self.logger.info(f"BB: Upper ${bollinger_upper:.6f}, Middle ${bollinger_middle:.6f}, Lower ${bollinger_lower:.6f}")
                     return bollinger_upper, bollinger_lower, bollinger_middle
@@ -592,7 +592,7 @@ class GridStrategy:
             return self.min_amount
     
     def _calculate_grid_levels(self) -> List[float]:
-        """Calculate grid levels within user-defined range"""
+        """Calculate grid levels with simple current price centered distribution"""
         try:
             if self.user_grid_number <= 0:
                 return []
@@ -603,18 +603,37 @@ class GridStrategy:
                 self.logger.error(f"Invalid price range: {self.user_price_lower} - {self.user_price_upper}")
                 return []
             
-            interval = price_range / self.user_grid_number
+            # Get current price (simple, no external dependencies)
+            try:
+                ticker = self.exchange.get_ticker(self.symbol)
+                current_price = float(ticker['last'])
+            except Exception:
+                # Fallback to equal distribution if can't get current price
+                interval = price_range / self.user_grid_number
+                levels = []
+                for i in range(self.user_grid_number + 1):
+                    level = self.user_price_lower + (i * interval)
+                    levels.append(self._round_price(level))
+                return sorted(list(set(levels)))
+            # ALL orders within 2% of current price (1% above, 1% below)
+            max_distance_pct = 0.02  # 2% max distance from current price
+
+            # Calculate tight range around current price
+            tight_lower = max(current_price * (1 - max_distance_pct), self.user_price_lower)
+            tight_upper = min(current_price * (1 + max_distance_pct), self.user_price_upper)
+            
             levels = []
             
-            # Generate grid levels
-            for i in range(self.user_grid_number + 1):
-                level = self.user_price_lower + (i * interval)
-                rounded_level = self._round_price(level)
-                levels.append(rounded_level)
-            
+            # Distribute ALL orders within the tight range
+            if tight_upper > tight_lower and self.user_grid_number > 0:
+                for i in range(self.user_grid_number):
+                    if self.user_grid_number == 1:
+                        level = current_price
+                    else:
+                        level = tight_lower + (i * (tight_upper - tight_lower) / (self.user_grid_number - 1))
+                    levels.append(self._round_price(level))
             # Remove duplicates and sort
             levels = sorted(list(set(levels)))
-            
             return levels
             
         except Exception as e:
@@ -878,6 +897,8 @@ class GridStrategy:
             
             # Get live positions for profit order determination
             live_positions = market_data['live_positions']
+            has_long_positions = False
+            has_short_positions = False
             # Calculate total unrealized PnL
             total_unrealized_pnl = 0.0
             for pos in live_positions:
@@ -1606,7 +1627,30 @@ class GridStrategy:
             
         except Exception as e:
             self.logger.error(f"Error creating position from filled order: {e}")
-    
+    def _cancel_other_counter_orders(self, position_id: str, filled_order_id: str):
+        """Cancel other counter orders for the same position when one fills"""
+        try:
+            orders_to_cancel = []
+            
+            # Find other counter orders for the same position
+            for order_id, order_info in list(self.pending_orders.items()):
+                if (order_info.get('position_id') == position_id and 
+                    order_id != filled_order_id and
+                    order_info.get('order_purpose') in ['profit', 'stop_loss']):
+                    orders_to_cancel.append(order_id)
+            
+            # Cancel the orders
+            for order_id in orders_to_cancel:
+                try:
+                    self.exchange.cancel_order(order_id, self.symbol)
+                    if order_id in self.pending_orders:
+                        del self.pending_orders[order_id]
+                    self.logger.info(f"Cancelled remaining counter order: {order_id[:8]}")
+                except Exception as e:
+                    self.logger.warning(f"Failed to cancel counter order {order_id[:8]}: {e}")
+                    
+        except Exception as e:
+            self.logger.error(f"Error cancelling other counter orders: {e}")
     def _close_position_from_counter_order(self, order_id: str, order_status: Dict, order_info: Dict):
         """Close position from filled counter order"""
         try:
@@ -1617,6 +1661,7 @@ class GridStrategy:
                 return
             
             position = self.all_positions[position_id]
+            order_purpose = order_info.get('order_purpose', 'unknown')  # NEW: Check order purpose
             
             # Update position with exit details
             position.exit_time = time.time()
@@ -1632,7 +1677,14 @@ class GridStrategy:
             
             position.unrealized_pnl = 0.0
             
-            self.logger.info(f"Position closed: {position.side.upper()} ${position.entry_price:.6f} → ${position.exit_price:.6f}, PnL: ${position.realized_pnl:.2f}")
+            # Enhanced logging with order purpose
+            pnl_status = "PROFIT" if position.realized_pnl > 0 else "LOSS"
+            self.logger.info(f"Position closed via {order_purpose.upper()}: {position.side.upper()} "
+                            f"${position.entry_price:.6f} → ${position.exit_price:.6f}, "
+                            f"{pnl_status}: ${position.realized_pnl:.2f}")
+            
+            # IMPORTANT: Cancel the other counter order for this position
+            self._cancel_other_counter_orders(position_id, order_id)
             
         except Exception as e:
             self.logger.error(f"Error closing position from counter order: {e}")
@@ -1653,58 +1705,85 @@ class GridStrategy:
             self.logger.error(f"Error maintaining counter orders: {e}")
     
     def _create_counter_order_for_position(self, position: GridPosition, current_price: float):
-        """Create counter order for a specific position"""
+        """Create profit-taking (limit) AND stop-loss (stop-market) orders for a position"""
         try:
-            # Calculate counter order parameters
+            # Calculate order parameters based on position side
             if position.side == PositionSide.LONG.value:
                 counter_side = OrderType.SELL.value
-                # Target small profit above entry price
-                profit_target = position.entry_price * 1.008  # 0.8% profit
-                market_target = current_price * 1.004  # Or 0.4% above current
-                counter_price = max(profit_target, market_target)
+                # Profit target: 0.8% above entry (LIMIT order)
+                profit_price = self._round_price(position.entry_price * 1.008)
+                # Stop loss: 0.8% below entry (STOP-MARKET order)
+                stop_price = self._round_price(position.entry_price * 0.992)
             else:
                 counter_side = OrderType.BUY.value
-                # Target small profit below entry price
-                profit_target = position.entry_price * 0.992  # 0.8% profit
-                market_target = current_price * 0.996  # Or 0.4% below current
-                counter_price = min(profit_target, market_target)
+                # Profit target: 0.8% below entry (LIMIT order)
+                profit_price = self._round_price(position.entry_price * 0.992)
+                # Stop loss: 0.8% above entry (STOP-MARKET order)
+                stop_price = self._round_price(position.entry_price * 1.008)
             
-            counter_price = self._round_price(counter_price)
+            # Validate prices make sense
+            if counter_side == OrderType.SELL.value:
+                if profit_price <= position.entry_price or stop_price >= position.entry_price:
+                    return
+            else:
+                if profit_price >= position.entry_price or stop_price <= position.entry_price:
+                    return
             
-            # Validate counter order makes sense
-            if counter_side == OrderType.SELL.value and counter_price <= position.entry_price * 1.002:
-                return
-            elif counter_side == OrderType.BUY.value and counter_price >= position.entry_price * 0.998:
-                return
+            orders_placed = 0
             
-            # Place counter order
-            order = self.exchange.create_limit_order(self.symbol, counter_side, position.quantity, counter_price)
+            # 1. Place PROFIT order (LIMIT)
+            try:
+                profit_order = self.exchange.create_limit_order(self.symbol, counter_side, position.quantity, profit_price)
+                
+                if profit_order and 'id' in profit_order:
+                    profit_order_info = {
+                        'type': counter_side,
+                        'price': profit_price,
+                        'amount': position.quantity,
+                        'position_id': position.position_id,
+                        'timestamp': time.time(),
+                        'status': 'open',
+                        'order_purpose': 'profit'
+                    }
+                    self.pending_orders[profit_order['id']] = profit_order_info
+                    orders_placed += 1
+                    
+                    expected_profit = abs(profit_price - position.entry_price) * position.quantity
+                    self.logger.info(f"PROFIT (limit): {counter_side.upper()} {position.quantity:.6f} @ ${profit_price:.6f}, Expected: ${expected_profit:.2f}")
             
-            if not order or 'id' not in order:
-                self.logger.error(f"Failed to create counter order")
-                return
+            except Exception as e:
+                self.logger.error(f"Failed to place profit order: {e}")
             
-            # Store counter order info
-            counter_order_info = {
-                'type': counter_side,
-                'price': counter_price,
-                'amount': position.quantity,
-                'position_id': position.position_id,
-                'timestamp': time.time(),
-                'status': 'open'
-            }
+            # 2. Place STOP-LOSS order (STOP-MARKET) - THE KEY CHANGE
+            try:
+                sl_order = self.exchange.create_stop_market_order(self.symbol, counter_side, position.quantity, stop_price)
+                
+                if sl_order and 'id' in sl_order:
+                    sl_order_info = {
+                        'type': counter_side,
+                        'price': stop_price,
+                        'amount': position.quantity,
+                        'position_id': position.position_id,
+                        'timestamp': time.time(),
+                        'status': 'open',
+                        'order_purpose': 'stop_loss'
+                    }
+                    self.pending_orders[sl_order['id']] = sl_order_info
+                    orders_placed += 1
+                    
+                    expected_loss = abs(stop_price - position.entry_price) * position.quantity
+                    self.logger.info(f"STOP-LOSS (stop-market): {counter_side.upper()} {position.quantity:.6f} @ ${stop_price:.6f}, Max loss: ${expected_loss:.2f}")
             
-            self.pending_orders[order['id']] = counter_order_info
+            except Exception as e:
+                self.logger.error(f"Failed to place stop-loss order: {e}")
             
-            # Update position
-            position.has_counter_order = True
-            position.counter_order_id = order['id']
-            
-            expected_profit = abs(counter_price - position.entry_price) * position.quantity
-            self.logger.info(f"Counter order: {counter_side.upper()} {position.quantity:.6f} @ ${counter_price:.6f}, Expected profit: ${expected_profit:.2f}")
+            # Update position if at least one order was placed
+            if orders_placed > 0:
+                position.has_counter_order = True
+                self.logger.info(f"Bracket orders created: {orders_placed} orders (profit + stop-loss)")
             
         except Exception as e:
-            self.logger.error(f"Error creating counter order for position {position.position_id}: {e}")
+            self.logger.error(f"Error creating counter orders for position {position.position_id}: {e}")
     
     def _update_pnl(self, current_price: float):
         """Update PnL calculations with periodic logging"""
