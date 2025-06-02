@@ -198,7 +198,7 @@ class MarketIntelligence:
                 price_series = pd.Series(closing_prices)
                 
                 # Calculate Bollinger Bands (20 period, 2 standard deviations)
-                bb_data = ta.bbands(price_series, length=20, std=2)
+                bb_data = ta.bbands(price_series, length=10, std=2)
                 
                 if bb_data is not None and not bb_data.empty:
                     # Get the latest Bollinger Band values
