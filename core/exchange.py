@@ -30,6 +30,31 @@ class Exchange:
         except Exception as e:
             self.logger.error(f"Failed to load markets: {e}")
             raise
+    def create_conditional_order(self, symbol: str, order_type: str, side: str, amount: float, stop_price: float) -> Dict:
+        """Create conditional order (stop-loss or take-profit) with rate limiting."""
+        try:
+            symbol_id = self._get_symbol_id(symbol)
+            self.logger.debug(f"Creating {order_type} {side} order for symbol ID: {symbol_id} at stop price: {stop_price}")
+            
+            params = {
+                'stopPrice': stop_price,
+                'reduceOnly': True,  # Only reduce existing position
+                'timeInForce': 'GTC'
+            }
+            
+            return self._rate_limited_request(
+                self.exchange.create_order,
+                symbol_id, 
+                order_type,  # 'stop_market' or 'take_profit_market'
+                side, 
+                amount, 
+                None,  # No limit price for market orders
+                None,  # No limit price
+                params
+            )
+        except Exception as e:
+            self.logger.error(f"Error creating {order_type} {side} order for {symbol} (ID: {self._get_symbol_id(symbol)}): {e}")
+            raise
     def create_stop_market_order(self, symbol: str, side: str, amount: float, stop_price: float) -> Dict:
         """Create a stop-market order (stop-loss) with rate limiting."""
         try:
