@@ -198,14 +198,14 @@ class MarketIntelligence:
                 price_series = pd.Series(closing_prices)
                 
                 # Calculate Bollinger Bands (20 period, 2 standard deviations)
-                bb_data = ta.bbands(price_series, length=10, std=2)
+                bb_data = ta.bbands(price_series, length=10, std=1.0, mamode='ema')
                 
                 if bb_data is not None and not bb_data.empty:
                     # Get the latest Bollinger Band values
-                    bollinger_lower = float(bb_data.iloc[-1]['BBL_10_2.0'])
-                    bollinger_middle = float(bb_data.iloc[-1]['BBM_10_2.0'])  
-                    bollinger_upper = float(bb_data.iloc[-1]['BBU_10_2.0'])
-                    
+                    bollinger_lower = float(bb_data.iloc[-1]['BBL_10_1.0'])
+                    bollinger_middle = float(bb_data.iloc[-1]['BBM_10_1.0'])
+                    bollinger_upper = float(bb_data.iloc[-1]['BBU_10_1.0'])
+
                     self.logger.info(f"BB: Upper ${bollinger_upper:.6f}, Middle ${bollinger_middle:.6f}, Lower ${bollinger_lower:.6f}")
                     return bollinger_upper, bollinger_lower, bollinger_middle
             
@@ -1469,7 +1469,7 @@ class GridStrategy:
             except Exception as e:
                 self.logger.error(f"BB cleanup error: {e}")
             
-            # FIXED: Orphan cleanup with proper TP/SL protection by order type
+            # FIXED: Simplified orphan cleanup - trust GTC orders to auto-cancel, only clean clearly invalid orders
             if not hasattr(self, '_last_cleanup') or time.time() - self._last_cleanup > 30:
                 for order in live_orders:
                     order_price = self._get_order_price(order)
@@ -1477,36 +1477,35 @@ class GridStrategy:
                     order_id = order.get('id', '')
                     order_type = order.get('type', '').lower()
                     
-                    # CRITICAL: Skip TP/SL orders (protect by type)
+                    # CRITICAL: Skip TP/SL orders completely - GTC orders auto-cancel when position closes
                     if order_type in ['take_profit_market', 'stop_market', 'take_profit', 'stop_loss', 'take_profit_limit', 'stop_loss_limit']:
-                        continue  # Don't cancel TP/SL orders in orphan cleanup
+                        continue  # Trust GTC orders to handle themselves
                     
                     # Skip if no valid price
                     if order_price <= 0:
                         continue
                     
-                    # Check if order is far from current price (potential orphan)
+                    # Only check grid orders that are VERY far from current price (potential orphans)
                     price_distance = abs(order_price - current_price) / current_price
-                    if price_distance > 0.02:  # More than 2% away (increased threshold)
+                    if price_distance > 0.05:  # More than 5% away (very conservative threshold)
                         # Check if any live position justifies this order
                         has_matching_position = False
                         
                         for pos in live_positions:
                             pos_size = float(pos.get('contracts', 0))
                             pos_entry = float(pos.get('entryPrice', 0))
-                            pos_side = pos.get('side', '').lower()
                             
                             if abs(pos_size) >= 0.001 and pos_entry > 0:
                                 # For grid orders, check if it's within reasonable range of position
                                 price_diff = abs(order_price - pos_entry) / pos_entry
-                                if price_diff < 0.05:  # Within 5% of position entry
+                                if price_diff < 0.10:  # Within 10% of position entry (very generous)
                                     has_matching_position = True
                                     break
                         
-                        # Cancel if no matching position (only non-TP/SL orders)
+                        # Only cancel if CLEARLY orphaned (very conservative approach)
                         if not has_matching_position:
                             try:
-                                self.logger.warning(f"Cancelling orphaned: {order_side.upper()} @ ${order_price:.6f} (type: {order_type})")
+                                self.logger.warning(f"Cancelling clearly orphaned grid order: {order_side.upper()} @ ${order_price:.6f} (type: {order_type})")
                                 self.exchange.cancel_order(order_id, self.symbol)
                                 if order_id in self.pending_orders:
                                     del self.pending_orders[order_id]
@@ -1547,7 +1546,7 @@ class GridStrategy:
                 
         except Exception as e:
             self.logger.error(f"Update error: {e}")
-                
+                    
     def _process_filled_order(self, order_id: str, order_status: Dict):
         """Process a filled order and create position or close existing position"""
         try:
@@ -1657,7 +1656,7 @@ class GridStrategy:
             self.logger.error(f"Error closing position from counter order: {e}")
     
     def _maintain_counter_orders(self, current_price: float):
-        """FIXED: Use position-specific ID to prevent duplicate TP/SL orders"""
+        """FIXED: Prevent duplicate TP/SL orders by properly matching existing orders to positions"""
         try:
             live_positions = self.exchange.get_positions(self.symbol)
             live_orders = self.exchange.get_open_orders(self.symbol)
@@ -1686,74 +1685,108 @@ class GridStrategy:
                 
             self.logger.info(f"Processing TP/SL for {len(active_positions)} active positions on {self.symbol}")
             
-            # STEP 1: Clean up orphaned TP/SL orders (orders without matching positions)
-            orphaned_tp_sl_orders = []
+            # STEP 1: Build comprehensive map of existing TP/SL orders by position
+            existing_tp_orders = {}  # position_id -> order_info
+            existing_sl_orders = {}  # position_id -> order_info
             
             for order in live_orders:
                 order_type = order.get('type', '').lower()
                 order_id = order.get('id', '')
                 
-                # Check if this is a TP/SL order
-                if order_type in ['take_profit_market', 'stop_market', 'take_profit', 'stop_loss', 'take_profit_limit', 'stop_loss_limit']:
-                    order_price = self._get_order_price(order)
-                    order_side = order.get('side', '').lower()
+                # Only process TP/SL orders
+                if order_type not in ['take_profit_market', 'stop_market', 'take_profit', 'stop_loss', 'take_profit_limit', 'stop_loss_limit']:
+                    continue
                     
-                    # Check if this TP/SL order matches any active position
-                    has_matching_position = False
+                order_price = self._get_order_price(order)
+                order_side = order.get('side', '').lower()
+                order_amount = float(order.get('amount', 0))
+                
+                if order_price <= 0 or order_amount <= 0:
+                    continue
+                
+                # Match this order to a position by finding the best match
+                best_match_position = None
+                best_match_score = float('inf')
+                
+                for pos_data in active_positions:
+                    entry_price = pos_data['entry_price']
+                    side = pos_data['side']
+                    quantity = pos_data['quantity']
+                    position_id = pos_data['position_id']
                     
-                    for pos_data in active_positions:
-                        entry_price = pos_data['entry_price']
-                        side = pos_data['side']
-                        
-                        # Calculate expected TP/SL prices for this position
-                        if side == 'long':
-                            expected_tp = self._round_price(entry_price * 1.015)
-                            expected_sl = self._round_price(entry_price * 0.985)
-                            expected_counter_side = 'sell'
-                        else:
-                            expected_tp = self._round_price(entry_price * 0.985)
-                            expected_sl = self._round_price(entry_price * 1.015)
-                            expected_counter_side = 'buy'
-                        
-                        # Check if this order matches this position's TP/SL
-                        if (order_side == expected_counter_side and 
-                            (abs(order_price - expected_tp) < 0.0001 or abs(order_price - expected_sl) < 0.0001)):
-                            has_matching_position = True
-                            break
+                    # Calculate expected counter side
+                    expected_counter_side = 'sell' if side == 'long' else 'buy'
                     
-                    # Mark for cleanup if no matching position found
-                    if not has_matching_position:
-                        orphaned_tp_sl_orders.append({
-                            'id': order_id,
-                            'price': order_price,
-                            'side': order_side,
-                            'type': order_type
-                        })
+                    # Skip if wrong side
+                    if order_side != expected_counter_side:
+                        continue
+                    
+                    # Skip if quantity doesn't match (with small tolerance)
+                    quantity_diff = abs(order_amount - quantity) / quantity
+                    if quantity_diff > 0.01:  # 1% tolerance for quantity
+                        continue
+                    
+                    # Calculate expected TP/SL prices for this position
+                    if side == 'long':
+                        expected_tp = entry_price * 1.015   # 1.5% profit
+                        expected_sl = entry_price * 0.985   # 1.5% stop loss
+                    else:
+                        expected_tp = entry_price * 0.985   # 1.5% profit (price drops)
+                        expected_sl = entry_price * 1.015   # 1.5% stop loss (price rises)
+
+                    # Calculate distance scores for TP and SL
+                    tp_distance = abs(order_price - expected_tp) / entry_price
+                    sl_distance = abs(order_price - expected_sl) / entry_price
+                    
+                    # Find the best match (smallest distance within reasonable range)
+                    min_distance = min(tp_distance, sl_distance)
+                    if min_distance < 0.005 and min_distance < best_match_score:  # Within 0.5% of expected
+                        best_match_position = pos_data
+                        best_match_score = min_distance
+                
+                # If we found a good match, record this order
+                if best_match_position is not None:
+                    position_id = best_match_position['position_id']
+                    entry_price = best_match_position['entry_price']
+                    
+                    # Determine if this is TP or SL based on which expected price it's closer to
+                    if best_match_position['side'] == 'long':
+                        expected_tp = entry_price * 1.015
+                        expected_sl = entry_price * 0.985
+                    else:
+                        expected_tp = entry_price * 0.985
+                        expected_sl = entry_price * 1.015
+
+                    tp_distance = abs(order_price - expected_tp) / entry_price
+                    sl_distance = abs(order_price - expected_sl) / entry_price
+                    
+                    order_info = {
+                        'order_id': order_id,
+                        'price': order_price,
+                        'amount': order_amount,
+                        'type': order_type,
+                        'distance': best_match_score
+                    }
+                    
+                    if tp_distance < sl_distance:
+                        # This is a TP order
+                        if position_id not in existing_tp_orders or best_match_score < existing_tp_orders[position_id]['distance']:
+                            existing_tp_orders[position_id] = order_info
+                            self.logger.debug(f"Found TP for {position_id}: {order_type} @ ${order_price:.6f} (distance: {best_match_score:.4f})")
+                    else:
+                        # This is a SL order
+                        if position_id not in existing_sl_orders or best_match_score < existing_sl_orders[position_id]['distance']:
+                            existing_sl_orders[position_id] = order_info
+                            self.logger.debug(f"Found SL for {position_id}: {order_type} @ ${order_price:.6f} (distance: {best_match_score:.4f})")
             
-            # Clean up orphaned TP/SL orders
-            for orphan in orphaned_tp_sl_orders:
-                try:
-                    self.logger.warning(f"Cleaning orphaned TP/SL: {orphan['type']} {orphan['side'].upper()} @ ${orphan['price']:.6f}")
-                    self.exchange.cancel_order(orphan['id'], self.symbol)
-                    if orphan['id'] in self.pending_orders:
-                        del self.pending_orders[orphan['id']]
-                except Exception as e:
-                    self.logger.error(f"Failed to clean orphaned TP/SL {orphan['id'][:8]}: {e}")
-            
-            if orphaned_tp_sl_orders:
-                self.logger.info(f"Cleaned up {len(orphaned_tp_sl_orders)} orphaned TP/SL orders")
-                # Refresh live orders after cleanup
-                time.sleep(1)
-                live_orders = self.exchange.get_open_orders(self.symbol)
-            
-            # STEP 2: Create TP/SL for each active position if missing
+            # STEP 2: Create missing TP/SL orders for each position
             for pos_data in active_positions:
                 position_id = pos_data['position_id']
                 entry_price = pos_data['entry_price']
                 side = pos_data['side']
                 quantity = pos_data['quantity']
                 
-                # Calculate TP/SL prices with 1.5% distance
+                # Calculate target TP/SL prices
                 if side == 'long':
                     tp_price = self._round_price(entry_price * 1.015)   # 1.5% profit
                     sl_price = self._round_price(entry_price * 0.985)   # 1.5% stop loss
@@ -1763,37 +1796,17 @@ class GridStrategy:
                     sl_price = self._round_price(entry_price * 1.015)   # 1.5% stop loss (price rises)
                     counter_side = 'buy'
                 
-                self.logger.info(f"Checking TP/SL for position {position_id}: TP=${tp_price:.6f}, SL=${sl_price:.6f}")
+                # Check if TP order exists for this position
+                has_tp = position_id in existing_tp_orders
+                has_sl = position_id in existing_sl_orders
                 
-                # Check if TP/SL orders exist for THIS specific position
-                has_tp = False
-                has_sl = False
+                if has_tp and has_sl:
+                    self.logger.debug(f"Position {position_id} already has both TP and SL orders")
+                    continue
                 
-                for order in live_orders:
-                    order_type = order.get('type', '').lower()
-                    order_side = order.get('side', '').lower()
-                    
-                    # Only check TP/SL orders with matching side
-                    if (order_side != counter_side or 
-                        order_type not in ['take_profit_market', 'stop_market', 'take_profit', 'stop_loss', 'take_profit_limit', 'stop_loss_limit']):
-                        continue
-                    
-                    order_price = self._get_order_price(order)
-                    if order_price <= 0:
-                        continue
-                    
-                    # Check if this order matches THIS position's TP/SL
-                    if order_type in ['take_profit_market', 'take_profit', 'take_profit_limit']:
-                        if abs(order_price - tp_price) < 0.0001:
-                            has_tp = True
-                            self.logger.debug(f"Found TP for position {position_id}: @ ${order_price:.6f}")
-                            
-                    elif order_type in ['stop_market', 'stop_loss', 'stop_loss_limit']:
-                        if abs(order_price - sl_price) < 0.0001:
-                            has_sl = True
-                            self.logger.debug(f"Found SL for position {position_id}: @ ${order_price:.6f}")
+                self.logger.info(f"Creating missing orders for position {position_id}: TP={not has_tp}, SL={not has_sl}")
                 
-                # Create missing TP order for this specific position
+                # Create missing TP order
                 if not has_tp:
                     try:
                         self.logger.info(f"Creating TP for position {position_id}: {counter_side.upper()} {quantity:.6f} @ ${tp_price:.6f}")
@@ -1806,8 +1819,9 @@ class GridStrategy:
                             amount=quantity,
                             price=None,
                             params={
-                                'stopPrice': tp_price,
-                                'reduceOnly': True
+                                'stopPrice': tp_price, #'reduceOnly': True,
+                                
+                                'timeInForce': 'GTE_GTC'  # Auto-cancels when position closes
                             }
                         )
                         
@@ -1816,15 +1830,16 @@ class GridStrategy:
                                 'type': counter_side, 'price': tp_price, 'amount': quantity,
                                 'timestamp': time.time(), 'order_purpose': 'profit',
                                 'position_id': position_id,  # Link to specific position
-                                'symbol': self.symbol
+                                'symbol': self.symbol,
+                                'is_tp_sl_order': True
                             }
                             self.logger.info(f"TP created: {tp_order['id'][:8]} @ ${tp_price:.6f} for position {position_id}")
-                            time.sleep(0.3)
+                            time.sleep(0.2)  # Small delay between orders
                             
                     except Exception as e:
                         self.logger.error(f"TP creation failed for position {position_id}: {e}")
                 
-                # Create missing SL order for this specific position
+                # Create missing SL order
                 if not has_sl:
                     try:
                         self.logger.info(f"Creating SL for position {position_id}: {counter_side.upper()} {quantity:.6f} @ ${sl_price:.6f}")
@@ -1837,8 +1852,9 @@ class GridStrategy:
                             amount=quantity,
                             price=None,
                             params={
-                                'stopPrice': sl_price,
-                                'reduceOnly': True
+                                'stopPrice': sl_price, #'reduceOnly': True,
+                                
+                                'timeInForce': 'GTE_GTC'  # Auto-cancels when position closes
                             }
                         )
                         
@@ -1847,14 +1863,16 @@ class GridStrategy:
                                 'type': counter_side, 'price': sl_price, 'amount': quantity,
                                 'timestamp': time.time(), 'order_purpose': 'stop_loss',
                                 'position_id': position_id,  # Link to specific position
-                                'symbol': self.symbol
+                                'symbol': self.symbol,
+                                'is_tp_sl_order': True
                             }
                             self.logger.info(f"SL created: {sl_order['id'][:8]} @ ${sl_price:.6f} for position {position_id}")
+                            time.sleep(0.2)  # Small delay between orders
                             
                     except Exception as e:
                         self.logger.error(f"SL creation failed for position {position_id}: {e}")
             
-            # STEP 3: Final verification
+            # STEP 3: Final verification and cleanup summary
             final_live_orders = self.exchange.get_open_orders(self.symbol)
             tp_count = 0
             sl_count = 0
@@ -1866,33 +1884,40 @@ class GridStrategy:
                 elif order_type in ['stop_market', 'stop_loss', 'stop_loss_limit']:
                     sl_count += 1
             
-            self.logger.info(f"Final count for {self.symbol}: {len(active_positions)} positions, {tp_count} TP orders, {sl_count} SL orders")
+            self.logger.info(f"Final TP/SL summary for {self.symbol}: {len(active_positions)} positions, {tp_count} TP orders, {sl_count} SL orders")
             
             # Alert if there's still a mismatch
             if tp_count != len(active_positions) or sl_count != len(active_positions):
-                self.logger.warning(f"TP/SL count mismatch: Expected {len(active_positions)} each, got {tp_count} TP, {sl_count} SL")
-                        
+                self.logger.warning(f"TP/SL count mismatch after creation: Expected {len(active_positions)} each, got {tp_count} TP, {sl_count} SL")
+                
+                # Log existing orders for debugging
+                self.logger.info(f"Existing TP orders: {len(existing_tp_orders)}, Existing SL orders: {len(existing_sl_orders)}")
+                for pos_id in [p['position_id'] for p in active_positions]:
+                    tp_status = "✓" if pos_id in existing_tp_orders else "✗"
+                    sl_status = "✓" if pos_id in existing_sl_orders else "✗"
+                    self.logger.info(f"Position {pos_id}: TP {tp_status}, SL {sl_status}")
+                            
         except Exception as e:
             self.logger.error(f"Error in _maintain_counter_orders: {e}")
             import traceback
             self.logger.error(f"Traceback: {traceback.format_exc()}")
     def _create_counter_order_for_position(self, position: GridPosition, current_price: float):
-        """Create profit-taking AND stop-loss orders - BYPASS investment limits for TP/SL"""
+        """Create profit-taking AND stop-loss orders with consistent 0.8% and GTC auto-cancel"""
         try:
-            # Calculate order parameters based on position side
+            # Calculate order parameters based on position side (CONSISTENT 0.8%)
             if position.side == PositionSide.LONG.value:
                 counter_side = OrderType.SELL.value
-                # Profit target: 0.8% above entry (LIMIT order)
-                profit_price = self._round_price(position.entry_price * 1.008)
-                # Stop loss: 0.8% below entry (STOP-MARKET order)
-                stop_price = self._round_price(position.entry_price * 0.992)
+                # Profit target: 1% above entry
+                profit_price = self._round_price(position.entry_price * 1.015)
+                # Stop loss: 1% below entry
+                stop_price = self._round_price(position.entry_price * 0.985)
             else:
                 counter_side = OrderType.BUY.value
-                # Profit target: 0.8% below entry (LIMIT order)
-                profit_price = self._round_price(position.entry_price * 0.992)
-                # Stop loss: 0.8% above entry (STOP-MARKET order)
-                stop_price = self._round_price(position.entry_price * 1.008)
-            
+                # Profit target: 1% below entry
+                profit_price = self._round_price(position.entry_price * 0.985)
+                # Stop loss: 1% above entry
+                stop_price = self._round_price(position.entry_price * 1.015)
+
             # Validate prices make sense
             if counter_side == OrderType.SELL.value:
                 if profit_price <= position.entry_price or stop_price >= position.entry_price:
@@ -1903,10 +1928,23 @@ class GridStrategy:
             
             orders_placed = 0
             
-            # 1. Place PROFIT order (LIMIT) - FORCE PLACEMENT
+            # 1. Place PROFIT order (TAKE_PROFIT_MARKET with GTC)
             try:
-                self.logger.info(f"FORCING TP order placement for position {position.position_id[:8]}")
-                profit_order = self.exchange.create_limit_order(self.symbol, counter_side, position.quantity, profit_price)
+                self.logger.info(f"Creating TP order for position {position.position_id[:8]}")
+                
+                symbol_id = self.exchange._get_symbol_id(self.symbol)
+                profit_order = self.exchange.exchange.create_order(
+                    symbol=symbol_id,
+                    type='TAKE_PROFIT_MARKET',
+                    side=counter_side.upper(),
+                    amount=position.quantity,
+                    price=None,
+                    params={
+                        'stopPrice': profit_price, #'reduceOnly': True,
+                        
+                        'timeInForce': 'GTE_GTC'  # Auto-cancels when position closes
+                    }
+                )
                 
                 if profit_order and 'id' in profit_order:
                     profit_order_info = {
@@ -1923,14 +1961,25 @@ class GridStrategy:
                     orders_placed += 1
                     
                     expected_profit = abs(profit_price - position.entry_price) * position.quantity
-                    self.logger.info(f"PROFIT (limit): {counter_side.upper()} {position.quantity:.6f} @ ${profit_price:.6f}, Expected: ${expected_profit:.2f}")
+                    self.logger.info(f"PROFIT (TP): {counter_side.upper()} {position.quantity:.6f} @ ${profit_price:.6f}, Expected: ${expected_profit:.2f}")
             
             except Exception as e:
                 self.logger.error(f"Failed to place profit order: {e}")
             
-            # 2. Place STOP-LOSS order (STOP-MARKET) - FORCE PLACEMENT
+            # 2. Place STOP-LOSS order (STOP_MARKET with GTC)
             try:
-                sl_order = self.exchange.create_limit_order(self.symbol, counter_side, position.quantity, stop_price)
+                symbol_id = self.exchange._get_symbol_id(self.symbol)
+                sl_order = self.exchange.exchange.create_order(
+                    symbol=symbol_id,
+                    type='STOP_MARKET',
+                    side=counter_side.upper(),
+                    amount=position.quantity,
+                    price=None,
+                    params={
+                        'stopPrice': stop_price, #'reduceOnly': True,                        
+                        'timeInForce': 'GTE_GTC'  # Auto-cancels when position closes
+                    }
+                )
             
                 if sl_order and 'id' in sl_order:
                     sl_order_info = {
@@ -1940,14 +1989,14 @@ class GridStrategy:
                         'position_id': position.position_id,
                         'timestamp': time.time(),
                         'status': 'open',
-                        'order_purpose': 'stop_loss'
+                        'order_purpose': 'stop_loss',
+                        'is_tp_sl_order': True  # MARK as TP/SL order
                     }
                     self.pending_orders[sl_order['id']] = sl_order_info
                     orders_placed += 1
                     
                     expected_loss = abs(stop_price - position.entry_price) * position.quantity
-                    self.logger.info(f"STOP-LOSS (limit): {counter_side.upper()} {position.quantity:.6f} @ ${stop_price:.6f}, Max loss: ${expected_loss:.2f}")
-        
+                    self.logger.info(f"STOP-LOSS (SL): {counter_side.upper()} {position.quantity:.6f} @ ${stop_price:.6f}, Max loss: ${expected_loss:.2f}")
             
             except Exception as e:
                 self.logger.error(f"Failed to place stop-loss order: {e}")
@@ -1955,11 +2004,11 @@ class GridStrategy:
             # Update position if at least one order was placed
             if orders_placed > 0:
                 position.has_counter_order = True
-                self.logger.info(f"TP/SL orders created: {orders_placed} orders (FORCED placement)")
+                self.logger.info(f"TP/SL orders created: {orders_placed} orders with GTC auto-cancel")
             
         except Exception as e:
             self.logger.error(f"Error creating counter orders for position {position.position_id}: {e}")
-    
+        
     def _update_pnl(self, current_price: float):
         """Update PnL calculations with periodic logging"""
         try:
