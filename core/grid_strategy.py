@@ -198,13 +198,13 @@ class MarketIntelligence:
                 price_series = pd.Series(closing_prices)
                 
                 # Calculate Bollinger Bands (20 period, 2 standard deviations)
-                bb_data = ta.bbands(price_series, length=10, std=1.0, mamode='ema')
-                
+                bb_data = ta.bbands(price_series, length=10, std=2.0, mamode='ema')
+
                 if bb_data is not None and not bb_data.empty:
                     # Get the latest Bollinger Band values
-                    bollinger_lower = float(bb_data.iloc[-1]['BBL_10_1.0'])
-                    bollinger_middle = float(bb_data.iloc[-1]['BBM_10_1.0'])
-                    bollinger_upper = float(bb_data.iloc[-1]['BBU_10_1.0'])
+                    bollinger_lower = float(bb_data.iloc[-1]['BBL_10_2.0'])
+                    bollinger_middle = float(bb_data.iloc[-1]['BBM_10_2.0'])
+                    bollinger_upper = float(bb_data.iloc[-1]['BBU_10_2.0'])
 
                     self.logger.info(f"BB: Upper ${bollinger_upper:.6f}, Middle ${bollinger_middle:.6f}, Lower ${bollinger_lower:.6f}")
                     return bollinger_upper, bollinger_lower, bollinger_middle
@@ -840,7 +840,7 @@ class GridStrategy:
             self.running = False
     
     def _place_initial_grid_orders(self, current_price: float, available_investment: float) -> int:
-        """Place initial grid orders within user range"""
+        """Place initial grid orders with BB-based distribution strategy"""
         try:
             # Get grid levels
             grid_levels = self._calculate_grid_levels()
@@ -857,62 +857,125 @@ class GridStrategy:
                 self.logger.warning(f"Cannot place orders: By investment: {max_orders_by_investment}, By capacity: {max_orders_by_capacity}")
                 return 0
             
-            # Calculate minimum gap to avoid clustering
-            price_range = self.user_price_upper - self.user_price_lower
-            min_gap = price_range / self.user_grid_number * 0.1  # 10% of natural grid spacing
-
-            # Get market intelligence for order distribution
-            directional_bias = 0.0
+            # BB-BASED MARKET ANALYSIS FOR ORDER DISTRIBUTION
+            bb_position = 0.5  # Default to middle
+            bb_width_pct = 0.04  # Default width
+            is_low_volatility = False
+            
             if self.market_intel:
                 try:
                     market_snapshot = self.market_intel.analyze_market(self.exchange)
-                    directional_bias = market_snapshot.directional_bias
+                    bb_upper = market_snapshot.bollinger_upper
+                    bb_lower = market_snapshot.bollinger_lower
+                    bb_middle = market_snapshot.bollinger_middle
+                    
+                    if bb_upper > 0 and bb_lower > 0 and bb_upper > bb_lower and bb_middle > 0:
+                        # Calculate WHERE current price is within BB range
+                        bb_position = (current_price - bb_lower) / (bb_upper - bb_lower)
+                        bb_position = max(0.0, min(1.0, bb_position))
+                        
+                        # Calculate BB width as volatility indicator
+                        bb_width_pct = (bb_upper - bb_lower) / bb_middle
+                        is_low_volatility = bb_width_pct < 0.03
+                    
                 except Exception as e:
-                    self.logger.warning(f"Market intelligence failed: {e}")
+                    self.logger.warning(f"BB analysis failed for order distribution: {e}")
             
-            # Calculate order distribution based on bias
-            if abs(directional_bias) > 0.3:
-                buy_ratio = 0.6 if directional_bias > 0 else 0.4
+            # BB-BASED ORDER DISTRIBUTION
+            price_in_upper_zone = bb_position > 0.75
+            price_in_lower_zone = bb_position < 0.25
+            price_in_middle_zone = 0.35 < bb_position < 0.65
+            
+            if price_in_upper_zone:
+                # Price expensive (near upper BB) - favor sell orders
+                buy_ratio = 0.3  # 30% buy, 70% sell
+                strategy_info = f"UPPER BB zone ({bb_position:.3f}) - favoring sell orders"
+            elif price_in_lower_zone:
+                # Price cheap (near lower BB) - favor buy orders
+                buy_ratio = 0.7  # 70% buy, 30% sell
+                strategy_info = f"LOWER BB zone ({bb_position:.3f}) - favoring buy orders"
+            elif is_low_volatility:
+                # Low volatility + middle zone - balanced but aggressive grid
+                buy_ratio = 0.5  # 50% buy, 50% sell
+                strategy_info = f"LOW volatility + MIDDLE zone ({bb_position:.3f}) - balanced grid"
             else:
-                buy_ratio = 0.5
+                # Normal conditions - balanced approach
+                buy_ratio = 0.5  # 50% buy, 50% sell
+                strategy_info = f"NORMAL conditions ({bb_position:.3f}) - balanced grid"
             
             buy_target = int(max_orders * buy_ratio)
             sell_target = max_orders - buy_target
             
-            self.logger.info(f"Order targets: {buy_target} buy + {sell_target} sell = {max_orders} total, Min gap: ${min_gap:.6f}")
+            # SMART ORDER SEQUENCING BASED ON BB POSITION
+            if price_in_upper_zone:
+                # Price expensive - prioritize sell orders, place them closer to current price
+                sell_levels = [level for level in grid_levels if level > current_price]
+                buy_levels = [level for level in grid_levels if level < current_price]
+                
+                # Sort sell levels by proximity (closest first for better fills)
+                sell_levels.sort(key=lambda x: x - current_price)
+                # Sort buy levels by distance (farthest first to avoid immediate fills)
+                buy_levels.sort(key=lambda x: current_price - x, reverse=True)
+                
+                # Prioritize sell orders
+                sorted_levels_with_side = [(level, 'sell') for level in sell_levels[:sell_target]] + \
+                                        [(level, 'buy') for level in buy_levels[:buy_target]]
+                                        
+            elif price_in_lower_zone:
+                # Price cheap - prioritize buy orders, place them closer to current price
+                buy_levels = [level for level in grid_levels if level < current_price]
+                sell_levels = [level for level in grid_levels if level > current_price]
+                
+                # Sort buy levels by proximity (closest first for better fills)
+                buy_levels.sort(key=lambda x: current_price - x)
+                # Sort sell levels by distance (farthest first to avoid immediate fills)
+                sell_levels.sort(key=lambda x: x - current_price, reverse=True)
+                
+                # Prioritize buy orders
+                sorted_levels_with_side = [(level, 'buy') for level in buy_levels[:buy_target]] + \
+                                        [(level, 'sell') for level in sell_levels[:sell_target]]
+            else:
+                # Middle zone or normal conditions - balanced placement
+                sorted_levels = sorted(grid_levels, key=lambda x: abs(x - current_price))
+                
+                # Alternate between buy and sell orders for balanced placement
+                sorted_levels_with_side = []
+                buy_count = 0
+                sell_count = 0
+                
+                for level_price in sorted_levels:
+                    if buy_count < buy_target and level_price < current_price:
+                        sorted_levels_with_side.append((level_price, 'buy'))
+                        buy_count += 1
+                    elif sell_count < sell_target and level_price > current_price:
+                        sorted_levels_with_side.append((level_price, 'sell'))
+                        sell_count += 1
+                    
+                    if buy_count >= buy_target and sell_count >= sell_target:
+                        break
             
-            # Sort levels by distance from current price (place closest first)
-            sorted_levels = sorted(grid_levels, key=lambda x: abs(x - current_price))
+            self.logger.info(f"BB Strategy: {strategy_info}")
+            self.logger.info(f"Order targets: {buy_target} buy + {sell_target} sell = {max_orders} total")
+            self.logger.info(f"BB width: {bb_width_pct:.3f} ({'tight' if is_low_volatility else 'normal/wide'} bands)")
             
+            # Place orders according to the BB-based sequence
             orders_placed = 0
             buy_orders_placed = 0
             sell_orders_placed = 0
             
-            for level_price in sorted_levels:
+            for level_price, order_side in sorted_levels_with_side:
                 if orders_placed >= max_orders:
                     break
                 
-                # Skip levels too close to current price
-                if abs(level_price - current_price) < min_gap:
-                    continue
-                
-                # Determine order type based on position relative to current price
-                if level_price < current_price and buy_orders_placed < buy_target:
-                    order_type = OrderType.BUY.value
-                elif level_price > current_price and sell_orders_placed < sell_target:
-                    order_type = OrderType.SELL.value
-                else:
-                    continue
-                
-                # Place the order
-                if self._place_single_order(level_price, order_type):
+                # Place the order (BB logic will filter inappropriate orders)
+                if self._place_single_order(level_price, order_side):
                     orders_placed += 1
-                    if order_type == OrderType.BUY.value:
+                    if order_side == 'buy':
                         buy_orders_placed += 1
                     else:
                         sell_orders_placed += 1
             
-            self.logger.info(f"Initial grid orders placed: {buy_orders_placed} buy, {sell_orders_placed} sell, Total: {orders_placed}")
+            self.logger.info(f"Initial BB-based grid orders placed: {buy_orders_placed} buy, {sell_orders_placed} sell, Total: {orders_placed}")
             
             return orders_placed
             
@@ -921,144 +984,106 @@ class GridStrategy:
             return 0
     
     def _place_single_order(self, price: float, side: str) -> bool:
-        """Enhanced order placement with consolidated logging and profit metadata"""
+        """Enhanced order placement with BB-based value assessment logic"""
         try:
             # Get current market price for context
             ticker = self.exchange.get_ticker(self.symbol)
             current_price = float(ticker['last'])
             price_diff_pct = ((price - current_price) / current_price) * 100
             
-            # Smart Last Order Logic - Check total investment usage approaching 80%
+            # Get current market data for fund allocation check
             market_data = self._get_live_market_data()
-            total_investment_used = market_data['total_margin_used']
             available_investment = market_data['available_investment']
-            investment_utilization = (total_investment_used / self.user_total_investment) * 100
             
-            # Get live positions for profit order determination
-            live_positions = market_data['live_positions']
-            has_long_positions = False
-            has_short_positions = False
-            # Calculate total unrealized PnL
-            total_unrealized_pnl = 0.0
-            for pos in live_positions:
-                if 'unrealizedPnl' in pos:
-                    total_unrealized_pnl += float(pos['unrealizedPnl'])
-            # Position-aware order blocking
-            if total_unrealized_pnl > self.user_investment_per_grid:
-                if (side == 'buy' and any(pos.get('side') == 'long' for pos in live_positions) or 
-                    side == 'sell' and any(pos.get('side') == 'short' for pos in live_positions)):
-                    self.logger.info(f"Position-aware block: Avoided adding to winning positions")
-                    return False
-                
-            # Check if we're near 80% AND can only place 1 more order
-            can_place_orders = int(available_investment / self.user_investment_per_grid)
-            
-            if investment_utilization >= 75.0 and can_place_orders <= 1:
-                # Determine dominant position direction from existing positions
-                net_position_value = 0.0
-                
-                for position in live_positions:
-                    size = float(position.get('contracts', 0))
-                    entry_price = float(position.get('entryPrice', 0))
-                    if size != 0 and entry_price > 0:
-                        position_value = size * entry_price
-                        if position.get('side', '').lower() == 'long':
-                            net_position_value += position_value
-                        else:
-                            net_position_value -= position_value
-                
-                # If we have a dominant position, check if order is same direction
-                if net_position_value != 0:
-                    dominant_direction = 'long' if net_position_value > 0 else 'short'
-                    
-                    # Check if this order is same direction as dominant position
-                    is_same_direction = False
-                    if dominant_direction == 'long' and side == 'buy':
-                        is_same_direction = True
-                    elif dominant_direction == 'short' and side == 'sell':
-                        is_same_direction = True
-                    
-                    if is_same_direction:
-                        self.logger.warning(f"Last order protection: Blocked {side.upper()} @ ${price:.6f} - same direction as {dominant_direction.upper()} position")
-                        return False
-            
-            # Determine if this is a profit-taking order
-            is_profit_order = False
-            expected_profit_pct = 0.0
-            
-            if live_positions:
-                has_long_positions = any(
-                    float(pos.get('contracts', 0)) > 0 and pos.get('side', '').lower() == 'long'
-                    for pos in live_positions
-                )
-                has_short_positions = any(
-                    float(pos.get('contracts', 0)) > 0 and pos.get('side', '').lower() == 'short'
-                    for pos in live_positions
-                )
-                
-                if side == 'sell' and price > current_price and has_long_positions:
-                    avg_entry = self._calculate_average_entry(live_positions, 'long')
-                    if avg_entry > 0 and price > avg_entry * 1.002:
-                        is_profit_order = True
-                        expected_profit_pct = ((price - avg_entry) / avg_entry) * 100
-                        
-                elif side == 'buy' and price < current_price and has_short_positions:
-                    avg_entry = self._calculate_average_entry(live_positions, 'short')
-                    if avg_entry > 0 and price < avg_entry * 0.998:
-                        is_profit_order = True
-                        expected_profit_pct = ((avg_entry - price) / avg_entry) * 100
-            
-            # Market intelligence check (existing logic remains)
-            if self.market_intel and not is_profit_order:  # Don't block profit orders
-                try:
-                    market_snapshot = self.market_intel.analyze_market(self.exchange)
-                    
-                    kama_strength = market_snapshot.kama_strength
-                    kama_direction = market_snapshot.kama_direction
-                    distance_pct = abs(price - current_price) / current_price
-                    
-                    # FIXED: Determine order type with position awareness
-                    is_profit_taking_order = is_profit_order  # Already determined above
-                    is_risky_new_position = False
-                    
-                    if side == 'sell' and price > current_price:
-                        if not has_long_positions:
-                            is_risky_new_position = True  # Would create new short position
-                            
-                    elif side == 'buy' and price < current_price:
-                        if not has_short_positions:
-                            is_risky_new_position = False  # Normal long entry
-                            
-                    elif side == 'sell' and price < current_price:
-                        is_risky_new_position = True  # New short entry
-                    elif side == 'buy' and price > current_price:
-                        is_risky_new_position = True  # Chasing the market
-                    
-                    # Enhanced blocking logic
-                    if kama_strength > 0.3 and is_risky_new_position:
-                        should_block = False
-                        
-                        # In BEARISH trend: Block new LONG positions
-                        if kama_direction == 'bearish':
-                            if side == 'buy' and price > current_price:
-                                should_block = True
-                        
-                        # In BULLISH trend: Block new SHORT positions
-                        elif kama_direction == 'bullish':
-                            if side == 'sell' and not is_profit_taking_order:
-                                should_block = True
-                        
-                        if should_block:
-                            self.logger.warning(f"Intelligence block: {side.upper()} @ ${price:.6f} - {kama_direction} trend (strength: {kama_strength:.3f})")
-                            return False
-                    
-                except Exception as e:
-                    self.logger.warning(f"Intelligence check failed: {e}")
-            
-            # Calculate order amount with validation
+            # Calculate order parameters
             amount = self._calculate_order_amount(price)
             notional_value = price * amount
             margin_required = round(notional_value / self.user_leverage, 2)
+            
+            # FUND ALLOCATION CHECK
+            if available_investment < margin_required:
+                self.logger.info(f"Insufficient funds: Need ${margin_required:.2f}, Available: ${available_investment:.2f}")
+                return False
+            
+            # BB-BASED MARKET ANALYSIS
+            bb_position = 0.5  # Default to middle
+            bb_width_pct = 0.04  # Default width
+            is_low_volatility = False
+            is_high_volatility = False
+            
+            if self.market_intel:
+                try:
+                    market_snapshot = self.market_intel.analyze_market(self.exchange)
+                    bb_upper = market_snapshot.bollinger_upper
+                    bb_lower = market_snapshot.bollinger_lower
+                    bb_middle = market_snapshot.bollinger_middle
+                    
+                    if bb_upper > 0 and bb_lower > 0 and bb_upper > bb_lower:
+                        # Calculate WHERE current price is within BB range (0.0 to 1.0)
+                        bb_position = (current_price - bb_lower) / (bb_upper - bb_lower)
+                        bb_position = max(0.0, min(1.0, bb_position))  # Clamp to 0-1 range
+                        
+                        # Calculate BB width as volatility indicator
+                        bb_width_pct = (bb_upper - bb_lower) / bb_middle if bb_middle > 0 else 0.04
+                        
+                        # Volatility regime detection
+                        is_low_volatility = bb_width_pct < 0.03  # Tight bands = sideways market
+                        is_high_volatility = bb_width_pct > 0.06  # Wide bands = trending market
+                        
+                        self.logger.debug(f"BB Analysis: Position {bb_position:.3f} (0=lower, 1=upper), "
+                                        f"Width {bb_width_pct:.3f}, Volatility: {'HIGH' if is_high_volatility else 'LOW' if is_low_volatility else 'NORMAL'}")
+                    
+                except Exception as e:
+                    self.logger.warning(f"BB analysis failed, using defaults: {e}")
+            
+            # DYNAMIC GAP CALCULATION BASED ON BB WIDTH
+            if is_high_volatility:
+                # Larger gaps in high volatility to avoid quick fills
+                min_gap = current_price * (bb_width_pct * 0.5)  # 50% of BB width as minimum gap
+            elif is_low_volatility:
+                # Smaller gaps in low volatility for tight clustering
+                min_gap = bb_width_pct * current_price * 0.3  # 30% of BB width as minimum gap
+            else:
+                # Normal volatility
+                min_gap = current_price * 0.005  # 0.5% minimum gap
+            
+            # Check minimum gap requirement
+            distance_from_current = abs(price - current_price)
+            if distance_from_current < min_gap:
+                self.logger.info(f"Order too close to current price: ${distance_from_current:.6f} < ${min_gap:.6f}")
+                return False
+            
+            # BB-BASED VALUE ASSESSMENT (The Smart Logic)
+            price_in_upper_zone = bb_position > 0.75  # Upper 25% of BB range
+            price_in_lower_zone = bb_position < 0.25  # Lower 25% of BB range
+            price_in_middle_zone = 0.35 < bb_position < 0.65  # Middle zone
+            
+            should_block = False
+            block_reason = ""
+            
+            if price_in_upper_zone:
+                # Price near upper BB = expensive, likely to reverse down
+                if side == 'buy':
+                    should_block = True
+                    block_reason = f"Price in upper BB zone ({bb_position:.3f}) - too expensive to buy"
+                    
+            elif price_in_lower_zone:
+                # Price near lower BB = cheap, likely to reverse up
+                if side == 'sell':
+                    should_block = True
+                    block_reason = f"Price in lower BB zone ({bb_position:.3f}) - too cheap to sell"
+            
+            # Additional protection in extreme zones
+            if bb_position > 0.90 and side == 'buy':
+                should_block = True
+                block_reason = f"Price at extreme upper BB ({bb_position:.3f}) - very expensive"
+            elif bb_position < 0.10 and side == 'sell':
+                should_block = True
+                block_reason = f"Price at extreme lower BB ({bb_position:.3f}) - very cheap"
+            
+            if should_block:
+                self.logger.info(f"BB Block: {block_reason}")
+                return False
             
             # Validate order parameters
             if amount < self.min_amount:
@@ -1076,13 +1101,9 @@ class GridStrategy:
                 self.logger.error(f"Failed to place {side} order - invalid response")
                 return False
             
-            # Store order information with profit metadata
+            # Store order information
             distance_from_current = abs(price - current_price)
-            importance_score = 1.0 / (1.0 + distance_from_current)  # Closer orders = higher importance
-            
-            # Boost importance for profit orders
-            if is_profit_order:
-                importance_score = min(1.0, importance_score * 2.0)
+            importance_score = 1.0 / (1.0 + distance_from_current)
             
             order_info = {
                 'type': side,
@@ -1096,19 +1117,18 @@ class GridStrategy:
                 'price_diff_pct_at_placement': price_diff_pct,
                 'importance_score': importance_score,
                 'distance_from_current': distance_from_current,
-                'is_profit_order': is_profit_order,  # ADD THIS
-                'expected_profit_pct': expected_profit_pct  # ADD THIS
+                'bb_position_at_placement': bb_position,
+                'bb_width_at_placement': bb_width_pct
             }
             
             self.pending_orders[order['id']] = order_info
             
-            # Enhanced logging for profit orders
-            if is_profit_order:
-                self.logger.info(f"PROFIT order placed: {side.upper()} {amount:.6f} @ ${price:.6f} ({price_diff_pct:+.2f}%), "
-                            f"Expected profit: {expected_profit_pct:.2f}%, Margin: ${margin_required:.2f}, ID: {order['id'][:8]}")
-            else:
-                self.logger.info(f"Order placed: {side.upper()} {amount:.6f} @ ${price:.6f} ({price_diff_pct:+.2f}%), "
-                            f"Margin: ${margin_required:.2f}, ID: {order['id'][:8]}")
+            # Enhanced logging with BB context
+            volatility_info = "HIGH-VOL" if is_high_volatility else "LOW-VOL" if is_low_volatility else "NORMAL-VOL"
+            bb_zone = "UPPER" if price_in_upper_zone else "LOWER" if price_in_lower_zone else "MIDDLE"
+            
+            self.logger.info(f"Order placed ({volatility_info}, {bb_zone}): {side.upper()} {amount:.6f} @ ${price:.6f} "
+                            f"({price_diff_pct:+.2f}%), BB pos: {bb_position:.3f}, Margin: ${margin_required:.2f}, ID: {order['id'][:8]}")
             
             return True
             
@@ -1788,11 +1808,11 @@ class GridStrategy:
                 
                 # Calculate target TP/SL prices
                 if side == 'long':
-                    tp_price = self._round_price(entry_price * 1.015)   # 1.5% profit
+                    tp_price = self._round_price(entry_price * 1.005)   # 1.5% profit
                     sl_price = self._round_price(entry_price * 0.985)   # 1.5% stop loss
                     counter_side = 'sell'
                 else:  # SHORT position
-                    tp_price = self._round_price(entry_price * 0.985)   # 1.5% profit (price drops)
+                    tp_price = self._round_price(entry_price * 0.995)   # 1.5% profit (price drops)
                     sl_price = self._round_price(entry_price * 1.015)   # 1.5% stop loss (price rises)
                     counter_side = 'buy'
                 
@@ -1908,13 +1928,13 @@ class GridStrategy:
             if position.side == PositionSide.LONG.value:
                 counter_side = OrderType.SELL.value
                 # Profit target: 1% above entry
-                profit_price = self._round_price(position.entry_price * 1.015)
+                profit_price = self._round_price(position.entry_price * 1.005)
                 # Stop loss: 1% below entry
                 stop_price = self._round_price(position.entry_price * 0.985)
             else:
                 counter_side = OrderType.BUY.value
                 # Profit target: 1% below entry
-                profit_price = self._round_price(position.entry_price * 0.985)
+                profit_price = self._round_price(position.entry_price * 0.995)
                 # Stop loss: 1% above entry
                 stop_price = self._round_price(position.entry_price * 1.015)
 
