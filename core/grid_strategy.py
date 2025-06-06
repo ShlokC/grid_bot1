@@ -1061,13 +1061,13 @@ class GridStrategy:
             min_gap = current_price * min_gap_pct
             
             # Check minimum gap requirement with debug logging
-            distance_from_current = abs(price - current_price)
-            if distance_from_current < min_gap:
-                gap_pct = (distance_from_current / current_price) * 100
-                min_gap_pct_actual = (min_gap / current_price) * 100
-                self.logger.info(f"Order rejected - too close: {gap_pct:.3f}% < {min_gap_pct_actual:.3f}% required "
-                            f"(${distance_from_current:.6f} < ${min_gap:.6f}), BB width: {bb_width_pct*100:.2f}%")
-                return False
+            # distance_from_current = abs(price - current_price)
+            # if distance_from_current < min_gap:
+            #     gap_pct = (distance_from_current / current_price) * 100
+            #     min_gap_pct_actual = (min_gap / current_price) * 100
+            #     self.logger.info(f"Order rejected - too close: {gap_pct:.3f}% < {min_gap_pct_actual:.3f}% required "
+            #                 f"(${distance_from_current:.6f} < ${min_gap:.6f}), BB width: {bb_width_pct*100:.2f}%")
+            #     return False
             
             # FIXED: Calculate BB position for ORDER price, not current price
             order_bb_position = 0.5  # Default if BB calculation fails
@@ -1755,11 +1755,11 @@ class GridStrategy:
             # Calculate TP/SL prices and expected order side
             if side == 'long':
                 tp_price = self._round_price(entry_price * 1.005)  # +0.5% profit
-                sl_price = self._round_price(entry_price * 0.985)  # -1.5% loss
+                sl_price = self._round_price(entry_price * 0.995)  # -0.5% loss
                 expected_order_side = 'sell'
             else:  # short
                 tp_price = self._round_price(entry_price * 0.995)  # -0.5% profit
-                sl_price = self._round_price(entry_price * 1.015)  # +1.5% loss
+                sl_price = self._round_price(entry_price * 1.005)  # +0.5% loss
                 expected_order_side = 'buy'
             
             # Check what TP/SL orders already exist
@@ -1870,113 +1870,113 @@ class GridStrategy:
                         
         except Exception as e:
             self.logger.error(f"Error cleaning orphaned TP/SL orders: {e}")
-    def _create_counter_order_for_position(self, position: GridPosition, current_price: float):
-        """Create profit-taking AND stop-loss orders with consistent 0.8% and GTC auto-cancel"""
-        try:
-            # Calculate order parameters based on position side (CONSISTENT 0.8%)
-            if position.side == PositionSide.LONG.value:
-                counter_side = OrderType.SELL.value
-                # Profit target: 1% above entry
-                profit_price = self._round_price(position.entry_price * 1.005)
-                # Stop loss: 1% below entry
-                stop_price = self._round_price(position.entry_price * 0.985)
-            else:
-                counter_side = OrderType.BUY.value
-                # Profit target: 1% below entry
-                profit_price = self._round_price(position.entry_price * 0.995)
-                # Stop loss: 1% above entry
-                stop_price = self._round_price(position.entry_price * 1.015)
+    # def _create_counter_order_for_position(self, position: GridPosition, current_price: float):
+    #     """Create profit-taking AND stop-loss orders with consistent 0.8% and GTC auto-cancel"""
+    #     try:
+    #         # Calculate order parameters based on position side (CONSISTENT 0.8%)
+    #         if position.side == PositionSide.LONG.value:
+    #             counter_side = OrderType.SELL.value
+    #             # Profit target: 1% above entry
+    #             profit_price = self._round_price(position.entry_price * 1.005)
+    #             # Stop loss: 1% below entry
+    #             stop_price = self._round_price(position.entry_price * 0.985)
+    #         else:
+    #             counter_side = OrderType.BUY.value
+    #             # Profit target: 1% below entry
+    #             profit_price = self._round_price(position.entry_price * 0.995)
+    #             # Stop loss: 1% above entry
+    #             stop_price = self._round_price(position.entry_price * 1.015)
 
-            # Validate prices make sense
-            if counter_side == OrderType.SELL.value:
-                if profit_price <= position.entry_price or stop_price >= position.entry_price:
-                    return
-            else:
-                if profit_price >= position.entry_price or stop_price <= position.entry_price:
-                    return
+    #         # Validate prices make sense
+    #         if counter_side == OrderType.SELL.value:
+    #             if profit_price <= position.entry_price or stop_price >= position.entry_price:
+    #                 return
+    #         else:
+    #             if profit_price >= position.entry_price or stop_price <= position.entry_price:
+    #                 return
             
-            orders_placed = 0
+    #         orders_placed = 0
             
-            # 1. Place PROFIT order (TAKE_PROFIT_MARKET with GTC)
-            try:
-                self.logger.info(f"Creating TP order for position {position.position_id[:8]}")
+    #         # 1. Place PROFIT order (TAKE_PROFIT_MARKET with GTC)
+    #         try:
+    #             self.logger.info(f"Creating TP order for position {position.position_id[:8]}")
                 
-                symbol_id = self.exchange._get_symbol_id(self.symbol)
-                profit_order = self.exchange.exchange.create_order(
-                    symbol=symbol_id,
-                    type='TAKE_PROFIT_MARKET',
-                    side=counter_side.upper(),
-                    amount=position.quantity,
-                    price=None,
-                    params={
-                        'stopPrice': profit_price, #'reduceOnly': True,
+    #             symbol_id = self.exchange._get_symbol_id(self.symbol)
+    #             profit_order = self.exchange.exchange.create_order(
+    #                 symbol=symbol_id,
+    #                 type='TAKE_PROFIT_MARKET',
+    #                 side=counter_side.upper(),
+    #                 amount=position.quantity,
+    #                 price=None,
+    #                 params={
+    #                     'stopPrice': profit_price, #'reduceOnly': True,
                         
-                        'timeInForce': 'GTE_GTC'  # Auto-cancels when position closes
-                    }
-                )
+    #                     'timeInForce': 'GTE_GTC'  # Auto-cancels when position closes
+    #                 }
+    #             )
                 
-                if profit_order and 'id' in profit_order:
-                    profit_order_info = {
-                        'type': counter_side,
-                        'price': profit_price,
-                        'amount': position.quantity,
-                        'position_id': position.position_id,
-                        'timestamp': time.time(),
-                        'status': 'open',
-                        'order_purpose': 'profit',
-                        'is_tp_sl_order': True  # MARK as TP/SL order
-                    }
-                    self.pending_orders[profit_order['id']] = profit_order_info
-                    orders_placed += 1
+    #             if profit_order and 'id' in profit_order:
+    #                 profit_order_info = {
+    #                     'type': counter_side,
+    #                     'price': profit_price,
+    #                     'amount': position.quantity,
+    #                     'position_id': position.position_id,
+    #                     'timestamp': time.time(),
+    #                     'status': 'open',
+    #                     'order_purpose': 'profit',
+    #                     'is_tp_sl_order': True  # MARK as TP/SL order
+    #                 }
+    #                 self.pending_orders[profit_order['id']] = profit_order_info
+    #                 orders_placed += 1
                     
-                    expected_profit = abs(profit_price - position.entry_price) * position.quantity
-                    self.logger.info(f"PROFIT (TP): {counter_side.upper()} {position.quantity:.6f} @ ${profit_price:.6f}, Expected: ${expected_profit:.2f}")
+    #                 expected_profit = abs(profit_price - position.entry_price) * position.quantity
+    #                 self.logger.info(f"PROFIT (TP): {counter_side.upper()} {position.quantity:.6f} @ ${profit_price:.6f}, Expected: ${expected_profit:.2f}")
             
-            except Exception as e:
-                self.logger.error(f"Failed to place profit order: {e}")
+    #         except Exception as e:
+    #             self.logger.error(f"Failed to place profit order: {e}")
             
-            # 2. Place STOP-LOSS order (STOP_MARKET with GTC)
-            try:
-                symbol_id = self.exchange._get_symbol_id(self.symbol)
-                sl_order = self.exchange.exchange.create_order(
-                    symbol=symbol_id,
-                    type='STOP_MARKET',
-                    side=counter_side.upper(),
-                    amount=position.quantity,
-                    price=None,
-                    params={
-                        'stopPrice': stop_price, #'reduceOnly': True,                        
-                        'timeInForce': 'GTE_GTC'  # Auto-cancels when position closes
-                    }
-                )
+    #         # 2. Place STOP-LOSS order (STOP_MARKET with GTC)
+    #         try:
+    #             symbol_id = self.exchange._get_symbol_id(self.symbol)
+    #             sl_order = self.exchange.exchange.create_order(
+    #                 symbol=symbol_id,
+    #                 type='STOP_MARKET',
+    #                 side=counter_side.upper(),
+    #                 amount=position.quantity,
+    #                 price=None,
+    #                 params={
+    #                     'stopPrice': stop_price, #'reduceOnly': True,                        
+    #                     'timeInForce': 'GTE_GTC'  # Auto-cancels when position closes
+    #                 }
+    #             )
             
-                if sl_order and 'id' in sl_order:
-                    sl_order_info = {
-                        'type': counter_side,
-                        'price': stop_price,
-                        'amount': position.quantity,
-                        'position_id': position.position_id,
-                        'timestamp': time.time(),
-                        'status': 'open',
-                        'order_purpose': 'stop_loss',
-                        'is_tp_sl_order': True  # MARK as TP/SL order
-                    }
-                    self.pending_orders[sl_order['id']] = sl_order_info
-                    orders_placed += 1
+    #             if sl_order and 'id' in sl_order:
+    #                 sl_order_info = {
+    #                     'type': counter_side,
+    #                     'price': stop_price,
+    #                     'amount': position.quantity,
+    #                     'position_id': position.position_id,
+    #                     'timestamp': time.time(),
+    #                     'status': 'open',
+    #                     'order_purpose': 'stop_loss',
+    #                     'is_tp_sl_order': True  # MARK as TP/SL order
+    #                 }
+    #                 self.pending_orders[sl_order['id']] = sl_order_info
+    #                 orders_placed += 1
                     
-                    expected_loss = abs(stop_price - position.entry_price) * position.quantity
-                    self.logger.info(f"STOP-LOSS (SL): {counter_side.upper()} {position.quantity:.6f} @ ${stop_price:.6f}, Max loss: ${expected_loss:.2f}")
+    #                 expected_loss = abs(stop_price - position.entry_price) * position.quantity
+    #                 self.logger.info(f"STOP-LOSS (SL): {counter_side.upper()} {position.quantity:.6f} @ ${stop_price:.6f}, Max loss: ${expected_loss:.2f}")
             
-            except Exception as e:
-                self.logger.error(f"Failed to place stop-loss order: {e}")
+    #         except Exception as e:
+    #             self.logger.error(f"Failed to place stop-loss order: {e}")
             
-            # Update position if at least one order was placed
-            if orders_placed > 0:
-                position.has_counter_order = True
-                self.logger.info(f"TP/SL orders created: {orders_placed} orders with GTC auto-cancel")
+    #         # Update position if at least one order was placed
+    #         if orders_placed > 0:
+    #             position.has_counter_order = True
+    #             self.logger.info(f"TP/SL orders created: {orders_placed} orders with GTC auto-cancel")
             
-        except Exception as e:
-            self.logger.error(f"Error creating counter orders for position {position.position_id}: {e}")
+    #     except Exception as e:
+    #         self.logger.error(f"Error creating counter orders for position {position.position_id}: {e}")
         
     def _update_pnl(self, current_price: float):
         """Update PnL calculations with periodic logging"""
