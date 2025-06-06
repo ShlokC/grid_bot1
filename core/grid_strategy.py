@@ -615,8 +615,8 @@ class GridStrategy:
                     level = self.user_price_lower + (i * interval)
                     levels.append(self._round_price(level))
                 return sorted(list(set(levels)))
-            # ALL orders within 2% of current price (1% above, 1% below)
-            max_distance_pct = 0.02  # 2% max distance from current price
+            # ALL orders within 4% of current price (2% above, 2% below)
+            max_distance_pct = 0.04  # 4% max distance from current price
 
             # Calculate tight range around current price
             tight_lower = max(current_price * (1 - max_distance_pct), self.user_price_lower)

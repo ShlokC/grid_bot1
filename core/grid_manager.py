@@ -701,7 +701,7 @@ class GridManager:
                         self.logger.warning(f"⚠️ Monitor cycle issues: {monitor_duration:.2f}s duration, {timeout_count} timeouts")
                 
                 # Check every 10 seconds
-                time.sleep(10)
+                time.sleep(1)
                 
         except Exception as e:
             self.logger.error(f"❌ Critical error in monitor_grids: {e}")
