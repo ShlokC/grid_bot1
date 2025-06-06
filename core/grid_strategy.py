@@ -984,7 +984,7 @@ class GridStrategy:
             return 0
     
     def _place_single_order(self, price: float, side: str) -> bool:
-        """Enhanced order placement with BB-based value assessment logic"""
+        """FIXED: Enhanced order placement using ORDER price BB position instead of current price"""
         try:
             # Get current market price for context
             ticker = self.exchange.get_ticker(self.symbol)
@@ -1006,12 +1006,15 @@ class GridStrategy:
                 return False
             
             # BB-BASED MARKET ANALYSIS WITH MOMENTUM
-            bb_position = 0.5  # Default to middle
+            bb_position = 0.5  # Default to middle (current price BB position)
             bb_width_pct = 0.04  # Default width
             is_low_volatility = False
             is_high_volatility = False
             momentum = 0.0  # Add momentum tracking
             momentum_direction = 'neutral'  # Add momentum direction
+            bb_upper = 0.0
+            bb_lower = 0.0
+            bb_middle = 0.0
             
             if self.market_intel:
                 try:
@@ -1034,7 +1037,7 @@ class GridStrategy:
                         is_low_volatility = bb_width_pct < 0.03  # Tight bands = sideways market
                         is_high_volatility = bb_width_pct > 0.06  # Wide bands = trending market
                         
-                        self.logger.debug(f"BB Analysis: Position {bb_position:.3f} (0=lower, 1=upper), "
+                        self.logger.debug(f"BB Analysis: Current price position {bb_position:.3f} (0=lower, 1=upper), "
                                         f"Width {bb_width_pct:.3f}, Volatility: {'HIGH' if is_high_volatility else 'LOW' if is_low_volatility else 'NORMAL'}, "
                                         f"Momentum: {momentum_direction.upper()}")
                     
@@ -1066,10 +1069,20 @@ class GridStrategy:
                             f"(${distance_from_current:.6f} < ${min_gap:.6f}), BB width: {bb_width_pct*100:.2f}%")
                 return False
             
-            # ENHANCED BB-BASED VALUE ASSESSMENT WITH MOMENTUM INTEGRATION
-            price_in_upper_zone = bb_position > 0.75  # Upper 25% of BB range
-            price_in_lower_zone = bb_position < 0.25  # Lower 25% of BB range
-            price_in_middle_zone = 0.35 < bb_position < 0.65  # Middle zone
+            # FIXED: Calculate BB position for ORDER price, not current price
+            order_bb_position = 0.5  # Default if BB calculation fails
+            if bb_upper > 0 and bb_lower > 0 and bb_upper > bb_lower:
+                order_bb_position = (price - bb_lower) / (bb_upper - bb_lower)
+                order_bb_position = max(0.0, min(1.0, order_bb_position))
+            
+            # Zone definitions for ORDER price
+            order_in_upper_zone = order_bb_position > 0.75  # Upper 25% of BB range
+            order_in_lower_zone = order_bb_position < 0.25  # Lower 25% of BB range
+            
+            # Debug logging for BB position comparison
+            self.logger.debug(f"BB Position Analysis: Current price ${current_price:.6f} @ {bb_position:.3f}, "
+                            f"Order price ${price:.6f} @ {order_bb_position:.3f}, "
+                            f"BB range: ${bb_lower:.6f}-${bb_upper:.6f}")
             
             # Momentum strength thresholds
             strong_bearish = momentum < -0.02 or momentum_direction == 'bearish'
@@ -1078,43 +1091,32 @@ class GridStrategy:
             should_block = False
             block_reason = ""
             
-            if price_in_upper_zone:
-                # Price near upper BB = expensive, likely to reverse down
-                if side == 'buy':
-                    should_block = True
-                    block_reason = f"Price in upper BB zone ({bb_position:.3f}) - too expensive to buy"
-                    
-            elif price_in_lower_zone:
-                # ENHANCED: Consider momentum in lower zone
-                if side == 'sell':
-                    should_block = True
-                    block_reason = f"Price in lower BB zone ({bb_position:.3f}) - too cheap to sell"
-                elif side == 'buy' and strong_bearish:
-                    # NEW: Block buy orders in lower zone during strong bearish momentum
-                    should_block = True
-                    block_reason = f"Price in lower BB zone ({bb_position:.3f}) with strong bearish momentum ({momentum_direction}) - avoid buying into falling knife"
+            # FIXED: STANDALONE MOMENTUM PROTECTION (applies regardless of BB position)
+            if side == 'buy' and strong_bearish:
+                should_block = True
+                block_reason = f"Strong bearish momentum ({momentum_direction}, {momentum:.3f}) - avoid buying"
+            elif side == 'sell' and strong_bullish:
+                should_block = True
+                block_reason = f"Strong bullish momentum ({momentum_direction}, {momentum:.3f}) - avoid selling"
             
-            # Additional protection in extreme zones with momentum consideration
-            if bb_position > 0.90:
-                if side == 'buy':
-                    should_block = True
-                    block_reason = f"Price at extreme upper BB ({bb_position:.3f}) - very expensive"
-                elif side == 'sell' and strong_bullish:
-                    # Don't sell in extreme upper zone during strong bullish momentum
-                    should_block = True  
-                    block_reason = f"Price at extreme upper BB ({bb_position:.3f}) with bullish momentum - avoid selling too early"
-                    
-            elif bb_position < 0.10:
-                if side == 'sell':
-                    should_block = True
-                    block_reason = f"Price at extreme lower BB ({bb_position:.3f}) - very cheap"
-                elif side == 'buy' and strong_bearish:
-                    # Don't buy in extreme lower zone during strong bearish momentum
-                    should_block = True
-                    block_reason = f"Price at extreme lower BB ({bb_position:.3f}) with bearish momentum - avoid catching falling knife"
+            # FIXED: Zone-based protection using ORDER price BB position
+            elif order_in_upper_zone and side == 'buy':
+                should_block = True
+                block_reason = f"Order price in upper BB zone ({order_bb_position:.3f}) - too expensive to buy"
+            elif order_in_lower_zone and side == 'sell':
+                should_block = True
+                block_reason = f"Order price in lower BB zone ({order_bb_position:.3f}) - too cheap to sell"
+            
+            # Extreme zone protection using ORDER price
+            elif order_bb_position > 0.90 and side == 'buy':
+                should_block = True
+                block_reason = f"Order price at extreme upper BB ({order_bb_position:.3f}) - very expensive"
+            elif order_bb_position < 0.10 and side == 'sell':
+                should_block = True
+                block_reason = f"Order price at extreme lower BB ({order_bb_position:.3f}) - very cheap"
             
             if should_block:
-                self.logger.info(f"BB+Momentum Block: {block_reason}")
+                self.logger.info(f"Order blocked: {block_reason}")
                 return False
             
             # Validate order parameters
@@ -1149,7 +1151,8 @@ class GridStrategy:
                 'price_diff_pct_at_placement': price_diff_pct,
                 'importance_score': importance_score,
                 'distance_from_current': distance_from_current,
-                'bb_position_at_placement': bb_position,
+                'bb_position_at_placement': bb_position,  # Current price BB position
+                'order_bb_position_at_placement': order_bb_position,  # Order price BB position
                 'bb_width_at_placement': bb_width_pct,
                 'momentum_at_placement': momentum,
                 'momentum_direction_at_placement': momentum_direction
@@ -1159,11 +1162,11 @@ class GridStrategy:
             
             # Enhanced logging with BB and momentum context
             volatility_info = "HIGH-VOL" if is_high_volatility else "LOW-VOL" if is_low_volatility else "NORMAL-VOL"
-            bb_zone = "UPPER" if price_in_upper_zone else "LOWER" if price_in_lower_zone else "MIDDLE"
+            bb_zone = "UPPER" if order_in_upper_zone else "LOWER" if order_in_lower_zone else "MIDDLE"
             momentum_info = momentum_direction.upper()
             
             self.logger.info(f"Order placed ({volatility_info}, {bb_zone}, {momentum_info}): {side.upper()} {amount:.6f} @ ${price:.6f} "
-                            f"({price_diff_pct:+.2f}%), BB pos: {bb_position:.3f}, Momentum: {momentum:.3f}, Margin: ${margin_required:.2f}, ID: {order['id'][:8]}")
+                            f"({price_diff_pct:+.2f}%), Order BB pos: {order_bb_position:.3f}, Current BB pos: {bb_position:.3f}, Momentum: {momentum:.3f}, Margin: ${margin_required:.2f}, ID: {order['id'][:8]}")
             
             return True
             
@@ -1711,131 +1714,127 @@ class GridStrategy:
             self.logger.error(f"Error closing position from counter order: {e}")
     
     def _maintain_counter_orders(self, current_price: float):
-        """STABLE: Simple TP/SL creation without order churning"""
+        """SIMPLIFIED: Single position TP/SL management for crypto futures"""
         try:
             live_positions = self.exchange.get_positions(self.symbol)
             live_orders = self.exchange.get_open_orders(self.symbol)
             
-            # Count existing stop orders for safety
-            existing_stop_count = len([o for o in live_orders 
+            # Count existing TP/SL orders for safety
+            existing_tp_sl_count = len([o for o in live_orders 
                                     if o.get('type', '').lower() in ['stop_market', 'stop_loss', 'stop_loss_limit', 
                                                                     'take_profit_market', 'take_profit', 'take_profit_limit']])
             
             # Safety check - don't create if close to limits
-            if existing_stop_count >= 8:
+            if existing_tp_sl_count >= 8:
                 return
             
-            # Find active positions
-            active_positions = []
+            # Find THE active position (should be only one in crypto futures)
+            active_position = None
             for pos in live_positions:
                 size = float(pos.get('contracts', 0))
                 entry_price = float(pos.get('entryPrice', 0))
                 side = pos.get('side', '').lower()
                 
                 if abs(size) >= 0.001 and entry_price > 0:
-                    # Create simple position identifier
-                    pos_id = f"{side}_{entry_price:.6f}"
-                    active_positions.append({
-                        'id': pos_id,
+                    active_position = {
                         'entry_price': entry_price,
                         'side': side,
                         'quantity': abs(size)
-                    })
+                    }
+                    break  # Should only be one position in crypto futures
             
-            if not active_positions:
+            if not active_position:
+                # No position, clean up any orphaned TP/SL orders
+                self._cleanup_orphaned_tp_sl_orders(live_orders)
                 return
             
-            # Check which positions already have TP/SL orders in our tracking
-            for pos in active_positions:
-                pos_id = pos['id']
-                entry_price = pos['entry_price']
-                side = pos['side']
-                quantity = pos['quantity']
-                
-                # Check if we already have TP/SL orders for this position in our tracking
-                has_tp_in_tracking = False
-                has_sl_in_tracking = False
-                
-                for order_id, order_info in self.pending_orders.items():
-                    if (order_info.get('is_tp_sl_order') and 
-                        order_info.get('position_id', '').startswith(pos_id)):
-                        
-                        order_purpose = order_info.get('order_purpose', '')
-                        if order_purpose == 'profit':
-                            has_tp_in_tracking = True
-                        elif order_purpose == 'stop_loss':
-                            has_sl_in_tracking = True
-                
-                # Only create TP/SL if we don't have them in our tracking
-                if has_tp_in_tracking and has_sl_in_tracking:
-                    continue
-                
-                # Calculate TP/SL prices
-                if side == 'long':
-                    tp_price = self._round_price(entry_price * 1.005)
-                    sl_price = self._round_price(entry_price * 0.985)
-                    counter_side = 'sell'
-                else:
-                    tp_price = self._round_price(entry_price * 0.995)
-                    sl_price = self._round_price(entry_price * 1.015)
-                    counter_side = 'buy'
-                
-                # Create missing orders
-                orders_needed = []
-                if not has_tp_in_tracking:
-                    orders_needed.append(('TP', tp_price, 'TAKE_PROFIT_MARKET', 'profit'))
-                if not has_sl_in_tracking:
-                    orders_needed.append(('SL', sl_price, 'STOP_MARKET', 'stop_loss'))
-                
-                if not orders_needed:
-                    continue
-                    
-                # Safety check before creating
-                if existing_stop_count + len(orders_needed) > 9:
-                    continue
-                
-                # Create the needed orders
-                for order_type, price, binance_type, purpose in orders_needed:
-                    try:
-                        self.logger.info(f"Creating {order_type} for {pos_id}: {counter_side.upper()} {quantity:.6f} @ ${price:.6f}")
-                        
-                        symbol_id = self.exchange._get_symbol_id(self.symbol)
-                        new_order = self.exchange.exchange.create_order(
-                            symbol=symbol_id,
-                            type=binance_type,
-                            side=counter_side.upper(),
-                            amount=quantity,
-                            price=None,
-                            params={
-                                'stopPrice': price,
-                                'timeInForce': 'GTE_GTC'
-                            }
-                        )
-                        
-                        if new_order and 'id' in new_order:
-                            # Track with position linkage
-                            self.pending_orders[new_order['id']] = {
-                                'type': counter_side,
-                                'price': price,
-                                'amount': quantity,
-                                'timestamp': time.time(),
-                                'order_purpose': purpose,
-                                'position_id': f"{pos_id}_{new_order['id'][:8]}",  # Unique position link
-                                'is_tp_sl_order': True
-                            }
-                            
-                            existing_stop_count += 1
-                            self.logger.info(f"{order_type} created: {new_order['id'][:8]}")
-                            time.sleep(0.2)
-                            
-                    except Exception as e:
-                        if "-4045" in str(e):
-                            self.logger.warning("Hit stop order limit, stopping TP/SL creation")
-                            return
-                        else:
-                            self.logger.error(f"{order_type} creation failed: {e}")
+            entry_price = active_position['entry_price']
+            side = active_position['side']
+            quantity = active_position['quantity']
             
-            # Clean tracking of orders that no longer exist
+            # Calculate TP/SL prices and expected order side
+            if side == 'long':
+                tp_price = self._round_price(entry_price * 1.005)  # +0.5% profit
+                sl_price = self._round_price(entry_price * 0.985)  # -1.5% loss
+                expected_order_side = 'sell'
+            else:  # short
+                tp_price = self._round_price(entry_price * 0.995)  # -0.5% profit
+                sl_price = self._round_price(entry_price * 1.015)  # +1.5% loss
+                expected_order_side = 'buy'
+            
+            # Check what TP/SL orders already exist
+            has_tp_order = False
+            has_sl_order = False
+            
+            for order in live_orders:
+                order_side = order.get('side', '').lower()
+                order_type = order.get('type', '').lower()
+                
+                # Skip if wrong side
+                if order_side != expected_order_side:
+                    continue
+                
+                # Check by order type
+                if order_type in ['take_profit_market', 'take_profit', 'take_profit_limit']:
+                    has_tp_order = True
+                elif order_type in ['stop_market', 'stop_loss', 'stop_loss_limit']:
+                    has_sl_order = True
+            
+            # Create missing orders
+            orders_to_create = []
+            if not has_tp_order:
+                orders_to_create.append(('TP', tp_price, 'TAKE_PROFIT_MARKET', 'profit'))
+            if not has_sl_order:
+                orders_to_create.append(('SL', sl_price, 'STOP_MARKET', 'stop_loss'))
+            
+            if not orders_to_create:
+                return  # Both TP and SL already exist
+            
+            # Safety check before creating
+            if existing_tp_sl_count + len(orders_to_create) > 9:
+                self.logger.warning("Would exceed order limit, skipping TP/SL creation")
+                return
+            
+            # Create the needed orders
+            for order_type, price, binance_type, purpose in orders_to_create:
+                try:
+                    self.logger.info(f"Creating {order_type} for {side} position: {expected_order_side.upper()} {quantity:.6f} @ ${price:.6f}")
+                    
+                    symbol_id = self.exchange._get_symbol_id(self.symbol)
+                    new_order = self.exchange.exchange.create_order(
+                        symbol=symbol_id,
+                        type=binance_type,
+                        side=expected_order_side.upper(),
+                        amount=quantity,
+                        price=None,
+                        params={
+                            'stopPrice': price,
+                            'timeInForce': 'GTE_GTC'  # Auto-cancels when position closes
+                        }
+                    )
+                    
+                    if new_order and 'id' in new_order:
+                        # Track the order (simplified tracking)
+                        self.pending_orders[new_order['id']] = {
+                            'type': expected_order_side,
+                            'price': price,
+                            'amount': quantity,
+                            'timestamp': time.time(),
+                            'order_purpose': purpose,
+                            'is_tp_sl_order': True
+                        }
+                        
+                        self.logger.info(f"{order_type} created: {new_order['id'][:8]}")
+                        time.sleep(0.2)
+                        
+                except Exception as e:
+                    if "-4045" in str(e):
+                        self.logger.warning("Hit stop order limit, stopping TP/SL creation")
+                        return
+                    else:
+                        self.logger.error(f"{order_type} creation failed: {e}")
+            
+            # Clean up stale tracking
             live_order_ids = {o['id'] for o in live_orders}
             stale_tp_sl = [oid for oid, info in self.pending_orders.items() 
                         if info.get('is_tp_sl_order') and oid not in live_order_ids]
@@ -1848,6 +1847,29 @@ class GridStrategy:
                 
         except Exception as e:
             self.logger.error(f"Error in _maintain_counter_orders: {e}")
+    def _cleanup_orphaned_tp_sl_orders(self, live_orders: List[Dict]):
+        """Clean up TP/SL orders when no position exists"""
+        try:
+            for order in live_orders:
+                order_type = order.get('type', '').lower()
+                order_id = order.get('id', '')
+                
+                # Check if this is a TP/SL order
+                if order_type in ['take_profit_market', 'take_profit', 'take_profit_limit',
+                                'stop_market', 'stop_loss', 'stop_loss_limit']:
+                    try:
+                        self.logger.info(f"Cleaning orphaned TP/SL order: {order_type} {order_id[:8]}")
+                        self.exchange.cancel_order(order_id, self.symbol)
+                        
+                        # Remove from tracking if exists
+                        if order_id in self.pending_orders:
+                            del self.pending_orders[order_id]
+                            
+                    except Exception as e:
+                        self.logger.warning(f"Failed to cancel orphaned TP/SL {order_id[:8]}: {e}")
+                        
+        except Exception as e:
+            self.logger.error(f"Error cleaning orphaned TP/SL orders: {e}")
     def _create_counter_order_for_position(self, position: GridPosition, current_price: float):
         """Create profit-taking AND stop-loss orders with consistent 0.8% and GTC auto-cancel"""
         try:
