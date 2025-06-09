@@ -83,6 +83,10 @@ class MarketSnapshot:
     bollinger_upper: float = 0.0
     bollinger_lower: float = 0.0
     bollinger_middle: float = 0.0
+    # NEW: JMA trend detection fields
+    jma_value: float = 0.0
+    jma_trend: str = 'neutral'  # 'bullish', 'bearish', 'neutral'
+    jma_strength: float = 0.0
 
     def is_trending(self, threshold: float = 0.5) -> bool:
         """Check if market is in trending state"""
@@ -95,6 +99,15 @@ class MarketSnapshot:
     def is_bearish(self, threshold: float = 0.1) -> bool:
         """Check if market sentiment is bearish"""
         return self.directional_bias < -threshold
+    
+    # NEW: JMA trend methods
+    def is_jma_bullish(self) -> bool:
+        """Check if JMA indicates bullish trend"""
+        return self.jma_trend == 'bullish'
+    
+    def is_jma_bearish(self) -> bool:
+        """Check if JMA indicates bearish trend"""
+        return self.jma_trend == 'bearish'
 
 
 class MarketIntelligence:
@@ -124,7 +137,7 @@ class MarketIntelligence:
         self.logger = logging.getLogger(f"{__name__}.MarketIntel")
     
     def analyze_market(self, exchange: Exchange) -> MarketSnapshot:
-        """Analyze market using real KAMA and Bollinger Bands"""
+        """Analyze market using real KAMA, Bollinger Bands, and JMA"""
         try:
             current_time = time.time()
             
@@ -144,6 +157,9 @@ class MarketIntelligence:
             
             # Calculate Bollinger Bands
             bollinger_upper, bollinger_lower, bollinger_middle = self._calculate_bollinger_bands(exchange, current_price)
+            
+            # Calculate JMA trend
+            jma_value, jma_trend, jma_strength = self._calculate_jma_trend(exchange, current_price)
             
             # Update market regime indicators  
             self.current_volatility_regime = self._calculate_volatility()
@@ -170,7 +186,10 @@ class MarketIntelligence:
                 directional_bias=momentum,
                 bollinger_upper=bollinger_upper,
                 bollinger_lower=bollinger_lower,
-                bollinger_middle=bollinger_middle
+                bollinger_middle=bollinger_middle,
+                jma_value=jma_value,
+                jma_trend=jma_trend,
+                jma_strength=jma_strength
             )
             
         except Exception as e:
@@ -178,9 +197,63 @@ class MarketIntelligence:
             return MarketSnapshot(
                 timestamp=time.time(),
                 price=0.0, volume=0.0, volatility=1.0, momentum=0.0, trend_strength=0.0,
-                directional_bias=0.0, bollinger_upper=0.0, bollinger_lower=0.0, bollinger_middle=0.0
+                directional_bias=0.0, bollinger_upper=0.0, bollinger_lower=0.0, bollinger_middle=0.0,
+                jma_value=0.0, jma_trend='neutral', jma_strength=0.0
             )
-    
+    def _calculate_jma_trend(self, exchange: Exchange, current_price: float) -> Tuple[float, str, float]:
+        """Calculate JMA(20, 100, 2) trend using pandas-ta"""
+        try:
+            import pandas as pd
+            import pandas_ta as ta
+            
+            # Get FULL historical data from exchange for JMA
+            full_ohlcv = exchange.get_ohlcv(self.symbol, timeframe='5m', limit=100)  # Need enough data for JMA
+            
+            if full_ohlcv and len(full_ohlcv) >= 30:  # Need at least 30 periods for stable JMA
+                # Extract closing prices from OHLCV data
+                closing_prices = [float(candle[4]) for candle in full_ohlcv]
+                
+                # Create pandas series
+                price_series = pd.Series(closing_prices)
+                
+                # Calculate JMA (20, 100, 2) - length=20, phase=2
+                # Note: pandas-ta JMA doesn't use the middle parameter (100), it's length and phase
+                jma_series = ta.jma(price_series, length=20, phase=2)
+
+                if jma_series is not None and not jma_series.isna().all():
+                    # Get current JMA value
+                    current_jma = float(jma_series.iloc[-1])
+                    
+                    # Calculate JMA trend based on price vs JMA
+                    price_vs_jma = (current_price - current_jma) / current_jma if current_jma > 0 else 0
+                    
+                    # Determine trend direction with threshold
+                    trend_threshold = 0.001  # 0.1% threshold
+                    if price_vs_jma > trend_threshold:
+                        jma_trend = 'bullish'
+                    elif price_vs_jma < -trend_threshold:
+                        jma_trend = 'bearish'
+                    else:
+                        jma_trend = 'neutral'
+                    
+                    # Calculate trend strength (absolute percentage difference)
+                    jma_strength = abs(price_vs_jma)
+                    
+                    self.logger.info(f"JMA: ${current_jma:.6f}, Price: ${current_price:.6f}, "
+                                f"Trend: {jma_trend.upper()}, Strength: {jma_strength:.4f}")
+                    
+                    return current_jma, jma_trend, jma_strength
+            
+            # Fallback if insufficient data
+            self.logger.warning(f"Insufficient data for JMA calculation")
+            return current_price, 'neutral', 0.0
+            
+        except ImportError:
+            self.logger.warning("pandas-ta not available for JMA calculation")
+            return current_price, 'neutral', 0.0
+        except Exception as e:
+            self.logger.error(f"JMA calculation failed: {e}")
+            return current_price, 'neutral', 0.0
     def _calculate_bollinger_bands(self, exchange: Exchange, current_price: float) -> Tuple[float, float, float]:
         """Calculate Bollinger Bands using pandas-ta"""
         try:
@@ -639,7 +712,170 @@ class GridStrategy:
         except Exception as e:
             self.logger.error(f"Error calculating grid levels: {e}")
             return []
-    
+    def _check_jma_trend_alignment(self, current_price: float):
+        """FIXED: Smart JMA trend alignment with buffer and minimum holding time"""
+        try:
+            # Only check if SAMIG is enabled
+            if not self.enable_samig or not self.market_intel:
+                return
+            
+            # Get current market analysis including JMA
+            market_snapshot = self.market_intel.analyze_market(self.exchange)
+            
+            # Skip if JMA trend is neutral or invalid
+            if market_snapshot.jma_trend == 'neutral' or market_snapshot.jma_value <= 0:
+                return
+            
+            # Get live positions
+            live_positions = self.exchange.get_positions(self.symbol)
+            
+            # Initialize position tracking if not exists
+            if not hasattr(self, '_jma_position_tracking'):
+                self._jma_position_tracking = {}
+            
+            current_time = time.time()
+            
+            for pos in live_positions:
+                size = float(pos.get('contracts', 0))
+                entry_price = float(pos.get('entryPrice', 0))
+                side = pos.get('side', '').lower()
+                
+                if abs(size) < 0.001 or entry_price <= 0:
+                    continue
+                
+                # Create unique position key
+                position_key = f"{side}_{entry_price:.6f}_{abs(size):.6f}"
+                
+                # Check if position is opposite to JMA trend
+                is_opposite_to_trend = False
+                if side == 'long' and market_snapshot.is_jma_bearish():
+                    is_opposite_to_trend = True
+                    trend_info = "LONG vs JMA BEARISH"
+                elif side == 'short' and market_snapshot.is_jma_bullish():
+                    is_opposite_to_trend = True
+                    trend_info = "SHORT vs JMA BULLISH"
+                
+                if not is_opposite_to_trend:
+                    # Position aligns with trend, remove from tracking if exists
+                    if position_key in self._jma_position_tracking:
+                        del self._jma_position_tracking[position_key]
+                    continue
+                
+                # Position is opposite to trend - start/update tracking
+                if position_key not in self._jma_position_tracking:
+                    # FIXED: Add buffer time and price threshold
+                    self._jma_position_tracking[position_key] = {
+                        'first_detected': current_time,
+                        'entry_price': entry_price,
+                        'side': side,
+                        'size': abs(size),
+                        'initial_jma_value': market_snapshot.jma_value,
+                        'trend_info': trend_info
+                    }
+                    self.logger.info(f"JMA Trend Warning: {trend_info} detected - monitoring for exit")
+                    continue
+                
+                # Position already being tracked
+                tracking_info = self._jma_position_tracking[position_key]
+                time_elapsed = current_time - tracking_info['first_detected']
+                
+                # FIXED: Smart exit conditions instead of immediate closure
+                min_hold_time = 60  # Minimum 60 seconds before JMA exit
+                price_movement_threshold = 0.003  # 0.3% price movement required
+                
+                # Calculate price movement since trend was first detected
+                price_change_pct = abs(current_price - entry_price) / entry_price
+                
+                # FIXED: Multiple exit conditions for smarter exits
+                should_exit = False
+                exit_reason = ""
+                
+                # Condition 1: Minimum time + significant adverse price movement
+                if time_elapsed >= min_hold_time and price_change_pct >= price_movement_threshold:
+                    if ((side == 'long' and current_price < entry_price * (1 - price_movement_threshold)) or
+                        (side == 'short' and current_price > entry_price * (1 + price_movement_threshold))):
+                        should_exit = True
+                        exit_reason = f"Time buffer ({time_elapsed:.0f}s) + adverse movement ({price_change_pct*100:.2f}%)"
+                
+                # Condition 2: Strong JMA divergence (JMA value moved significantly further)
+                elif time_elapsed >= min_hold_time:
+                    jma_change_pct = abs(market_snapshot.jma_value - tracking_info['initial_jma_value']) / tracking_info['initial_jma_value']
+                    if jma_change_pct >= 0.005:  # 0.5% JMA movement
+                        should_exit = True
+                        exit_reason = f"Strong JMA divergence ({jma_change_pct*100:.2f}%) after {time_elapsed:.0f}s"
+                
+                # Condition 3: Extended time regardless (safety exit)
+                elif time_elapsed >= 300:  # 5 minutes maximum
+                    should_exit = True
+                    exit_reason = f"Maximum hold time ({time_elapsed:.0f}s) reached"
+                
+                if should_exit:
+                    try:
+                        # Determine order side to close position
+                        close_side = 'sell' if side == 'long' else 'buy'
+                        
+                        self.logger.info(f"JMA Smart Exit: {trend_info} - {exit_reason}")
+                        
+                        # FIXED: Use limit order near current price instead of market order
+                        # This gives better execution and avoids slippage
+                        if side == 'long':
+                            # For long positions, sell slightly below current price
+                            exit_price = current_price * 0.9995  # 0.05% below market
+                        else:
+                            # For short positions, buy slightly above current price  
+                            exit_price = current_price * 1.0005  # 0.05% above market
+                        
+                        exit_price = self._round_price(exit_price)
+                        
+                        # Place limit order for better execution
+                        order = self.exchange.create_limit_order(self.symbol, close_side, tracking_info['size'], exit_price)
+                        
+                        if order and 'id' in order:
+                            # Calculate expected PnL
+                            if side == 'long':
+                                expected_pnl = (exit_price - entry_price) * tracking_info['size']
+                            else:
+                                expected_pnl = (entry_price - exit_price) * tracking_info['size']
+                            
+                            self.logger.info(f"JMA Exit order placed: {close_side.upper()} {tracking_info['size']:.6f} @ ${exit_price:.6f}, "
+                                        f"Expected PnL: ${expected_pnl:.2f}, Order ID: {order['id'][:8]}")
+                            
+                            # Mark order as JMA exit order for tracking
+                            if order['id'] not in self.pending_orders:
+                                self.pending_orders[order['id']] = {}
+                            self.pending_orders[order['id']]['is_jma_exit'] = True
+                            self.pending_orders[order['id']]['position_key'] = position_key
+                            
+                        else:
+                            self.logger.error(f"Failed to place JMA exit order")
+                            continue
+                        
+                        # Remove from tracking
+                        del self._jma_position_tracking[position_key]
+                        
+                    except Exception as e:
+                        self.logger.error(f"Error executing JMA smart exit: {e}")
+            
+            # Clean up tracking for positions that no longer exist
+            live_position_keys = set()
+            for pos in live_positions:
+                size = float(pos.get('contracts', 0))
+                entry_price = float(pos.get('entryPrice', 0))
+                side = pos.get('side', '').lower()
+                if abs(size) >= 0.001 and entry_price > 0:
+                    position_key = f"{side}_{entry_price:.6f}_{abs(size):.6f}"
+                    live_position_keys.add(position_key)
+            
+            # Remove tracking for positions that no longer exist
+            stale_keys = [key for key in self._jma_position_tracking.keys() if key not in live_position_keys]
+            for key in stale_keys:
+                del self._jma_position_tracking[key]
+            
+            if len(self._jma_position_tracking) > 0:
+                self.logger.debug(f"JMA monitoring {len(self._jma_position_tracking)} position(s) for trend alignment")
+                
+        except Exception as e:
+            self.logger.error(f"Error in JMA trend alignment check: {e}")
     # MINIMAL FIX: Replace _get_live_market_data() with proper None handling
 
     # MINIMAL FIX: Update _get_live_market_data() to detect TP/SL by order type
@@ -984,7 +1220,7 @@ class GridStrategy:
             return 0
     
     def _place_single_order(self, price: float, side: str) -> bool:
-        """FIXED: Enhanced order placement using ORDER price BB position instead of current price"""
+        """FIXED: Enhanced order placement with JMA entry filter and existing BB/momentum logic"""
         try:
             # Get current market price for context
             ticker = self.exchange.get_ticker(self.symbol)
@@ -1005,13 +1241,15 @@ class GridStrategy:
                 self.logger.info(f"Insufficient funds: Need ${margin_required:.2f}, Available: ${available_investment:.2f}")
                 return False
             
-            # BB-BASED MARKET ANALYSIS WITH MOMENTUM
+            # BB-BASED MARKET ANALYSIS WITH MOMENTUM AND JMA
             bb_position = 0.5  # Default to middle (current price BB position)
             bb_width_pct = 0.04  # Default width
             is_low_volatility = False
             is_high_volatility = False
             momentum = 0.0  # Add momentum tracking
             momentum_direction = 'neutral'  # Add momentum direction
+            jma_trend = 'neutral'  # NEW: Add JMA trend
+            jma_value = 0.0  # NEW: Add JMA value
             bb_upper = 0.0
             bb_lower = 0.0
             bb_middle = 0.0
@@ -1024,6 +1262,8 @@ class GridStrategy:
                     bb_middle = market_snapshot.bollinger_middle
                     momentum = market_snapshot.momentum  # Get momentum value
                     momentum_direction = market_snapshot.kama_direction  # Get momentum direction
+                    jma_trend = market_snapshot.jma_trend  # NEW: Get JMA trend
+                    jma_value = market_snapshot.jma_value  # NEW: Get JMA value
                     
                     if bb_upper > 0 and bb_lower > 0 and bb_upper > bb_lower:
                         # Calculate WHERE current price is within BB range (0.0 to 1.0)
@@ -1039,10 +1279,10 @@ class GridStrategy:
                         
                         self.logger.debug(f"BB Analysis: Current price position {bb_position:.3f} (0=lower, 1=upper), "
                                         f"Width {bb_width_pct:.3f}, Volatility: {'HIGH' if is_high_volatility else 'LOW' if is_low_volatility else 'NORMAL'}, "
-                                        f"Momentum: {momentum_direction.upper()}")
+                                        f"Momentum: {momentum_direction.upper()}, JMA: {jma_trend.upper()}")
                     
                 except Exception as e:
-                    self.logger.warning(f"BB analysis failed, using defaults: {e}")
+                    self.logger.warning(f"BB/JMA analysis failed, using defaults: {e}")
             
             # FIXED: REASONABLE GAP CALCULATION ALIGNED WITH GRID STRATEGY
             # Grid distributes orders within 2% of current price, so min_gap should be much smaller
@@ -1059,15 +1299,6 @@ class GridStrategy:
                 min_gap_pct = 0.003  # 0.3% gap
             
             min_gap = current_price * min_gap_pct
-            
-            # Check minimum gap requirement with debug logging
-            # distance_from_current = abs(price - current_price)
-            # if distance_from_current < min_gap:
-            #     gap_pct = (distance_from_current / current_price) * 100
-            #     min_gap_pct_actual = (min_gap / current_price) * 100
-            #     self.logger.info(f"Order rejected - too close: {gap_pct:.3f}% < {min_gap_pct_actual:.3f}% required "
-            #                 f"(${distance_from_current:.6f} < ${min_gap:.6f}), BB width: {bb_width_pct*100:.2f}%")
-            #     return False
             
             # FIXED: Calculate BB position for ORDER price, not current price
             order_bb_position = 0.5  # Default if BB calculation fails
@@ -1091,29 +1322,40 @@ class GridStrategy:
             should_block = False
             block_reason = ""
             
-            # FIXED: STANDALONE MOMENTUM PROTECTION (applies regardless of BB position)
-            if side == 'buy' and strong_bearish:
-                should_block = True
-                block_reason = f"Strong bearish momentum ({momentum_direction}, {momentum:.3f}) - avoid buying"
-            elif side == 'sell' and strong_bullish:
-                should_block = True
-                block_reason = f"Strong bullish momentum ({momentum_direction}, {momentum:.3f}) - avoid selling"
+            # NEW: JMA ENTRY FILTER (highest priority - check first)
+            if self.enable_samig and jma_trend != 'neutral' and jma_value > 0:
+                if side == 'buy' and jma_trend == 'bearish':
+                    should_block = True
+                    block_reason = f"JMA BEARISH trend - avoid buying (JMA: ${jma_value:.6f} vs Price: ${current_price:.6f})"
+                elif side == 'sell' and jma_trend == 'bullish':
+                    should_block = True
+                    block_reason = f"JMA BULLISH trend - avoid selling (JMA: ${jma_value:.6f} vs Price: ${current_price:.6f})"
             
-            # FIXED: Zone-based protection using ORDER price BB position
-            elif order_in_upper_zone and side == 'buy':
-                should_block = True
-                block_reason = f"Order price in upper BB zone ({order_bb_position:.3f}) - too expensive to buy"
-            elif order_in_lower_zone and side == 'sell':
-                should_block = True
-                block_reason = f"Order price in lower BB zone ({order_bb_position:.3f}) - too cheap to sell"
+            # EXISTING: STANDALONE MOMENTUM PROTECTION (applies regardless of BB position)
+            if not should_block:
+                if side == 'buy' and strong_bearish:
+                    should_block = True
+                    block_reason = f"Strong bearish momentum ({momentum_direction}, {momentum:.3f}) - avoid buying"
+                elif side == 'sell' and strong_bullish:
+                    should_block = True
+                    block_reason = f"Strong bullish momentum ({momentum_direction}, {momentum:.3f}) - avoid selling"
             
-            # Extreme zone protection using ORDER price
-            elif order_bb_position > 0.90 and side == 'buy':
-                should_block = True
-                block_reason = f"Order price at extreme upper BB ({order_bb_position:.3f}) - very expensive"
-            elif order_bb_position < 0.10 and side == 'sell':
-                should_block = True
-                block_reason = f"Order price at extreme lower BB ({order_bb_position:.3f}) - very cheap"
+            # EXISTING: Zone-based protection using ORDER price BB position
+            if not should_block:
+                if order_in_upper_zone and side == 'buy':
+                    should_block = True
+                    block_reason = f"Order price in upper BB zone ({order_bb_position:.3f}) - too expensive to buy"
+                elif order_in_lower_zone and side == 'sell':
+                    should_block = True
+                    block_reason = f"Order price in lower BB zone ({order_bb_position:.3f}) - too cheap to sell"
+                
+                # Extreme zone protection using ORDER price
+                elif order_bb_position > 0.90 and side == 'buy':
+                    should_block = True
+                    block_reason = f"Order price at extreme upper BB ({order_bb_position:.3f}) - very expensive"
+                elif order_bb_position < 0.10 and side == 'sell':
+                    should_block = True
+                    block_reason = f"Order price at extreme lower BB ({order_bb_position:.3f}) - very cheap"
             
             if should_block:
                 self.logger.info(f"Order blocked: {block_reason}")
@@ -1155,18 +1397,22 @@ class GridStrategy:
                 'order_bb_position_at_placement': order_bb_position,  # Order price BB position
                 'bb_width_at_placement': bb_width_pct,
                 'momentum_at_placement': momentum,
-                'momentum_direction_at_placement': momentum_direction
+                'momentum_direction_at_placement': momentum_direction,
+                'jma_trend_at_placement': jma_trend,  # NEW: Track JMA trend at entry
+                'jma_value_at_placement': jma_value   # NEW: Track JMA value at entry
             }
             
             self.pending_orders[order['id']] = order_info
             
-            # Enhanced logging with BB and momentum context
+            # Enhanced logging with BB, momentum, and JMA context
             volatility_info = "HIGH-VOL" if is_high_volatility else "LOW-VOL" if is_low_volatility else "NORMAL-VOL"
             bb_zone = "UPPER" if order_in_upper_zone else "LOWER" if order_in_lower_zone else "MIDDLE"
             momentum_info = momentum_direction.upper()
+            jma_info = jma_trend.upper()  # NEW: Add JMA to logging
             
-            self.logger.info(f"Order placed ({volatility_info}, {bb_zone}, {momentum_info}): {side.upper()} {amount:.6f} @ ${price:.6f} "
-                            f"({price_diff_pct:+.2f}%), Order BB pos: {order_bb_position:.3f}, Current BB pos: {bb_position:.3f}, Momentum: {momentum:.3f}, Margin: ${margin_required:.2f}, ID: {order['id'][:8]}")
+            self.logger.info(f"Order placed ({volatility_info}, {bb_zone}, M:{momentum_info}, JMA:{jma_info}): {side.upper()} {amount:.6f} @ ${price:.6f} "
+                            f"({price_diff_pct:+.2f}%), Order BB pos: {order_bb_position:.3f}, Current BB pos: {bb_position:.3f}, "
+                            f"Momentum: {momentum:.3f}, JMA: ${jma_value:.6f}, Margin: ${margin_required:.2f}, ID: {order['id'][:8]}")
             
             return True
             
@@ -1216,7 +1462,7 @@ class GridStrategy:
             return 0
     
     def update_grid(self):
-        """Main grid update loop with consolidated logging"""
+        """Main grid update loop with consolidated logging and JMA trend check"""
         try:
             with self.update_lock:
                 if not self.running:
@@ -1228,6 +1474,9 @@ class GridStrategy:
                 
                 # Update filled orders and positions
                 self._update_orders_and_positions()
+                
+                # NEW: Check JMA trend alignment and close opposite positions
+                self._check_jma_trend_alignment(current_price)
                 
                 # Maintain grid coverage within user range
                 self._maintain_grid_coverage(current_price)
@@ -1754,12 +2003,12 @@ class GridStrategy:
             
             # Calculate TP/SL prices and expected order side
             if side == 'long':
-                tp_price = self._round_price(entry_price * 1.005)  # +0.5% profit
-                sl_price = self._round_price(entry_price * 0.995)  # -0.5% loss
+                tp_price = self._round_price(entry_price * 1.01)  # +3% profit
+                sl_price = self._round_price(entry_price * 0.9)  # -10% loss
                 expected_order_side = 'sell'
             else:  # short
-                tp_price = self._round_price(entry_price * 0.995)  # -0.5% profit
-                sl_price = self._round_price(entry_price * 1.005)  # +0.5% loss
+                tp_price = self._round_price(entry_price * 0.99)  # -3% profit
+                sl_price = self._round_price(entry_price * 1.1)  # +10% loss
                 expected_order_side = 'buy'
             
             # Check what TP/SL orders already exist
