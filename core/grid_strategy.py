@@ -1548,7 +1548,7 @@ class GridStrategy:
             
             # Calculate minimum gap
             price_range = self.user_price_upper - self.user_price_lower
-            min_gap = price_range / self.user_grid_number * 0.1
+            min_gap = price_range / self.user_grid_number
             
             # Find levels that need orders
             levels_needing_orders = []
