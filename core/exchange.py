@@ -131,7 +131,7 @@ class Exchange:
                 self.logger.warning(f"No OHLCV data received for {symbol_id}")
                 return []
             
-            self.logger.info(f"Fetched {len(ohlcv)} OHLCV candles for {symbol_id}")
+            # self.logger.info(f"Fetched {len(ohlcv)} OHLCV candles for {symbol_id}")
             return ohlcv
             
         except Exception as e:

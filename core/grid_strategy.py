@@ -201,56 +201,115 @@ class MarketIntelligence:
                 jma_value=0.0, jma_trend='neutral', jma_strength=0.0
             )
     def _calculate_jma_trend(self, exchange: Exchange, current_price: float) -> Tuple[float, str, float]:
-        """Calculate JMA(20, 100, 2) trend using pandas-ta"""
+        """Dynamic JMA trend detection based on directional consistency and momentum"""
         try:
             import pandas as pd
             import pandas_ta as ta
             
-            # Get FULL historical data from exchange for JMA
-            full_ohlcv = exchange.get_ohlcv(self.symbol, timeframe='5m', limit=100)  # Need enough data for JMA
+            full_ohlcv = exchange.get_ohlcv(self.symbol, timeframe='5m', limit=100)
             
-            if full_ohlcv and len(full_ohlcv) >= 30:  # Need at least 30 periods for stable JMA
-                # Extract closing prices from OHLCV data
+            if full_ohlcv and len(full_ohlcv) >= 30:
                 closing_prices = [float(candle[4]) for candle in full_ohlcv]
-                
-                # Create pandas series
                 price_series = pd.Series(closing_prices)
                 
-                # Calculate JMA (20, 100, 2) - length=20, phase=2
-                # Note: pandas-ta JMA doesn't use the middle parameter (100), it's length and phase
+                # Calculate JMA
                 jma_series = ta.jma(price_series, length=20, phase=2)
 
                 if jma_series is not None and not jma_series.isna().all():
-                    # Get current JMA value
                     current_jma = float(jma_series.iloc[-1])
                     
-                    # Calculate JMA trend based on price vs JMA
-                    price_vs_jma = (current_price - current_jma) / current_jma if current_jma > 0 else 0
+                    # Extract recent JMA values for trend analysis
+                    recent_jma = jma_series.tail(15).values  # Last 15 periods
                     
-                    # Determine trend direction with threshold
-                    trend_threshold = 0.001  # 0.1% threshold
-                    if price_vs_jma > trend_threshold:
-                        jma_trend = 'bullish'
-                    elif price_vs_jma < -trend_threshold:
-                        jma_trend = 'bearish'
+                    if len(recent_jma) < 10:
+                        return current_jma, 'neutral', 0.0
+                    
+                    # 1. DIRECTIONAL CONSISTENCY ANALYSIS
+                    # Calculate period-to-period changes
+                    jma_changes = np.diff(recent_jma)
+                    
+                    # Count directional periods
+                    up_periods = np.sum(jma_changes > 0)
+                    down_periods = np.sum(jma_changes < 0)
+                    flat_periods = np.sum(jma_changes == 0)
+                    
+                    total_periods = len(jma_changes)
+                    
+                    # 2. DIRECTIONAL DOMINANCE
+                    up_ratio = up_periods / total_periods
+                    down_ratio = down_periods / total_periods
+                    flat_ratio = flat_periods / total_periods
+                    
+                    # 3. TREND MOMENTUM (rate of change acceleration)
+                    if len(recent_jma) >= 6:
+                        # Compare recent momentum vs older momentum
+                        recent_momentum = (recent_jma[-1] - recent_jma[-4]) / recent_jma[-4]
+                        older_momentum = (recent_jma[-4] - recent_jma[-7]) / recent_jma[-7]
+                        momentum_acceleration = recent_momentum - older_momentum
                     else:
-                        jma_trend = 'neutral'
+                        momentum_acceleration = 0
                     
-                    # Calculate trend strength (absolute percentage difference)
-                    jma_strength = abs(price_vs_jma)
+                    # 4. OVERALL JMA SLOPE TREND
+                    # Linear regression slope of recent JMA values
+                    x = np.arange(len(recent_jma))
+                    slope = np.polyfit(x, recent_jma, 1)[0]
+                    slope_normalized = slope / recent_jma[-1]  # Normalize by current value
+                    
+                    # 5. TREND PERSISTENCE SCORE
+                    # How consistently has JMA been moving in dominant direction?
+                    dominant_direction = 'up' if up_ratio > down_ratio else 'down'
+                    persistence_score = max(up_ratio, down_ratio)
+                    
+                    # 6. DYNAMIC TREND CLASSIFICATION
+                    # Strong directional bias needed for trend classification
+                    directional_threshold = 0.65  # 65% of periods in same direction
+                    
+                    if persistence_score >= directional_threshold:
+                        if dominant_direction == 'up' and slope_normalized > 0:
+                            trend = 'bullish'
+                            strength = persistence_score * abs(slope_normalized)
+                        elif dominant_direction == 'down' and slope_normalized < 0:
+                            trend = 'bearish' 
+                            strength = persistence_score * abs(slope_normalized)
+                        else:
+                            # Mixed signals
+                            trend = 'neutral'
+                            strength = 1 - persistence_score
+                    else:
+                        # Insufficient directional consistency
+                        trend = 'neutral'
+                        strength = 1 - persistence_score
+                    
+                    # 7. MOMENTUM OVERRIDE
+                    # Strong acceleration can override weak trends
+                    if abs(momentum_acceleration) > abs(slope_normalized) * 2:
+                        if momentum_acceleration > 0 and trend != 'bullish':
+                            trend = 'bullish'
+                            strength = abs(momentum_acceleration)
+                        elif momentum_acceleration < 0 and trend != 'bearish':
+                            trend = 'bearish'
+                            strength = abs(momentum_acceleration)
+                    
+                    # 8. SIDEWAYS MARKET DETECTION
+                    # If JMA range is very tight relative to its value, it's sideways
+                    jma_range = np.max(recent_jma) - np.min(recent_jma)
+                    range_ratio = jma_range / recent_jma[-1]
+                    
+                    if range_ratio < 0.005 and flat_ratio > 0.3:  # Range < 0.5% and 30%+ flat periods
+                        trend = 'neutral'
+                        strength = range_ratio
                     
                     self.logger.info(f"JMA: ${current_jma:.6f}, Price: ${current_price:.6f}, "
-                                f"Trend: {jma_trend.upper()}, Strength: {jma_strength:.4f}")
+                                f"Trend: {trend.upper()}, Strength: {strength:.4f}")
                     
-                    return current_jma, jma_trend, jma_strength
+                    self.logger.debug(f"JMA Analysis: Up:{up_ratio:.2f}, Down:{down_ratio:.2f}, "
+                                f"Flat:{flat_ratio:.2f}, Slope:{slope_normalized:.6f}, "
+                                f"Persistence:{persistence_score:.2f}, Range:{range_ratio:.4f}")
+                    
+                    return current_jma, trend, strength
             
-            # Fallback if insufficient data
-            self.logger.warning(f"Insufficient data for JMA calculation")
             return current_price, 'neutral', 0.0
             
-        except ImportError:
-            self.logger.warning("pandas-ta not available for JMA calculation")
-            return current_price, 'neutral', 0.0
         except Exception as e:
             self.logger.error(f"JMA calculation failed: {e}")
             return current_price, 'neutral', 0.0
@@ -325,8 +384,8 @@ class MarketIntelligence:
             import pandas_ta as ta
             
             # Get historical data
-            full_ohlcv = exchange.get_ohlcv(self.symbol, timeframe='5m', limit=200)  # Reduced from 1400
-            
+            full_ohlcv = exchange.get_ohlcv(self.symbol, timeframe='5m', limit=1400)
+
             if not full_ohlcv or len(full_ohlcv) < 20:
                 self.logger.warning(f"Insufficient OHLCV data: {len(full_ohlcv) if full_ohlcv else 0}")
                 return self._fallback_momentum()
@@ -1076,7 +1135,7 @@ class GridStrategy:
             self.running = False
     
     def _place_initial_grid_orders(self, current_price: float, available_investment: float) -> int:
-        """Place initial grid orders with BB-based distribution strategy"""
+        """FIXED: Place initial grid orders with simplified logic to ensure grid can start"""
         try:
             # Get grid levels
             grid_levels = self._calculate_grid_levels()
@@ -1093,125 +1152,132 @@ class GridStrategy:
                 self.logger.warning(f"Cannot place orders: By investment: {max_orders_by_investment}, By capacity: {max_orders_by_capacity}")
                 return 0
             
-            # BB-BASED MARKET ANALYSIS FOR ORDER DISTRIBUTION
-            bb_position = 0.5  # Default to middle
-            bb_width_pct = 0.04  # Default width
-            is_low_volatility = False
+            # SIMPLIFIED: Get market conditions for basic filtering
+            jma_trend = 'neutral'
+            jma_value = 0.0
             
             if self.market_intel:
                 try:
                     market_snapshot = self.market_intel.analyze_market(self.exchange)
-                    bb_upper = market_snapshot.bollinger_upper
-                    bb_lower = market_snapshot.bollinger_lower
-                    bb_middle = market_snapshot.bollinger_middle
+                    jma_trend = market_snapshot.jma_trend
+                    jma_value = market_snapshot.jma_value
                     
-                    if bb_upper > 0 and bb_lower > 0 and bb_upper > bb_lower and bb_middle > 0:
-                        # Calculate WHERE current price is within BB range
-                        bb_position = (current_price - bb_lower) / (bb_upper - bb_lower)
-                        bb_position = max(0.0, min(1.0, bb_position))
-                        
-                        # Calculate BB width as volatility indicator
-                        bb_width_pct = (bb_upper - bb_lower) / bb_middle
-                        is_low_volatility = bb_width_pct < 0.03
+                    self.logger.info(f"Market conditions: JMA {jma_trend.upper()}, Current: ${current_price:.6f}, JMA: ${jma_value:.6f}")
                     
                 except Exception as e:
-                    self.logger.warning(f"BB analysis failed for order distribution: {e}")
+                    self.logger.warning(f"Market analysis failed: {e}")
             
-            # BB-BASED ORDER DISTRIBUTION
-            price_in_upper_zone = bb_position > 0.75
-            price_in_lower_zone = bb_position < 0.25
-            price_in_middle_zone = 0.35 < bb_position < 0.65
-            
-            if price_in_upper_zone:
-                # Price expensive (near upper BB) - favor sell orders
-                buy_ratio = 0.3  # 30% buy, 70% sell
-                strategy_info = f"UPPER BB zone ({bb_position:.3f}) - favoring sell orders"
-            elif price_in_lower_zone:
-                # Price cheap (near lower BB) - favor buy orders
-                buy_ratio = 0.7  # 70% buy, 30% sell
-                strategy_info = f"LOWER BB zone ({bb_position:.3f}) - favoring buy orders"
-            elif is_low_volatility:
-                # Low volatility + middle zone - balanced but aggressive grid
-                buy_ratio = 0.5  # 50% buy, 50% sell
-                strategy_info = f"LOW volatility + MIDDLE zone ({bb_position:.3f}) - balanced grid"
+            # SIMPLIFIED: Basic order distribution based on JMA trend
+            if jma_trend == 'bearish':
+                # Bearish trend - favor SELL orders (75% sell, 25% buy)
+                sell_target = max(1, int(max_orders * 0.75))  # At least 1 sell order
+                buy_target = max_orders - sell_target
+                strategy_info = f"BEARISH JMA - favoring {sell_target} SELL + {buy_target} BUY orders"
+            elif jma_trend == 'bullish':
+                # Bullish trend - favor BUY orders (75% buy, 25% sell)
+                buy_target = max(1, int(max_orders * 0.75))  # At least 1 buy order  
+                sell_target = max_orders - buy_target
+                strategy_info = f"BULLISH JMA - favoring {buy_target} BUY + {sell_target} SELL orders"
             else:
-                # Normal conditions - balanced approach
-                buy_ratio = 0.5  # 50% buy, 50% sell
-                strategy_info = f"NORMAL conditions ({bb_position:.3f}) - balanced grid"
+                # Neutral or unknown - balanced approach
+                buy_target = max_orders // 2
+                sell_target = max_orders - buy_target
+                strategy_info = f"NEUTRAL/UNKNOWN JMA - balanced {buy_target} BUY + {sell_target} SELL orders"
             
-            buy_target = int(max_orders * buy_ratio)
-            sell_target = max_orders - buy_target
+            self.logger.info(f"Order strategy: {strategy_info}")
             
-            # SMART ORDER SEQUENCING BASED ON BB POSITION
-            if price_in_upper_zone:
-                # Price expensive - prioritize sell orders, place them closer to current price
-                sell_levels = [level for level in grid_levels if level > current_price]
-                buy_levels = [level for level in grid_levels if level < current_price]
-                
-                # Sort sell levels by proximity (closest first for better fills)
-                sell_levels.sort(key=lambda x: x - current_price)
-                # Sort buy levels by distance (farthest first to avoid immediate fills)
-                buy_levels.sort(key=lambda x: current_price - x, reverse=True)
-                
-                # Prioritize sell orders
-                sorted_levels_with_side = [(level, 'sell') for level in sell_levels[:sell_target]] + \
-                                        [(level, 'buy') for level in buy_levels[:buy_target]]
-                                        
-            elif price_in_lower_zone:
-                # Price cheap - prioritize buy orders, place them closer to current price
-                buy_levels = [level for level in grid_levels if level < current_price]
-                sell_levels = [level for level in grid_levels if level > current_price]
-                
-                # Sort buy levels by proximity (closest first for better fills)
-                buy_levels.sort(key=lambda x: current_price - x)
-                # Sort sell levels by distance (farthest first to avoid immediate fills)
-                sell_levels.sort(key=lambda x: x - current_price, reverse=True)
-                
-                # Prioritize buy orders
-                sorted_levels_with_side = [(level, 'buy') for level in buy_levels[:buy_target]] + \
-                                        [(level, 'sell') for level in sell_levels[:sell_target]]
-            else:
-                # Middle zone or normal conditions - balanced placement
-                sorted_levels = sorted(grid_levels, key=lambda x: abs(x - current_price))
-                
-                # Alternate between buy and sell orders for balanced placement
-                sorted_levels_with_side = []
-                buy_count = 0
-                sell_count = 0
-                
-                for level_price in sorted_levels:
-                    if buy_count < buy_target and level_price < current_price:
-                        sorted_levels_with_side.append((level_price, 'buy'))
-                        buy_count += 1
-                    elif sell_count < sell_target and level_price > current_price:
-                        sorted_levels_with_side.append((level_price, 'sell'))
-                        sell_count += 1
-                    
-                    if buy_count >= buy_target and sell_count >= sell_target:
-                        break
+            # SIMPLIFIED: Place orders by distance from current price (closest first)
+            buy_levels = [level for level in grid_levels if level < current_price]
+            sell_levels = [level for level in grid_levels if level > current_price]
             
-            self.logger.info(f"BB Strategy: {strategy_info}")
-            self.logger.info(f"Order targets: {buy_target} buy + {sell_target} sell = {max_orders} total")
-            self.logger.info(f"BB width: {bb_width_pct:.3f} ({'tight' if is_low_volatility else 'normal/wide'} bands)")
+            # Sort by proximity to current price for better fill probability
+            buy_levels.sort(key=lambda x: current_price - x)  # Closest buy levels first
+            sell_levels.sort(key=lambda x: x - current_price)  # Closest sell levels first
             
-            # Place orders according to the BB-based sequence
             orders_placed = 0
             buy_orders_placed = 0
             sell_orders_placed = 0
             
-            for level_price, order_side in sorted_levels_with_side:
-                if orders_placed >= max_orders:
-                    break
-                
-                # Place the order (BB logic will filter inappropriate orders)
-                if self._place_single_order(level_price, order_side):
-                    orders_placed += 1
-                    if order_side == 'buy':
-                        buy_orders_placed += 1
-                    else:
-                        sell_orders_placed += 1
+            # Place SELL orders first if bearish, BUY orders first if bullish
+            if jma_trend == 'bearish':
+                order_sequence = [('sell', sell_levels[:sell_target]), ('buy', buy_levels[:buy_target])]
+            else:
+                order_sequence = [('buy', buy_levels[:buy_target]), ('sell', sell_levels[:sell_target])]
             
-            self.logger.info(f"Initial BB-based grid orders placed: {buy_orders_placed} buy, {sell_orders_placed} sell, Total: {orders_placed}")
+            # SIMPLIFIED: Place orders with basic validation only
+            for order_type, levels in order_sequence:
+                for level_price in levels:
+                    if orders_placed >= max_orders:
+                        break
+                    
+                    # SIMPLIFIED: Basic distance check only (remove complex BB filtering)
+                    min_distance = current_price * 0.001  # 0.1% minimum distance
+                    if abs(level_price - current_price) < min_distance:
+                        continue
+                    
+                    # SIMPLIFIED: Use existing _place_single_order but ensure it's not overly restrictive
+                    if self._place_single_order(level_price, order_type):
+                        orders_placed += 1
+                        if order_type == 'buy':
+                            buy_orders_placed += 1
+                        else:
+                            sell_orders_placed += 1
+                    else:
+                        # ADDED: Log why order was rejected for debugging
+                        self.logger.debug(f"Order rejected: {order_type.upper()} @ ${level_price:.6f}")
+            
+            # FALLBACK: If no orders placed due to overly restrictive filtering, force at least one
+            if orders_placed == 0 and available_investment >= self.user_investment_per_grid:
+                self.logger.warning("No orders placed with normal logic, attempting fallback...")
+                
+                # Find the closest valid level that should work
+                all_levels = sorted(grid_levels, key=lambda x: abs(x - current_price))
+                
+                for level_price in all_levels:
+                    # Skip levels too close to current price
+                    if abs(level_price - current_price) < current_price * 0.002:  # 0.2% minimum
+                        continue
+                    
+                    order_type = 'sell' if level_price > current_price else 'buy'
+                    
+                    # Skip BUY if JMA bearish, skip SELL if JMA bullish (respect JMA filter)
+                    if (order_type == 'buy' and jma_trend == 'bearish') or \
+                    (order_type == 'sell' and jma_trend == 'bullish'):
+                        continue
+                    
+                    # Try to place order with relaxed validation
+                    try:
+                        amount = self._calculate_order_amount(level_price)
+                        order = self.exchange.create_limit_order(self.symbol, order_type, amount, level_price)
+                        
+                        if order and 'id' in order:
+                            # Track the order
+                            self.pending_orders[order['id']] = {
+                                'type': order_type,
+                                'price': level_price,
+                                'amount': amount,
+                                'timestamp': time.time(),
+                                'status': 'open',
+                                'fallback_order': True
+                            }
+                            
+                            orders_placed = 1
+                            self.logger.info(f"FALLBACK order placed: {order_type.upper()} @ ${level_price:.6f}")
+                            break
+                            
+                    except Exception as e:
+                        self.logger.debug(f"Fallback order failed: {e}")
+                        continue
+            
+            self.logger.info(f"Initial grid orders placed: {buy_orders_placed} buy, {sell_orders_placed} sell, Total: {orders_placed}")
+            
+            if orders_placed == 0:
+                self.logger.error("CRITICAL: No orders could be placed. Check:")
+                self.logger.error(f"  - Available investment: ${available_investment:.2f}")
+                self.logger.error(f"  - Required per order: ${self.user_investment_per_grid:.2f}")
+                self.logger.error(f"  - Grid levels: {len(grid_levels)}")
+                self.logger.error(f"  - JMA trend: {jma_trend}")
+                self.logger.error(f"  - Current price: ${current_price:.6f}")
             
             return orders_placed
             
