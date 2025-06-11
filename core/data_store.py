@@ -104,10 +104,10 @@ class DataStore:
         
         # Save to file
         success = self._save_json(self.grids_file, self.grids)
-        if success:
-            self.logger.info(f"Saved grid data for {grid_id}")
-        else:
-            self.logger.error(f"Failed to save grid data for {grid_id}")
+        # if success:
+        #     self.logger.info(f"Saved grid data for {grid_id}")
+        # else:
+        #     self.logger.error(f"Failed to save grid data for {grid_id}")
         
         return success
     
