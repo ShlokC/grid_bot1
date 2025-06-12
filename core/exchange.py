@@ -25,7 +25,7 @@ class Exchange:
         self.exchange = self._create_exchange()
         
         # Track hedge mode status
-        self.hedge_mode_enabled = False
+        self.hedge_mode_enabled = True
         
         # Pre-load markets and enable hedge mode
         try:
@@ -33,7 +33,7 @@ class Exchange:
             self.logger.info(f"Initialized exchange connection. Loaded {len(self.markets)} markets.")
             
             # ADDED: Enable hedge mode for dual position trading
-            self._enable_hedge_mode()
+            # self._enable_hedge_mode()
             
         except Exception as e:
             self.logger.error(f"Failed to load markets: {e}")
