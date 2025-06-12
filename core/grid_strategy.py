@@ -1,11 +1,11 @@
 """
-Grid Trading Strategy - Optimized Logging Implementation
+Grid Trading Strategy - Counter Orders Removed
 Author: Grid Trading Bot
 Date: 2025-05-26
 
 Complete rewrite removing zone complexity and artificial restrictions.
 Uses real KAMA instead of fake momentum, direct order placement within user range.
-OPTIMIZED: Consolidated logging for better performance and readability.
+UPDATED: Removed all counter order logic while preserving TP/SL functionality.
 """
 
 import logging
@@ -462,13 +462,13 @@ class MarketIntelligence:
 
 class GridStrategy:
     """
-    Simplified Grid Trading Strategy without Zone complexity
+    Simplified Grid Trading Strategy without Zone complexity and Counter Orders
     
     Key Features:
     - Direct order placement within user-defined range
     - Real KAMA-based market intelligence
     - Simple investment tracking (position + order margins)
-    - No artificial zone restrictions
+    - TP/SL orders only (no counter orders)
     """
     
     def __init__(self, 
@@ -711,9 +711,6 @@ class GridStrategy:
         except Exception as e:
             self.logger.error(f"Error calculating grid levels: {e}")
             return []
-    # MINIMAL FIX: Replace _get_live_market_data() with proper None handling
-
-    # MINIMAL FIX: Update _get_live_market_data() to detect TP/SL by order type
 
     def _get_live_market_data(self) -> Dict[str, Any]:
         """ENHANCED: Handle hedge positions with position-side awareness"""
@@ -823,10 +820,6 @@ class GridStrategy:
                     hedge_info = f" ({long_positions} LONG)"
                 elif short_positions > 0:
                     hedge_info = f" ({short_positions} SHORT)"
-                
-                # self.logger.info(f"Market state: {active_orders} orders + {tp_sl_orders} TP/SL (${order_margin:.2f}), "
-                #             f"{active_positions} positions{hedge_info} (${position_margin:.2f}), "
-                #             f"Total used: ${total_margin_used:.2f}, Available: ${available_investment:.2f}")
 
             return {
                 'live_orders': live_orders,
@@ -857,7 +850,7 @@ class GridStrategy:
     def setup_grid(self):
         """
         UPDATED: Simplified grid setup that only places initial market order.
-        Counter orders will be handled by _maintain_counter_orders() in update loop.
+        TP/SL orders will be handled by _maintain_tp_sl_orders() in update loop.
         """
         try:
             # Get current market price
@@ -1209,148 +1202,7 @@ class GridStrategy:
         except Exception as e:
             self.logger.error(f"Error calculating order amount for investment ${investment_amount:.2f} at price ${price:.6f}: {e}")
             return self.min_amount
-    def _maintain_hedge_counter_orders(self, live_positions: List[Dict], live_orders: List[Dict], current_price: float):
-        """
-        ENHANCED: Maintain counter orders for hedge positions with position-side awareness
-        """
-        try:
-            # Group positions by side for hedge mode
-            long_positions = []
-            short_positions = []
-            
-            for pos in live_positions:
-                size = float(pos.get('contracts', 0))
-                entry_price = float(pos.get('entryPrice', 0))
-                side = pos.get('side', '').lower()
-                position_side = pos.get('positionSide', 'BOTH')
-                
-                if abs(size) < 0.001 or entry_price <= 0:
-                    continue
-                
-                notional_value = abs(size) * entry_price
-                if notional_value < 0.98:  # Same dust filtering
-                    continue
-                
-                position_data = {
-                    'entry_price': entry_price,
-                    'side': side,
-                    'quantity': abs(size),
-                    'position_side': position_side
-                }
-                
-                if side == 'long':
-                    long_positions.append(position_data)
-                else:
-                    short_positions.append(position_data)
-            
-            # Handle counter orders for long positions
-            for position in long_positions:
-                self._maintain_position_counter_orders(position, live_orders, current_price, 'LONG')
-            
-            # Handle counter orders for short positions  
-            for position in short_positions:
-                self._maintain_position_counter_orders(position, live_orders, current_price, 'SHORT')
-                
-        except Exception as e:
-            self.logger.error(f"Error maintaining hedge counter orders: {e}")
-    def _maintain_position_counter_orders(self, position: dict, live_orders: list, current_price: float):
-        """Maintain counter orders for a position using EXISTING exchange methods"""
-        try:
-            entry_price = position['entry_price']
-            side = position['side']
-            quantity = position['quantity']
-            
-            # Determine counter order side
-            counter_side = 'sell' if side == 'long' else 'buy'
-            
-            # Check if we already have counter orders (exclude TP/SL orders)
-            existing_counter_orders = 0
-            for order in live_orders:
-                order_side = order.get('side', '').lower()
-                order_type = order.get('type', '').lower()
-                
-                # Count only limit orders in counter direction (not TP/SL)
-                if (order_side == counter_side and 
-                    order_type == 'limit'):  # Only limit orders are grid counter orders
-                    existing_counter_orders += 1
-            
-            # If we already have a counter order, don't create more
-            if existing_counter_orders >= 1:
-                self.logger.debug(f"Counter order already exists ({existing_counter_orders}), skipping creation")
-                return
-            
-            # Calculate SINGLE optimal counter order distance
-            price_range = self.user_price_upper - self.user_price_lower
-            grid_spacing = price_range / self.user_grid_number
-            
-            # Use optimal spacing: larger of grid spacing or 1% of entry price
-            counter_spacing = max(grid_spacing, entry_price * 0.01)
-            
-            # Calculate single counter order price
-            if side == 'long':
-                # For long positions, place ONE sell order above entry
-                counter_price = self._round_price(entry_price + counter_spacing)
-            else:
-                # For short positions, place ONE buy order below entry
-                counter_price = self._round_price(entry_price - counter_spacing)
-            
-            # Validate price is within range
-            if not (self.user_price_lower <= counter_price <= self.user_price_upper):
-                self.logger.debug(f"Counter price ${counter_price:.6f} outside range, skipping")
-                return
-            
-            # Check funds
-            market_data = self._get_live_market_data()
-            available_investment = market_data['available_investment']
-            
-            counter_amount = self._calculate_order_amount(counter_price)
-            notional_value = counter_price * counter_amount
-            margin_required = round(notional_value / self.user_leverage, 2)
-            
-            if available_investment < margin_required:
-                self.logger.debug(f"Insufficient funds for counter order")
-                return
-            
-            # Apply smart filters
-            if not self._should_place_counter_order(counter_price, counter_side, current_price, entry_price):
-                return
-            
-            # Place counter order using EXISTING exchange method
-            try:
-                self.logger.info(f"Placing counter order: {counter_side.upper()} {counter_amount:.6f} @ ${counter_price:.6f}")
-                
-                # Use EXISTING create_limit_order method - it already supports hedge mode
-                order = self.exchange.create_limit_order(
-                    self.symbol, 
-                    counter_side, 
-                    counter_amount, 
-                    counter_price
-                )
-                
-                if order and 'id' in order:
-                    self.pending_orders[order['id']] = {
-                        'type': counter_side,
-                        'price': counter_price,
-                        'amount': counter_amount,
-                        'timestamp': time.time(),
-                        'status': 'open',
-                        'is_grid_counter_order': True,
-                        'position_entry_price': entry_price
-                    }
-                    
-                    distance_pct = abs(counter_price - entry_price) / entry_price * 100
-                    profit_potential = abs(counter_price - entry_price) * counter_amount
-                    
-                    self.logger.info(f"✅ Single counter order placed: {counter_side.upper()} {counter_amount:.6f} @ ${counter_price:.6f} "
-                                f"({distance_pct:.2f}% from entry), Potential profit: ${profit_potential:.2f}, ID: {order['id'][:8]}")
-                else:
-                    self.logger.error("Failed to place counter order - invalid response")
-                    
-            except Exception as e:
-                self.logger.error(f"Failed to place counter order: {e}")
-                
-        except Exception as e:
-            self.logger.error(f"Error maintaining counter orders: {e}")
+
     def _validate_tp_sl_price(self, side: str, order_type: str, price: float, current_price: float) -> bool:
         """Validate that TP/SL price won't trigger immediately"""
         try:
@@ -1371,156 +1223,7 @@ class GridStrategy:
         except Exception as e:
             self.logger.error(f"Error validating TP/SL price: {e}")
             return False
-    def _maintain_hedge_tp_sl_orders(self, live_positions: List[Dict], live_orders: List[Dict]):
-        """FIXED: Maintain TP/SL orders for hedge positions with proper price validation"""
-        try:
-            # Get current market price for validation
-            ticker = self.exchange.get_ticker(self.symbol)
-            current_price = float(ticker['last'])
-            
-            for position in live_positions:
-                entry_price = float(position.get('entryPrice', 0))
-                side = position.get('side', '').lower()
-                quantity = abs(float(position.get('contracts', 0)))
-                position_side = position.get('positionSide', 'BOTH')
-                
-                if quantity < 0.001 or entry_price <= 0:
-                    continue
-                
-                # Debug logging for position details
-                self.logger.debug(f"Processing {side.upper()} position: Entry ${entry_price:.6f}, "
-                                f"Current ${current_price:.6f}, Position side: {position_side}")
-                
-                # Calculate TP/SL prices based on CURRENT MARKET PRICE (not entry price)
-                if side == 'long':
-                    # For LONG positions:
-                    # TP: Above current price (profit when price goes up)
-                    # SL: Below current price (limit loss when price goes down)
-                    tp_price = self._round_price(max(current_price * 1.002, entry_price * 1.01))  # At least 0.2% above current or 1% above entry
-                    sl_price = self._round_price(min(current_price * 0.995, entry_price * 0.97))  # At least 0.5% below current or 3% below entry
-                    expected_order_side = 'sell'
-                else:  # short
-                    # For SHORT positions:
-                    # TP: Below current price (profit when price goes down)
-                    # SL: Above current price (limit loss when price goes up)
-                    tp_price = self._round_price(min(current_price * 0.998, entry_price * 0.99))  # At least 0.2% below current or 1% below entry
-                    sl_price = self._round_price(max(current_price * 1.005, entry_price * 1.03))  # At least 0.5% above current or 3% above entry
-                    expected_order_side = 'buy'
-                
-                # CRITICAL: Validate TP/SL prices won't trigger immediately
-                if side == 'long':
-                    # For LONG: TP must be above current price, SL must be below current price
-                    if tp_price <= current_price:
-                        tp_price = self._round_price(current_price * 1.003)  # Set 0.3% above current price
-                        self.logger.warning(f"Adjusted LONG TP price to ${tp_price:.6f} (was too low)")
-                    
-                    if sl_price >= current_price:
-                        sl_price = self._round_price(current_price * 0.993)  # Set 0.7% below current price
-                        self.logger.warning(f"Adjusted LONG SL price to ${sl_price:.6f} (was too high)")
-                        
-                else:  # short
-                    # For SHORT: TP must be below current price, SL must be above current price
-                    if tp_price >= current_price:
-                        tp_price = self._round_price(current_price * 0.997)  # Set 0.3% below current price
-                        self.logger.warning(f"Adjusted SHORT TP price to ${tp_price:.6f} (was too high)")
-                    
-                    if sl_price <= current_price:
-                        sl_price = self._round_price(current_price * 1.007)  # Set 0.7% above current price
-                        self.logger.warning(f"Adjusted SHORT SL price to ${sl_price:.6f} (was too low)")
-                
-                # Log final calculated prices
-                self.logger.debug(f"{side.upper()} position prices: TP ${tp_price:.6f}, SL ${sl_price:.6f}, "
-                                f"Market ${current_price:.6f}, Entry ${entry_price:.6f}")
-                
-                # Final sanity check on calculated prices
-                tp_valid = self._validate_tp_sl_price(side, 'TP', tp_price, current_price)
-                sl_valid = self._validate_tp_sl_price(side, 'SL', sl_price, current_price)
-                
-                if not tp_valid:
-                    self.logger.error(f"Invalid TP price calculated for {side} position: ${tp_price:.6f} vs market ${current_price:.6f}")
-                    continue
-                    
-                if not sl_valid:
-                    self.logger.error(f"Invalid SL price calculated for {side} position: ${sl_price:.6f} vs market ${current_price:.6f}")
-                    continue
-                
-                # Check existing TP/SL orders for this position side
-                has_tp_order = False
-                has_sl_order = False
-                
-                for order in live_orders:
-                    order_type = order.get('type', '').lower()
-                    order_side = order.get('side', '').lower()
-                    order_position_side = order.get('info', {}).get('positionSide', 'BOTH')
-                    
-                    if order_side != expected_order_side or order_position_side != position_side:
-                        continue
-                        
-                    if order_type in ['take_profit_market', 'take_profit', 'take_profit_limit']:
-                        has_tp_order = True
-                    elif order_type in ['stop_market', 'stop_loss', 'stop_loss_limit']:
-                        has_sl_order = True
-                
-                # Create missing TP/SL orders for this position side
-                orders_to_create = []
-                if not has_tp_order:
-                    orders_to_create.append(('TP', tp_price, 'TAKE_PROFIT_MARKET'))
-                if not has_sl_order:
-                    orders_to_create.append(('SL', sl_price, 'STOP_MARKET'))
-                
-                for order_type, price, binance_type in orders_to_create:
-                    try:
-                        # Final validation before placing order
-                        price_diff_pct = abs(price - current_price) / current_price * 100
-                        
-                        if price_diff_pct < 0.1:  # Less than 0.1% difference
-                            self.logger.warning(f"Skipping {order_type} for {position_side}: price ${price:.6f} too close to market ${current_price:.6f}")
-                            continue
-                        
-                        # Validate using helper method
-                        if not self._validate_tp_sl_price(side, order_type, price, current_price):
-                            self.logger.error(f"Invalid {order_type} price for {side} position: ${price:.6f} vs market ${current_price:.6f}")
-                            continue
-                        
-                        self.logger.info(f"Creating {order_type} for {position_side}: {expected_order_side.upper()} @ ${price:.6f} "
-                                       f"(market: ${current_price:.6f}, entry: ${entry_price:.6f})")
-                        
-                        new_order = self.exchange.create_hedge_stop_order(
-                            self.symbol,
-                            expected_order_side,
-                            quantity,
-                            price,
-                            position_side,
-                            binance_type  # Pass the correct order type
-                        )
-                        
-                        if new_order and 'id' in new_order:
-                            self.pending_orders[new_order['id']] = {
-                                'type': expected_order_side,
-                                'price': price,
-                                'amount': quantity,
-                                'timestamp': time.time(),
-                                'order_purpose': 'profit' if order_type == 'TP' else 'stop_loss',
-                                'is_tp_sl_order': True,
-                                'position_side': position_side
-                            }
-                            
-                            expected_pnl = 0
-                            if order_type == 'TP':
-                                if side == 'long':
-                                    expected_pnl = (price - entry_price) * quantity
-                                else:
-                                    expected_pnl = (entry_price - price) * quantity
-                            
-                            self.logger.info(f"✅ {order_type} created for {position_side}: {new_order['id'][:8]} @ ${price:.6f}, "
-                                           f"Expected PnL: ${expected_pnl:.2f}")
-                            time.sleep(0.2)
-                            
-                    except Exception as e:
-                        self.logger.error(f"{order_type} creation failed for {position_side}: {e}")
-                        
-        except Exception as e:
-            self.logger.error(f"Error maintaining hedge TP/SL orders: {e}")
+
     def _sync_order_tracking(self, live_orders: List[Dict]) -> int:
         """Synchronize internal order tracking with live exchange orders"""
         added_orders = 0
@@ -1565,7 +1268,7 @@ class GridStrategy:
     def update_grid(self):
         """
         ENHANCED: Main grid update loop with proper hedge position handling.
-        Now validates and maintains both standard and hedge strategies correctly.
+        UPDATED: Removed counter order maintenance - only TP/SL orders now.
         """
         try:
             with self.update_lock:
@@ -1579,20 +1282,16 @@ class GridStrategy:
                 # 1. Update filled orders and positions (handles hedge positions properly)
                 self._update_orders_and_positions()
                 
-                # 2. Check JMA trend alignment for hedge positions (when SAMIG enabled)
-                # if self.enable_samig:
-                #     self._check_jma_trend_alignment(current_price)
-                
-                # 3. Maintain grid coverage (now handles missing hedge positions)
+                # 2. Maintain grid coverage (now handles missing hedge positions)
                 self._maintain_grid_coverage(current_price)
                 
-                # 4. Create counter orders for ALL open positions (long and short separately)
-                self._maintain_counter_orders(current_price)
+                # 3. ONLY TP/SL orders now - counter orders removed
+                self._maintain_tp_sl_orders_only(current_price)
                 
-                # 5. Update PnL calculations (includes hedge position PnL)
+                # 4. Update PnL calculations (includes hedge position PnL)
                 self._update_pnl(current_price)
                 
-                # 6. Check take profit and stop loss (considers total hedge PnL)
+                # 5. Check take profit and stop loss (considers total hedge PnL)
                 self._check_tp_sl()
                 
                 self.last_update_time = time.time()
@@ -1859,56 +1558,7 @@ class GridStrategy:
             
         except Exception as e:
             self.logger.error(f"Error placing missing hedge positions: {e}")
-    def _cancel_orphaned_tp_sl_orders(self):
-        """ADDED: Clean up TP/SL orders that have no corresponding positions"""
-        try:
-            exchange_positions = self.exchange.get_positions(self.symbol)
-            live_orders = self.exchange.get_open_orders(self.symbol)
-            
-            # Create set of existing position keys
-            existing_position_keys = set()
-            for pos in exchange_positions:
-                size = float(pos.get('contracts', 0))
-                entry_price = float(pos.get('entryPrice', 0))
-                side = pos.get('side', '').lower()
-                
-                if abs(size) >= 0.001 and entry_price > 0:
-                    position_key = f"{side}_{entry_price:.6f}"
-                    existing_position_keys.add(position_key)
-            
-            # Find orphaned TP/SL orders
-            orphaned_orders = []
-            for order in live_orders:
-                order_id = order.get('id', '')
-                if order_id in self.pending_orders:
-                    order_info = self.pending_orders[order_id]
-                    if order_info.get('is_tp_sl_order', False):
-                        position_key = order_info.get('position_key', '')
-                        if position_key and position_key not in existing_position_keys:
-                            orphaned_orders.append({
-                                'id': order_id,
-                                'price': float(order.get('price', 0)),
-                                'side': order.get('side', ''),
-                                'position_key': position_key
-                            })
-            
-            # Cancel orphaned orders
-            for order_info in orphaned_orders:
-                try:
-                    self.logger.warning(f"Cancelling orphaned TP/SL: {order_info['side'].upper()} @ ${order_info['price']:.6f} (no position: {order_info['position_key']})")
-                    self.exchange.cancel_order(order_info['id'], self.symbol)
-                    
-                    if order_info['id'] in self.pending_orders:
-                        del self.pending_orders[order_info['id']]
-                        
-                except Exception as e:
-                    self.logger.error(f"Failed to cancel orphaned TP/SL {order_info['id'][:8]}: {e}")
-            
-            if orphaned_orders:
-                self.logger.info(f"Cleaned up {len(orphaned_orders)} orphaned TP/SL orders")
-                
-        except Exception as e:
-            self.logger.error(f"Error cleaning orphaned TP/SL orders: {e}")
+
     def _should_protect_order(self, order: Dict, current_price: float, live_positions: List[Dict]) -> bool:
         """MINIMAL FIX: Only protect orders very close to execution"""
         try:
@@ -1959,7 +1609,6 @@ class GridStrategy:
                     continue
         
         return 0.0  # Default if no valid price found
-    # MINIMAL FIX: Update _update_orders_and_positions() to protect TP/SL orders in BB cleanup
 
     def _update_orders_and_positions(self):
         """ENHANCED: Handle hedge positions and orders with position-side awareness"""
@@ -2148,30 +1797,7 @@ class GridStrategy:
             
         except Exception as e:
             self.logger.error(f"Error creating position from filled order: {e}")
-    def _cancel_other_counter_orders(self, position_id: str, filled_order_id: str):
-        """Cancel other counter orders for the same position when one fills"""
-        try:
-            orders_to_cancel = []
-            
-            # Find other counter orders for the same position
-            for order_id, order_info in list(self.pending_orders.items()):
-                if (order_info.get('position_id') == position_id and 
-                    order_id != filled_order_id and
-                    order_info.get('order_purpose') in ['profit', 'stop_loss']):
-                    orders_to_cancel.append(order_id)
-            
-            # Cancel the orders
-            for order_id in orders_to_cancel:
-                try:
-                    self.exchange.cancel_order(order_id, self.symbol)
-                    if order_id in self.pending_orders:
-                        del self.pending_orders[order_id]
-                    self.logger.info(f"Cancelled remaining counter order: {order_id[:8]}")
-                except Exception as e:
-                    self.logger.warning(f"Failed to cancel counter order {order_id[:8]}: {e}")
-                    
-        except Exception as e:
-            self.logger.error(f"Error cancelling other counter orders: {e}")
+
     def _close_position_from_counter_order(self, order_id: str, order_status: Dict, order_info: Dict):
         """Close position from filled counter order"""
         try:
@@ -2204,17 +1830,22 @@ class GridStrategy:
                             f"${position.entry_price:.6f} → ${position.exit_price:.6f}, "
                             f"{pnl_status}: ${position.realized_pnl:.2f}")
             
-            # IMPORTANT: Cancel the other counter order for this position
-            self._cancel_other_counter_orders(position_id, order_id)
-            
         except Exception as e:
             self.logger.error(f"Error closing position from counter order: {e}")
     
-    def _maintain_counter_orders(self, current_price: float):
+    def _maintain_tp_sl_orders_only(self, current_price: float):
         """
-        Handle counter orders using EXISTING exchange methods with hedge mode support
+        UPDATED: Only maintain TP/SL orders with fresh position data check
         """
         try:
+            # CRITICAL: Check if we just placed orders recently to avoid stale data
+            current_time = time.time()
+            if hasattr(self, '_last_order_placement_time'):
+                time_since_last_order = current_time - self._last_order_placement_time
+                if time_since_last_order < 5.0:  # Wait 5 seconds after placing orders
+                    self.logger.debug(f"Waiting for fresh position data ({time_since_last_order:.1f}s since last order)")
+                    return
+            
             live_positions = self.exchange.get_positions(self.symbol)
             live_orders = self.exchange.get_open_orders(self.symbol)
             
@@ -2240,97 +1871,12 @@ class GridStrategy:
                 self._cleanup_orphaned_tp_sl_orders(live_orders)
                 return
             
-            # 1. Handle TP/SL orders using EXISTING exchange methods
+            # ONLY TP/SL orders using EXISTING exchange methods
             self._maintain_tp_sl_orders(real_positions, live_orders)
             
-            # 2. Handle counter orders using EXISTING exchange methods
-            self._maintain_grid_counter_orders(real_positions, live_orders, current_price)
-            
         except Exception as e:
-            self.logger.error(f"Error in counter orders maintenance: {e}")
-    def _maintain_grid_counter_orders(self, live_positions: List[Dict], live_orders: List[Dict], current_price: float):
-        """
-        Maintain counter orders for hedge positions - Uses EXISTING Exchange methods
-        """
-        try:
-            # Group positions by side for hedge mode
-            long_positions = []
-            short_positions = []
-            
-            for pos in live_positions:
-                size = float(pos.get('contracts', 0))
-                entry_price = float(pos.get('entryPrice', 0))
-                side = pos.get('side', '').lower()
-                position_side = pos.get('positionSide', 'BOTH')
-                
-                if abs(size) < 0.001 or entry_price <= 0:
-                    continue
-                
-                notional_value = abs(size) * entry_price
-                if notional_value < 0.98:  # Same dust filtering
-                    continue
-                
-                position_data = {
-                    'entry_price': entry_price,
-                    'side': side,
-                    'quantity': abs(size),
-                    'position_side': position_side
-                }
-                
-                if side == 'long':
-                    long_positions.append(position_data)
-                else:
-                    short_positions.append(position_data)
-            
-            # Handle counter orders for long positions
-            for position in long_positions:
-                self._maintain_position_counter_orders(position, live_orders, current_price)
-            
-            # Handle counter orders for short positions  
-            for position in short_positions:
-                self._maintain_position_counter_orders(position, live_orders, current_price)
-                
-        except Exception as e:
-            self.logger.error(f"Error maintaining grid counter orders: {e}")
+            self.logger.error(f"Error in TP/SL orders maintenance: {e}")
 
-    def _should_place_counter_order(self, target_price: float, counter_side: str, current_price: float, entry_price: float) -> bool:
-        """Apply smart filters for grid counter order placement"""
-        try:
-            # Basic distance check
-            distance_from_current = abs(target_price - current_price) / current_price
-            if distance_from_current < 0.005:  # Too close to current price
-                return False
-            
-            # Check if counter order would be profitable
-            if counter_side == 'sell':
-                # Sell order should be above entry price
-                if target_price <= entry_price * 1.002:  # At least 0.2% profit
-                    return False
-            else:
-                # Buy order should be below entry price  
-                if target_price >= entry_price * 0.998:  # At least 0.2% profit
-                    return False
-            
-            # JMA trend filter for counter orders (less strict than new positions)
-            if self.enable_samig and self.market_intel:
-                try:
-                    market_snapshot = self.market_intel.analyze_market(self.exchange)
-                    
-                    # Only block counter orders in very strong opposing trends
-                    if market_snapshot.jma_strength > 0.7:  # High confidence threshold
-                        if (counter_side == 'sell' and market_snapshot.jma_trend == 'bearish' or
-                            counter_side == 'buy' and market_snapshot.jma_trend == 'bullish'):
-                            self.logger.debug(f"Counter order blocked: Strong {market_snapshot.jma_trend} JMA trend")
-                            return False
-                            
-                except Exception as e:
-                    self.logger.debug(f"JMA filter error for counter order: {e}")
-            
-            return True
-            
-        except Exception as e:
-            self.logger.error(f"Error in counter order filter: {e}")
-            return False
     def _maintain_tp_sl_orders(self, live_positions: List[Dict], live_orders: List[Dict]):
         """Maintain TP/SL orders for hedge positions with proper price validation - Uses EXISTING Exchange methods"""
         try:
@@ -2356,14 +1902,14 @@ class GridStrategy:
                     # For LONG positions:
                     # TP: Above current price (profit when price goes up)
                     # SL: Below current price (limit loss when price goes down)
-                    tp_price = self._round_price(max(current_price * 1.002, entry_price * 1.005))  # At least 0.2% above current or 1% above entry
+                    tp_price = self._round_price(max(current_price * 1.002, entry_price * 1.002))  # At least 0.2% above current or 1% above entry
                     sl_price = self._round_price(min(current_price * 0.995, entry_price * 0.97))  # At least 0.5% below current or 3% below entry
                     expected_order_side = 'sell'
                 else:  # short
                     # For SHORT positions:
                     # TP: Below current price (profit when price goes down)
                     # SL: Above current price (limit loss when price goes up)
-                    tp_price = self._round_price(min(current_price * 0.998, entry_price * 0.995))  # At least 0.2% below current or 1% below entry
+                    tp_price = self._round_price(min(current_price * 0.998, entry_price * 0.998))  # At least 0.2% below current or 1% below entry
                     sl_price = self._round_price(max(current_price * 1.005, entry_price * 1.03))  # At least 0.5% above current or 3% above entry
                     expected_order_side = 'buy'
                 
@@ -2404,26 +1950,54 @@ class GridStrategy:
                     self.logger.error(f"Invalid SL price calculated for {side} position: ${sl_price:.6f} vs market ${current_price:.6f}")
                     continue
                 
-                # Check existing TP/SL orders for this position side
-                has_tp_order = False
-                has_sl_order = False
+                # IMPROVED: Count existing TP/SL orders for THIS specific position
+                tp_orders_for_position = 0
+                sl_orders_for_position = 0
                 
                 for order in live_orders:
                     order_type = order.get('type', '').lower()
                     order_side = order.get('side', '').lower()
-                    order_position_side = order.get('info', {}).get('positionSide', 'BOTH')
+                    order_price = self._get_order_price(order)
                     
-                    is_tp_order = order_type in ['take_profit_market', 'take_profit', 'take_profit_limit']
-                    is_sl_order = order_type in ['stop_market', 'stop_loss', 'stop_loss_limit']
-                    
-                    if not (is_tp_order or is_sl_order):
-                        continue
-                    
+                    # Only count TP/SL orders that match this position's expected order side
+                    if order_side == expected_order_side:
+                        is_tp_order = order_type in ['take_profit_market', 'take_profit', 'take_profit_limit']
+                        is_sl_order = order_type in ['stop_market', 'stop_loss', 'stop_loss_limit']
                         
-                    if order_type in ['take_profit_market', 'take_profit', 'take_profit_limit']:
-                        has_tp_order = True
-                    elif order_type in ['stop_market', 'stop_loss', 'stop_loss_limit']:
-                        has_sl_order = True
+                        if is_tp_order or is_sl_order:
+                            # ADDITIONAL: Check if order price makes sense for THIS position
+                            if order_price > 0:
+                                # For TP orders: Long TP should be above entry, Short TP should be below entry
+                                if is_tp_order:
+                                    if side == 'long' and order_price > entry_price:
+                                        tp_orders_for_position += 1
+                                    elif side == 'short' and order_price < entry_price:
+                                        tp_orders_for_position += 1
+                                
+                                # For SL orders: Long SL should be below entry, Short SL should be above entry  
+                                elif is_sl_order:
+                                    if side == 'long' and order_price < entry_price:
+                                        sl_orders_for_position += 1
+                                    elif side == 'short' and order_price > entry_price:
+                                        sl_orders_for_position += 1
+                            else:
+                                # If no price info, count it anyway to be safe
+                                if is_tp_order:
+                                    tp_orders_for_position += 1
+                                elif is_sl_order:
+                                    sl_orders_for_position += 1
+                
+                # Simple logic: if we have orders for this position, don't create more
+                has_tp_order = tp_orders_for_position > 0
+                has_sl_order = sl_orders_for_position > 0
+                
+                # Enhanced logging for debugging
+                if has_tp_order or has_sl_order:
+                    self.logger.info(f"Position {position_side} ({side} @ ${entry_price:.6f}): "
+                                   f"Found {tp_orders_for_position} TP orders, {sl_orders_for_position} SL orders")
+                else:
+                    self.logger.info(f"Position {position_side} ({side} @ ${entry_price:.6f}): "
+                                   f"No TP/SL orders found - will create them")
                 
                 # Create missing TP/SL orders for this position side
                 orders_to_create = []
@@ -2503,6 +2077,7 @@ class GridStrategy:
                         
         except Exception as e:
             self.logger.error(f"Error maintaining TP/SL orders: {e}")
+
     def _cleanup_orphaned_tp_sl_orders(self, live_orders: List[Dict]):
         """Clean up TP/SL orders when no position exists"""
         try:
@@ -2526,114 +2101,7 @@ class GridStrategy:
                         
         except Exception as e:
             self.logger.error(f"Error cleaning orphaned TP/SL orders: {e}")
-    # def _create_counter_order_for_position(self, position: GridPosition, current_price: float):
-    #     """Create profit-taking AND stop-loss orders with consistent 0.8% and GTC auto-cancel"""
-    #     try:
-    #         # Calculate order parameters based on position side (CONSISTENT 0.8%)
-    #         if position.side == PositionSide.LONG.value:
-    #             counter_side = OrderType.SELL.value
-    #             # Profit target: 1% above entry
-    #             profit_price = self._round_price(position.entry_price * 1.005)
-    #             # Stop loss: 1% below entry
-    #             stop_price = self._round_price(position.entry_price * 0.985)
-    #         else:
-    #             counter_side = OrderType.BUY.value
-    #             # Profit target: 1% below entry
-    #             profit_price = self._round_price(position.entry_price * 0.995)
-    #             # Stop loss: 1% above entry
-    #             stop_price = self._round_price(position.entry_price * 1.015)
-
-    #         # Validate prices make sense
-    #         if counter_side == OrderType.SELL.value:
-    #             if profit_price <= position.entry_price or stop_price >= position.entry_price:
-    #                 return
-    #         else:
-    #             if profit_price >= position.entry_price or stop_price <= position.entry_price:
-    #                 return
-            
-    #         orders_placed = 0
-            
-    #         # 1. Place PROFIT order (TAKE_PROFIT_MARKET with GTC)
-    #         try:
-    #             self.logger.info(f"Creating TP order for position {position.position_id[:8]}")
-                
-    #             symbol_id = self.exchange._get_symbol_id(self.symbol)
-    #             profit_order = self.exchange.exchange.create_order(
-    #                 symbol=symbol_id,
-    #                 type='TAKE_PROFIT_MARKET',
-    #                 side=counter_side.upper(),
-    #                 amount=position.quantity,
-    #                 price=None,
-    #                 params={
-    #                     'stopPrice': profit_price, #'reduceOnly': True,
-                        
-    #                     'timeInForce': 'GTE_GTC'  # Auto-cancels when position closes
-    #                 }
-    #             )
-                
-    #             if profit_order and 'id' in profit_order:
-    #                 profit_order_info = {
-    #                     'type': counter_side,
-    #                     'price': profit_price,
-    #                     'amount': position.quantity,
-    #                     'position_id': position.position_id,
-    #                     'timestamp': time.time(),
-    #                     'status': 'open',
-    #                     'order_purpose': 'profit',
-    #                     'is_tp_sl_order': True  # MARK as TP/SL order
-    #                 }
-    #                 self.pending_orders[profit_order['id']] = profit_order_info
-    #                 orders_placed += 1
-                    
-    #                 expected_profit = abs(profit_price - position.entry_price) * position.quantity
-    #                 self.logger.info(f"PROFIT (TP): {counter_side.upper()} {position.quantity:.6f} @ ${profit_price:.6f}, Expected: ${expected_profit:.2f}")
-            
-    #         except Exception as e:
-    #             self.logger.error(f"Failed to place profit order: {e}")
-            
-    #         # 2. Place STOP-LOSS order (STOP_MARKET with GTC)
-    #         try:
-    #             symbol_id = self.exchange._get_symbol_id(self.symbol)
-    #             sl_order = self.exchange.exchange.create_order(
-    #                 symbol=symbol_id,
-    #                 type='STOP_MARKET',
-    #                 side=counter_side.upper(),
-    #                 amount=position.quantity,
-    #                 price=None,
-    #                 params={
-    #                     'stopPrice': stop_price, #'reduceOnly': True,                        
-    #                     'timeInForce': 'GTE_GTC'  # Auto-cancels when position closes
-    #                 }
-    #             )
-            
-    #             if sl_order and 'id' in sl_order:
-    #                 sl_order_info = {
-    #                     'type': counter_side,
-    #                     'price': stop_price,
-    #                     'amount': position.quantity,
-    #                     'position_id': position.position_id,
-    #                     'timestamp': time.time(),
-    #                     'status': 'open',
-    #                     'order_purpose': 'stop_loss',
-    #                     'is_tp_sl_order': True  # MARK as TP/SL order
-    #                 }
-    #                 self.pending_orders[sl_order['id']] = sl_order_info
-    #                 orders_placed += 1
-                    
-    #                 expected_loss = abs(stop_price - position.entry_price) * position.quantity
-    #                 self.logger.info(f"STOP-LOSS (SL): {counter_side.upper()} {position.quantity:.6f} @ ${stop_price:.6f}, Max loss: ${expected_loss:.2f}")
-            
-    #         except Exception as e:
-    #             self.logger.error(f"Failed to place stop-loss order: {e}")
-            
-    #         # Update position if at least one order was placed
-    #         if orders_placed > 0:
-    #             position.has_counter_order = True
-    #             self.logger.info(f"TP/SL orders created: {orders_placed} orders with GTC auto-cancel")
-            
-    #     except Exception as e:
-    #         self.logger.error(f"Error creating counter orders for position {position.position_id}: {e}")
-        
+    
     def _update_pnl(self, current_price: float):
         """Update PnL calculations with periodic logging"""
         try:
