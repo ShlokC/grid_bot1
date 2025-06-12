@@ -2391,14 +2391,14 @@ class GridStrategy:
                     # For LONG positions:
                     # TP: Above current price (profit when price goes up)
                     # SL: Below current price (limit loss when price goes down)
-                    tp_price = self._round_price(max(current_price * 1.002, entry_price * 1.01))  # At least 0.2% above current or 1% above entry
+                    tp_price = self._round_price(max(current_price * 1.002, entry_price * 1.005))  # At least 0.2% above current or 1% above entry
                     sl_price = self._round_price(min(current_price * 0.995, entry_price * 0.97))  # At least 0.5% below current or 3% below entry
                     expected_order_side = 'sell'
                 else:  # short
                     # For SHORT positions:
                     # TP: Below current price (profit when price goes down)
                     # SL: Above current price (limit loss when price goes up)
-                    tp_price = self._round_price(min(current_price * 0.998, entry_price * 0.99))  # At least 0.2% below current or 1% below entry
+                    tp_price = self._round_price(min(current_price * 0.998, entry_price * 0.995))  # At least 0.2% below current or 1% below entry
                     sl_price = self._round_price(max(current_price * 1.005, entry_price * 1.03))  # At least 0.5% above current or 3% above entry
                     expected_order_side = 'buy'
                 
@@ -2448,8 +2448,12 @@ class GridStrategy:
                     order_side = order.get('side', '').lower()
                     order_position_side = order.get('info', {}).get('positionSide', 'BOTH')
                     
-                    if order_side != expected_order_side or order_position_side != position_side:
+                    is_tp_order = order_type in ['take_profit_market', 'take_profit', 'take_profit_limit']
+                    is_sl_order = order_type in ['stop_market', 'stop_loss', 'stop_loss_limit']
+                    
+                    if not (is_tp_order or is_sl_order):
                         continue
+                    
                         
                     if order_type in ['take_profit_market', 'take_profit', 'take_profit_limit']:
                         has_tp_order = True

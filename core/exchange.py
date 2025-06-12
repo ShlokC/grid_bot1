@@ -111,14 +111,13 @@ class Exchange:
             self.logger.debug(f"Creating {order_type} {side} order for symbol ID: {symbol_id} at stop price: {stop_price}")
             
             params = {
-                'stopPrice': stop_price,
-                'reduceOnly': True,  # Only reduce existing position
+                'stopPrice': stop_price,                  # Only reduce existing position
                 'timeInForce': 'GTC'
             }
             
             # Add positionSide parameter if hedge mode is enabled
             if self.hedge_mode_enabled:
-                params['positionSide'] = 'BOTH'
+                params['positionSide'] = 'LONG' if side.lower() == 'buy' else 'SHORT'
             
             return self._rate_limited_request(
                 self.exchange.create_order,
@@ -144,7 +143,7 @@ class Exchange:
             
             # Add positionSide parameter if hedge mode is enabled
             if self.hedge_mode_enabled:
-                params['positionSide'] = 'BOTH'
+                params['positionSide'] = 'LONG' if side.lower() == 'buy' else 'SHORT'
             
             # Use CCXT's create_order with stop_market type
             return self._rate_limited_request(
@@ -280,8 +279,8 @@ class Exchange:
             # Add positionSide parameter if hedge mode is enabled
             params = {}
             if self.hedge_mode_enabled:
-                # Use 'BOTH' to let the order determine the position side based on order side
-                params['positionSide'] = 'BOTH'
+                # Use correct position side for hedge mode: LONG for buy, SHORT for sell
+                params['positionSide'] = 'LONG' if side.lower() == 'buy' else 'SHORT'
                 
             return self._rate_limited_request(
                 self.exchange.create_limit_order, 
@@ -303,8 +302,8 @@ class Exchange:
             
             # Add positionSide parameter if hedge mode is enabled
             if self.hedge_mode_enabled:
-                # Use 'BOTH' to let the order determine the position side based on order side
-                params = {'positionSide': 'BOTH'}
+                # Use correct position side for hedge mode: LONG for buy, SHORT for sell
+                params = {'positionSide': 'LONG' if side.lower() == 'buy' else 'SHORT'}
                 return self._rate_limited_request(
                     self.exchange.create_market_order, 
                     symbol_id, 
