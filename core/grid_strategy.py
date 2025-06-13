@@ -558,6 +558,9 @@ class GridStrategy:
         # Threading
         self.update_lock = threading.Lock()
         
+        # ADDED: Track order placement timing to avoid stale position data
+        self._last_order_placement_time = 0
+        
         self.logger.info(f"Grid initialized: {self.original_symbol}, BB Range: ${self.user_price_lower:.6f}-${self.user_price_upper:.6f}, "
                         f"Levels: {self.user_grid_number}, Investment: ${self.user_total_investment:.2f}, "
                         f"Leverage: {self.user_leverage}x, SAMIG: {self.enable_samig}")
@@ -970,7 +973,7 @@ class GridStrategy:
                 self.logger.info(f"Placing initial MARKET order: {order_side.upper()} {amount:.6f} @ MARKET")
                 
                 order = self.exchange.create_market_order(self.symbol, order_side, amount)
-                
+                time.sleep(10)  # Allow time for order to process
                 if not order or 'id' not in order:
                     self.logger.error("Failed to place initial market order - invalid response")
                     return 0
@@ -1014,11 +1017,14 @@ class GridStrategy:
         
     def _place_single_order(self, price: float, side: str) -> bool:
         """
-        ENHANCED: Place hedge orders (primary + hedge position) when no position exists.
-        Places both long and short positions to profit from volatility in either direction.
-        Uses EXISTING Exchange methods that already support hedge mode.
+        ENHANCED: Place hedge orders with proper timing controls and execution verification.
+        Now ensures orders are executed and position data is updated before returning.
         """
         try:
+            # CRITICAL: Set timing marker at start to prevent concurrent execution
+            current_time = time.time()
+            self._last_order_placement_time = current_time
+            
             # Check if we already have any positions - if yes, this method shouldn't be called
             live_positions = self.exchange.get_positions(self.symbol)
             has_position = any(abs(float(pos.get('contracts', 0))) >= 0.001 for pos in live_positions)
@@ -1034,7 +1040,7 @@ class GridStrategy:
             market_data = self._get_live_market_data()
             available_investment = market_data['available_investment']
             
-            # HEDGE STRATEGY: Split investment between primary (70%) and hedge (30%) positions
+            # HEDGE STRATEGY: Split investment between primary (50%) and hedge (50%) positions
             primary_investment_pct = 0.50
             hedge_investment_pct = 0.50
             
@@ -1077,10 +1083,17 @@ class GridStrategy:
                         primary_side = 'buy'
                         hedge_side = 'sell'
                         
-                    self.logger.info(f"JMA trend: {jma_trend.upper()} -> Primary: {primary_side.upper()}, Hedge: {hedge_side.upper()}")
+                    # CLEAR LONG/SHORT LOGGING
+                    primary_position_type = "LONG" if primary_side == 'buy' else "SHORT"
+                    hedge_position_type = "LONG" if hedge_side == 'buy' else "SHORT"
+                    self.logger.info(f"🎯 HEDGE STRATEGY: JMA {jma_trend.upper()} → Primary: {primary_position_type} (50%), Hedge: {hedge_position_type} (50%)")
                     
                 except Exception as e:
                     self.logger.warning(f"JMA analysis failed, using default hedge strategy: {e}")
+            
+            # Map sides to position types for clear logging
+            primary_position_type = "LONG" if primary_side == 'buy' else "SHORT"
+            hedge_position_type = "LONG" if hedge_side == 'buy' else "SHORT"
             
             # Validate order parameters
             if primary_amount < self.min_amount or hedge_amount < self.min_amount:
@@ -1093,8 +1106,10 @@ class GridStrategy:
                 return False
             
             # Place PRIMARY position (larger position following trend)
+            primary_order_id = None
             try:
-                self.logger.info(f"Placing PRIMARY hedge order: {primary_side.upper()} {primary_amount:.6f} @ MARKET (70% of investment)")
+                # CLEAR LONG/SHORT ORDER LOGGING
+                self.logger.info(f"🚀 PLACING PRIMARY {primary_position_type} ORDER: {primary_amount:.6f} {self.symbol} @ MARKET (${primary_notional:.2f} notional)")
                 
                 # Use EXISTING exchange method - it already supports hedge mode
                 primary_order = self.exchange.create_market_order(
@@ -1104,26 +1119,40 @@ class GridStrategy:
                 )
                 
                 if not primary_order or 'id' not in primary_order:
-                    self.logger.error("Failed to place primary hedge order - invalid response")
+                    self.logger.error(f"❌ Failed to place PRIMARY {primary_position_type} order - invalid response")
                     return False
                 
+                primary_order_id = primary_order['id']
                 primary_fill_price = float(primary_order.get('average', current_price))
                 if primary_fill_price == 0:
                     primary_fill_price = current_price
                 
-                self.logger.info(f"✅ PRIMARY hedge order executed: {primary_side.upper()} {primary_amount:.6f} @ ${primary_fill_price:.6f}, "
-                                f"Margin: ${round(primary_notional / self.user_leverage, 2):.2f}")
+                # CLEAR SUCCESS LOGGING
+                self.logger.info(f"✅ PRIMARY {primary_position_type} ORDER FILLED: {primary_amount:.6f} @ ${primary_fill_price:.6f}, "
+                                f"Margin: ${round(primary_notional / self.user_leverage, 2):.2f}, ID: {primary_order['id'][:8]}")
                 
             except Exception as e:
-                self.logger.error(f"Failed to place primary hedge order: {e}")
+                self.logger.error(f"❌ Failed to place PRIMARY {primary_position_type} order: {e}")
                 return False
             
-            # Small delay between orders
-            time.sleep(0.5)
+            # CRITICAL: Wait for first order to be processed before placing second order
+            self.logger.debug(f"⏰ Waiting for PRIMARY {primary_position_type} order processing...")
+            time.sleep(2.0)  # Increased wait time for order processing
+            
+            # VERIFY primary order execution before placing hedge order
+            try:
+                order_status = self.exchange.get_order_status(primary_order_id, self.symbol)
+                if order_status.get('status') not in ['filled', 'closed']:
+                    self.logger.warning(f"⚠️ PRIMARY {primary_position_type} order not yet filled, status: {order_status.get('status')}")
+                    # Continue anyway since market orders usually fill immediately
+            except Exception as e:
+                self.logger.warning(f"⚠️ Could not verify PRIMARY {primary_position_type} order status: {e}")
             
             # Place HEDGE position (smaller opposite position)
+            hedge_order_id = None
             try:
-                self.logger.info(f"Placing HEDGE order: {hedge_side.upper()} {hedge_amount:.6f} @ MARKET (30% of investment)")
+                # CLEAR LONG/SHORT ORDER LOGGING
+                self.logger.info(f"🚀 PLACING HEDGE {hedge_position_type} ORDER: {hedge_amount:.6f} {self.symbol} @ MARKET (${hedge_notional:.2f} notional)")
                 
                 # Use EXISTING exchange method - it already supports hedge mode
                 hedge_order = self.exchange.create_market_order(
@@ -1133,36 +1162,55 @@ class GridStrategy:
                 )
                 
                 if not hedge_order or 'id' not in hedge_order:
-                    self.logger.warning("Failed to place hedge order - continuing with primary position only")
+                    self.logger.warning(f"⚠️ Failed to place HEDGE {hedge_position_type} order - continuing with primary position only")
                     # Don't return False here - primary order was successful
                 else:
+                    hedge_order_id = hedge_order['id']
                     hedge_fill_price = float(hedge_order.get('average', current_price))
                     if hedge_fill_price == 0:
                         hedge_fill_price = current_price
                     
-                    self.logger.info(f"✅ HEDGE order executed: {hedge_side.upper()} {hedge_amount:.6f} @ ${hedge_fill_price:.6f}, "
-                                    f"Margin: ${round(hedge_notional / self.user_leverage, 2):.2f}")
+                    # CLEAR SUCCESS LOGGING
+                    self.logger.info(f"✅ HEDGE {hedge_position_type} ORDER FILLED: {hedge_amount:.6f} @ ${hedge_fill_price:.6f}, "
+                                    f"Margin: ${round(hedge_notional / self.user_leverage, 2):.2f}, ID: {hedge_order['id'][:8]}")
                 
             except Exception as e:
-                self.logger.warning(f"Failed to place hedge order (continuing with primary only): {e}")
+                self.logger.warning(f"⚠️ Failed to place HEDGE {hedge_position_type} order (continuing with primary only): {e}")
             
-            # Mark initial orders as placed
+            # CRITICAL: Wait for both orders to be fully processed
+            self.logger.debug(f"⏰ Waiting for order execution and position updates...")
+            time.sleep(3.0)  # Wait for position data to update on exchange
+            
+            # VERIFY both orders were executed by checking positions
+            try:
+                verification_positions = self.exchange.get_positions(self.symbol)
+                position_count = sum(1 for pos in verification_positions if abs(float(pos.get('contracts', 0))) >= 0.001)
+                expected_positions = 2 if hedge_order_id else 1
+                
+                if position_count >= expected_positions:
+                    self.logger.info(f"✅ HEDGE ORDER VERIFICATION: {position_count} positions created as expected")
+                else:
+                    self.logger.warning(f"⚠️ HEDGE ORDER VERIFICATION: Only {position_count} positions found, expected {expected_positions}")
+                    
+            except Exception as e:
+                self.logger.warning(f"⚠️ Could not verify position creation: {e}")
+            
+            # Mark initial orders as placed and update timing
             self._initial_order_placed = True
+            self._grid_start_time = current_time  # Set grid start time
             
             # Calculate total strategy investment
             total_invested = round((primary_notional + hedge_notional) / self.user_leverage, 2)
             net_exposure = abs(primary_notional - hedge_notional) / self.user_leverage
             
-            self.logger.info(f"🎯 HEDGE STRATEGY DEPLOYED:")
-            self.logger.info(f"   Total Investment: ${total_invested:.2f}")
-            self.logger.info(f"   Net Exposure: ${net_exposure:.2f}")
-            self.logger.info(f"   Strategy: {primary_side.upper()} (70%) + {hedge_side.upper()} (30%)")
-            self.logger.info(f"   JMA Trend: {jma_trend.upper()}")
+            # FINAL STRATEGY SUMMARY LOGGING
+            self.logger.info(f"🎯 HEDGE STRATEGY DEPLOYED: PRIMARY {primary_position_type} + HEDGE {hedge_position_type}")
+            self.logger.info(f"   Total Investment: ${total_invested:.2f}, Net Exposure: ${net_exposure:.2f}, JMA Trend: {jma_trend.upper()}")
             
             return True
                 
         except Exception as e:
-            self.logger.error(f"Error in hedge order placement: {e}")
+            self.logger.error(f"❌ Error in hedge order placement: {e}")
             return False
     def _calculate_order_amount_for_investment(self, price: float, investment_amount: float) -> float:
         """Calculate order amount for specific investment amount"""
@@ -1344,16 +1392,22 @@ class GridStrategy:
 
     def _should_place_new_orders(self, intended_side: str = None) -> bool:
         """
-        FIXED: Updated to handle hedge positioning properly.
-        Now considers both long and short positions separately when SAMIG is enabled.
+        FIXED: Updated to handle hedge positioning with proper position size validation.
+        Now considers actual investment thresholds instead of arbitrary small amounts.
         """
         try:
             live_positions = self.exchange.get_positions(self.symbol)
             
-            # Count real positions by side
-            MIN_POSITION_NOTIONAL = 0.98
-            long_positions = 0
-            short_positions = 0
+            # Calculate expected position thresholds based on actual investment
+            expected_investment_per_side = self.user_investment_per_grid * 0.5  # 50% each for hedge
+            expected_notional_per_side = expected_investment_per_side * self.user_leverage
+            
+            # CRITICAL: Use meaningful threshold - 80% of expected notional value
+            MIN_MEANINGFUL_NOTIONAL = expected_notional_per_side * 0.8
+            
+            # Count meaningful positions by side
+            meaningful_long_positions = 0
+            meaningful_short_positions = 0
             
             for pos in live_positions:
                 size = float(pos.get('contracts', 0))
@@ -1363,49 +1417,111 @@ class GridStrategy:
                 if abs(size) < 0.001 or entry_price <= 0:
                     continue
                     
-                notional_value = abs(size) * entry_price
-                if notional_value < MIN_POSITION_NOTIONAL:
-                    continue
+                # Calculate actual notional value
+                actual_notional = abs(size) * entry_price
                 
-                if side == 'long':
-                    long_positions += 1
-                elif side == 'short':
-                    short_positions += 1
+                # Only count positions that meet meaningful threshold
+                if actual_notional >= MIN_MEANINGFUL_NOTIONAL:
+                    if side == 'long':
+                        meaningful_long_positions += 1
+                    elif side == 'short':
+                        meaningful_short_positions += 1
             
-            # HEDGE STRATEGY: If SAMIG enabled, allow orders when missing hedge positions
+            # HEDGE STRATEGY: If SAMIG enabled, allow orders when missing meaningful hedge positions
             if self.enable_samig:
-                # Allow new orders if either long or short position is missing
                 if intended_side:
-                    if intended_side == 'long' and long_positions == 0:
+                    if intended_side == 'long' and meaningful_long_positions == 0:
+                        self.logger.debug(f"Should place LONG: No meaningful LONG positions (threshold: ${MIN_MEANINGFUL_NOTIONAL:.2f})")
                         return True
-                    elif intended_side == 'short' and short_positions == 0:
+                    elif intended_side == 'short' and meaningful_short_positions == 0:
+                        self.logger.debug(f"Should place SHORT: No meaningful SHORT positions (threshold: ${MIN_MEANINGFUL_NOTIONAL:.2f})")
                         return True
+                    else:
+                        self.logger.debug(f"Should NOT place {intended_side.upper()}: Meaningful position already exists")
+                        return False
                 else:
-                    # No specific side - allow if any position is missing
-                    return long_positions == 0 or short_positions == 0
+                    # No specific side - allow if any meaningful position is missing
+                    missing_sides = []
+                    if meaningful_long_positions == 0:
+                        missing_sides.append("LONG")
+                    if meaningful_short_positions == 0:
+                        missing_sides.append("SHORT")
+                    
+                    if missing_sides:
+                        self.logger.debug(f"Should place orders: Missing meaningful {missing_sides} positions")
+                        return True
+                    else:
+                        self.logger.debug(f"Should NOT place orders: Both meaningful LONG and SHORT positions exist")
+                        return False
             
-            # STANDARD STRATEGY: Only allow new orders if no positions exist
-            return long_positions == 0 and short_positions == 0
+            # STANDARD STRATEGY: Only allow new orders if no meaningful positions exist
+            has_meaningful_positions = meaningful_long_positions > 0 or meaningful_short_positions > 0
+            
+            if not has_meaningful_positions:
+                self.logger.debug(f"Should place orders: No meaningful positions found (threshold: ${MIN_MEANINGFUL_NOTIONAL:.2f})")
+            else:
+                self.logger.debug(f"Should NOT place orders: Meaningful positions exist (LONG: {meaningful_long_positions}, SHORT: {meaningful_short_positions})")
+            
+            return not has_meaningful_positions
             
         except Exception as e:
-            self.logger.error(f"Error checking if should place new orders: {e}")
+            self.logger.error(f"❌ Error checking if should place new orders: {e}")
             return False
 
 
     def _fill_grid_gaps(self, current_price: float, market_data: Dict[str, Any]):
         """
-        FIXED: Handle initial position creation with proper hedge position checking.
-        Now creates EQUAL-SIZE hedge positions (50:50 split) for true hedging.
+        FIXED: Handle initial position creation with proper timing controls to prevent race conditions.
+        Now waits for order execution and position updates before making new decisions.
         """
         try:
-            # Get live positions and categorize them
-            live_positions = self.exchange.get_positions(self.symbol)
+            # CRITICAL: Check if orders were placed recently - wait for position data to update
+            current_time = time.time()
             
-            # Separate long and short positions (hedge-aware checking)
-            has_long_position = False
-            has_short_position = False
+            # Check multiple timing markers to prevent race conditions
+            last_order_time = getattr(self, '_last_order_placement_time', 0)
+            grid_start_time = getattr(self, '_grid_start_time', 0)
+            initial_order_placed = getattr(self, '_initial_order_placed', False)
             
-            MIN_POSITION_NOTIONAL = 0.98
+            # ENHANCED: Wait longer after ANY order placement for position data to update
+            time_since_last_order = current_time - last_order_time
+            time_since_grid_start = current_time - grid_start_time
+            
+            # If any order was placed recently, wait for position data refresh
+            if last_order_time > 0 and time_since_last_order < 15.0:  # Wait 15 seconds after any order
+                self.logger.debug(f"⏰ Waiting for position data after recent order: {time_since_last_order:.1f}s elapsed (need 15s)")
+                return
+                
+            # If grid just started, wait for initial positions to settle
+            if initial_order_placed and grid_start_time > 0 and time_since_grid_start < 30.0:
+                self.logger.debug(f"⏰ Waiting for initial positions to settle: {time_since_grid_start:.1f}s elapsed (need 30s)")
+                return
+            
+            # CRITICAL: Force fresh position data before making decisions
+            try:
+                live_positions = self.exchange.get_positions(self.symbol)
+                # Small delay to ensure we get the latest data
+                time.sleep(0.5)
+                live_positions = self.exchange.get_positions(self.symbol)  # Double-check for fresh data
+            except Exception as e:
+                self.logger.error(f"❌ Failed to get fresh position data: {e}")
+                return
+            
+            # Calculate expected position thresholds based on actual investment
+            expected_investment_per_side = self.user_investment_per_grid * 0.5  # 50% each for hedge
+            expected_notional_per_side = expected_investment_per_side * self.user_leverage
+            
+            # CRITICAL: Use meaningful threshold - 80% of expected notional value
+            MIN_MEANINGFUL_NOTIONAL = expected_notional_per_side * 0.8
+            
+            # Validate existing positions against expected sizes
+            has_meaningful_long = False
+            has_meaningful_short = False
+            long_position_info = ""
+            short_position_info = ""
+            
+            self.logger.debug(f"🔍 Position validation (fresh data): Expected notional per side: ${expected_notional_per_side:.2f}, "
+                            f"Minimum meaningful: ${MIN_MEANINGFUL_NOTIONAL:.2f}")
             
             for pos in live_positions:
                 size = float(pos.get('contracts', 0))
@@ -1415,98 +1531,147 @@ class GridStrategy:
                 if abs(size) < 0.001 or entry_price <= 0:
                     continue
                     
-                notional_value = abs(size) * entry_price
-                if notional_value < MIN_POSITION_NOTIONAL:
-                    continue
+                # Calculate actual notional value
+                actual_notional = abs(size) * entry_price
                 
-                # Categorize real positions by side
-                if side == 'long':
-                    has_long_position = True
-                elif side == 'short':
-                    has_short_position = True
+                # Check if position meets meaningful threshold
+                if actual_notional >= MIN_MEANINGFUL_NOTIONAL:
+                    if side == 'long':
+                        has_meaningful_long = True
+                        long_position_info = f"LONG {size:.6f} @ ${entry_price:.6f} (${actual_notional:.2f} notional)"
+                    elif side == 'short':
+                        has_meaningful_short = True
+                        short_position_info = f"SHORT {abs(size):.6f} @ ${entry_price:.6f} (${actual_notional:.2f} notional)"
+                else:
+                    # Log dust positions that don't meet threshold
+                    dust_info = f"{side.upper()} {abs(size):.6f} @ ${entry_price:.6f} (${actual_notional:.2f} dust)"
+                    self.logger.debug(f"💸 Ignoring dust position: {dust_info} (below ${MIN_MEANINGFUL_NOTIONAL:.2f} threshold)")
             
             # Check available investment and order capacity
             if (market_data['available_investment'] < self.user_investment_per_grid or 
                 market_data['total_commitment'] >= self.max_total_orders):
+                if has_meaningful_long or has_meaningful_short:
+                    self.logger.debug(f"✅ Existing meaningful positions found, capacity constraints OK")
                 return
             
-            # HEDGE STRATEGY: Create missing positions with EQUAL SIZES
+            # ENHANCED: Log current position status with timing info
+            position_status = []
+            if has_meaningful_long:
+                position_status.append(long_position_info)
+            if has_meaningful_short:
+                position_status.append(short_position_info)
+                
+            if position_status:
+                self.logger.info(f"📊 EXISTING MEANINGFUL POSITIONS (verified fresh): {' | '.join(position_status)}")
+            
+            # HEDGE STRATEGY: Create missing positions with proper timing controls
             if self.enable_samig:
-                # Calculate missing positions
+                # Calculate missing positions based on meaningful positions
                 missing_positions = []
-                if not has_long_position:
+                if not has_meaningful_long:
                     missing_positions.append('long')
-                if not has_short_position:
+                if not has_meaningful_short:
                     missing_positions.append('short')
                 
                 if missing_positions:
-                    # For equal-size hedge positions, each position uses 50% of per-grid investment
-                    # Total needed = missing_positions * (per_grid_investment * 0.5)
-                    investment_per_missing_position = self.user_investment_per_grid * 0.5
+                    # Calculate total investment needed for missing positions
+                    investment_per_missing_position = expected_investment_per_side
                     total_investment_needed = len(missing_positions) * investment_per_missing_position
                     
                     if market_data['available_investment'] >= total_investment_needed:
+                        missing_types = ["LONG" if side == 'long' else "SHORT" for side in missing_positions]
+                        self.logger.info(f"🎯 CREATING MISSING HEDGE POSITIONS: {missing_types} "
+                                    f"(${investment_per_missing_position:.2f} each, ${total_investment_needed:.2f} total)")
+                        
+                        # CRITICAL: Set timing marker BEFORE placing orders
+                        self._last_order_placement_time = current_time
+                        
                         self._place_missing_hedge_positions(current_price, missing_positions)
                         return
                     else:
-                        self.logger.info(f"Insufficient funds for {len(missing_positions)} equal-size hedge position(s): "
+                        self.logger.info(f"💰 Insufficient funds for missing hedge positions: "
                                     f"Need ${total_investment_needed:.2f}, Available: ${market_data['available_investment']:.2f}")
                         return
+                else:
+                    self.logger.debug(f"✅ HEDGE COMPLETE: Both meaningful LONG and SHORT positions exist")
+                    return
             
-            # STANDARD STRATEGY: Only create position if none exists
-            if not has_long_position and not has_short_position:
-                # Check if initial order was already placed recently
-                if hasattr(self, '_initial_order_placed') and self._initial_order_placed:
-                    time_since_start = time.time() - getattr(self, '_grid_start_time', 0)
-                    if time_since_start < 60:  # Wait 60 seconds after initial order
-                        return
-                
-                # For equal-size hedge positions, we need full investment (50% + 50% = 100%)
+            # STANDARD STRATEGY: Only create position if NO meaningful positions exist
+            if not has_meaningful_long and not has_meaningful_short:
+                # For hedge positions, we need full investment (50% + 50% = 100%)
                 total_investment_needed = self.user_investment_per_grid
                 
                 if market_data['available_investment'] >= total_investment_needed:
-                    # Place initial equal-size hedge orders
+                    self.logger.info(f"🚀 CREATING INITIAL HEDGE POSITIONS: No meaningful positions found, "
+                                f"placing initial orders (${total_investment_needed:.2f} total investment)")
+                    
+                    # CRITICAL: Set timing markers BEFORE placing orders
+                    self._last_order_placement_time = current_time
+                    self._grid_start_time = current_time
+                    
+                    # Place initial hedge orders
                     if self._place_single_order(current_price, 'buy'):  # Side ignored for market orders
-                        self.logger.info("Initial equal-size hedge positions created via market orders")
-                        self._grid_start_time = time.time()
+                        self.logger.info("✅ Initial hedge positions creation initiated")
                 else:
-                    self.logger.info(f"Insufficient funds for equal-size hedge positions: "
+                    self.logger.info(f"💰 Insufficient funds for initial hedge positions: "
                                 f"Need ${total_investment_needed:.2f}, Available: ${market_data['available_investment']:.2f}")
+            else:
+                existing_info = []
+                if has_meaningful_long:
+                    existing_info.append(long_position_info)
+                if has_meaningful_short:
+                    existing_info.append(short_position_info)
+                self.logger.debug(f"✅ Meaningful positions exist (verified): {' | '.join(existing_info)}")
             
         except Exception as e:
-            self.logger.error(f"Error in _fill_grid_gaps: {e}")
+            self.logger.error(f"❌ Error in _fill_grid_gaps: {e}")
+            import traceback
+            self.logger.error(f"Traceback: {traceback.format_exc()}")
     def _place_missing_hedge_positions(self, current_price: float, missing_sides: List[str]):
         """
-        FIXED: Place missing hedge positions with EQUAL SIZE to existing positions.
+        FIXED: Place missing hedge positions with proper timing controls and execution verification.
         Matches the quantity of existing positions for true hedge strategy.
         """
         try:
-            # Get existing positions to match their sizes
+            # CRITICAL: Update timing marker to prevent concurrent execution
+            current_time = time.time()
+            self._last_order_placement_time = current_time
+            
+            # Get existing positions to match their sizes (fresh data)
             live_positions = self.exchange.get_positions(self.symbol)
             existing_position_size = 0.0
+            existing_position_info = ""
             
-            # Find the size of existing positions to match
-            MIN_POSITION_NOTIONAL = 0.98
+            # Calculate expected thresholds for meaningful positions
+            expected_investment_per_side = self.user_investment_per_grid * 0.5
+            expected_notional_per_side = expected_investment_per_side * self.user_leverage
+            MIN_MEANINGFUL_NOTIONAL = expected_notional_per_side * 0.8
+            
+            # Find the size of existing meaningful positions to match
             for pos in live_positions:
                 size = float(pos.get('contracts', 0))
                 entry_price = float(pos.get('entryPrice', 0))
+                side = pos.get('side', '').lower()
                 
                 if abs(size) < 0.001 or entry_price <= 0:
                     continue
                     
                 notional_value = abs(size) * entry_price
-                if notional_value < MIN_POSITION_NOTIONAL:
+                if notional_value < MIN_MEANINGFUL_NOTIONAL:
                     continue
                 
-                # Use the first valid position size as reference
+                # Use the first meaningful position size as reference
                 existing_position_size = abs(size)
+                existing_position_type = "LONG" if side == 'long' else "SHORT"
+                existing_position_info = f"{existing_position_type} {existing_position_size:.6f} @ ${entry_price:.6f} (${notional_value:.2f})"
                 break
             
-            # If no existing position found, calculate based on equal investment split
+            # If no existing meaningful position found, calculate based on equal investment split
             if existing_position_size == 0:
                 # For simultaneous creation: split investment equally (50:50)
                 equal_investment = self.user_investment_per_grid * 0.5
                 existing_position_size = self._calculate_order_amount_for_investment(current_price, equal_investment)
+                existing_position_info = f"calculated size {existing_position_size:.6f} (50% split)"
             
             # Get market conditions for side determination
             jma_trend = 'neutral'
@@ -1517,25 +1682,31 @@ class GridStrategy:
                 except Exception as e:
                     self.logger.warning(f"Market analysis failed: {e}")
             
-            self.logger.info(f"Creating missing hedge positions: {missing_sides} with size {existing_position_size:.6f} (JMA: {jma_trend.upper()})")
+            # CLEAR HEDGE COMPLETION LOGGING
+            missing_position_types = ["LONG" if side == 'long' else "SHORT" for side in missing_sides]
+            self.logger.info(f"🔄 COMPLETING HEDGE STRATEGY: Missing {missing_position_types} positions, Existing: {existing_position_info}, JMA: {jma_trend.upper()}")
+            
+            placed_orders = []  # Track successfully placed orders
             
             for side in missing_sides:
                 try:
+                    # Map side to position type for clear logging
+                    position_type = "LONG" if side == 'long' else "SHORT"
+                    order_side = 'buy' if side == 'long' else 'sell'
+                    
                     # Use EQUAL SIZE to existing position
                     amount = existing_position_size
                     
                     # Validate order parameters
                     if amount < self.min_amount:
-                        self.logger.error(f"Order amount {amount:.6f} below minimum for {side} hedge position")
+                        self.logger.error(f"❌ {position_type} hedge order amount {amount:.6f} below minimum {self.min_amount}")
                         continue
                     
                     notional_value = current_price * amount
                     margin_required = round(notional_value / self.user_leverage, 2)
                     
-                    # Determine order side
-                    order_side = 'buy' if side == 'long' else 'sell'
-                    
-                    self.logger.info(f"Placing equal-size {side.upper()} hedge position: {order_side.upper()} {amount:.6f} @ MARKET")
+                    # CLEAR MISSING HEDGE ORDER LOGGING
+                    self.logger.info(f"🚀 PLACING MISSING {position_type} HEDGE ORDER: {amount:.6f} {self.symbol} @ MARKET (${notional_value:.2f} notional, ${margin_required:.2f} margin)")
                     
                     # Use existing exchange method (already supports hedge mode)
                     order = self.exchange.create_market_order(self.symbol, order_side, amount)
@@ -1545,20 +1716,93 @@ class GridStrategy:
                         if fill_price == 0:
                             fill_price = current_price
                         
-                        self.logger.info(f"✅ Equal-size {side.upper()} hedge position created: {order_side.upper()} {amount:.6f} @ ${fill_price:.6f}, "
-                                    f"Margin: ${margin_required:.2f}, ID: {order['id'][:8]}")
+                        # Track successful order
+                        placed_orders.append({
+                            'id': order['id'],
+                            'side': position_type,
+                            'amount': amount,
+                            'price': fill_price
+                        })
+                        
+                        # CLEAR SUCCESS LOGGING WITH HEDGE COMPLETION STATUS
+                        self.logger.info(f"✅ MISSING {position_type} HEDGE ORDER FILLED: {amount:.6f} @ ${fill_price:.6f}, Margin: ${margin_required:.2f}, ID: {order['id'][:8]} - HEDGE COMPLETE")
+                        
+                        # Check if hedge is now complete
+                        self._log_hedge_completion_status(live_positions, missing_sides, side)
+                        
                     else:
-                        self.logger.error(f"Failed to create {side} hedge position")
+                        self.logger.error(f"❌ Failed to create missing {position_type} hedge order - invalid response")
                     
-                    # Small delay between orders
-                    time.sleep(0.5)
+                    # CRITICAL: Wait between orders for proper execution
+                    if len(missing_sides) > 1:
+                        self.logger.debug(f"⏰ Waiting between hedge orders...")
+                        time.sleep(2.0)  # Wait between multiple orders
                     
                 except Exception as e:
-                    self.logger.error(f"Error creating {side} hedge position: {e}")
+                    self.logger.error(f"❌ Error creating missing {position_type} hedge order: {e}")
+            
+            # CRITICAL: Wait for all orders to be processed and verify execution
+            if placed_orders:
+                self.logger.debug(f"⏰ Waiting for {len(placed_orders)} hedge orders to be processed...")
+                time.sleep(3.0)  # Wait for position updates
+                
+                # VERIFY order execution by checking positions
+                try:
+                    verification_positions = self.exchange.get_positions(self.symbol)
+                    current_position_count = sum(1 for pos in verification_positions if abs(float(pos.get('contracts', 0))) >= 0.001)
+                    
+                    self.logger.info(f"✅ HEDGE COMPLETION VERIFICATION: {current_position_count} total positions after hedge completion")
+                    
+                    # Log individual position verification
+                    for pos in verification_positions:
+                        size = float(pos.get('contracts', 0))
+                        if abs(size) >= 0.001:
+                            side = pos.get('side', '').lower()
+                            entry_price = float(pos.get('entryPrice', 0))
+                            position_type = "LONG" if side == 'long' else "SHORT"
+                            notional = abs(size) * entry_price
+                            self.logger.debug(f"  📊 Verified: {position_type} {abs(size):.6f} @ ${entry_price:.6f} (${notional:.2f})")
+                            
+                except Exception as e:
+                    self.logger.warning(f"⚠️ Could not verify hedge completion: {e}")
+            
+            # FINAL HEDGE STATUS SUMMARY
+            self._log_final_hedge_status(missing_sides, jma_trend)
             
         except Exception as e:
-            self.logger.error(f"Error placing missing hedge positions: {e}")
+            self.logger.error(f"❌ Error placing missing hedge positions: {e}")
+            
+        except Exception as e:
+            self.logger.error(f"❌ Error placing missing hedge positions: {e}")
 
+    def _log_hedge_completion_status(self, live_positions: List[Dict], missing_sides: List[str], completed_side: str):
+        """Helper function to log hedge completion status"""
+        try:
+            completed_position_type = "LONG" if completed_side == 'long' else "SHORT"
+            remaining_missing = [side for side in missing_sides if side != completed_side]
+            
+            if not remaining_missing:
+                self.logger.info(f"🎯 HEDGE STRATEGY FULLY DEPLOYED: Both LONG and SHORT positions now active")
+            else:
+                remaining_types = ["LONG" if side == 'long' else "SHORT" for side in remaining_missing]
+                self.logger.info(f"🔄 HEDGE PROGRESS: {completed_position_type} completed, still missing: {remaining_types}")
+                
+        except Exception as e:
+            self.logger.error(f"Error logging hedge completion status: {e}")
+
+    def _log_final_hedge_status(self, missing_sides: List[str], jma_trend: str):
+        """Helper function to log final hedge deployment summary"""
+        try:
+            completed_types = ["LONG" if side == 'long' else "SHORT" for side in missing_sides]
+            
+            if len(completed_types) == 1:
+                self.logger.info(f"🎯 HEDGE DEPLOYMENT COMPLETE: Added {completed_types[0]} position (JMA: {jma_trend.upper()})")
+            else:
+                self.logger.info(f"🎯 HEDGE DEPLOYMENT COMPLETE: Added {' + '.join(completed_types)} positions (JMA: {jma_trend.upper()})")
+                
+        except Exception as e:
+            self.logger.error(f"Error logging final hedge status: {e}")
+    
     def _should_protect_order(self, order: Dict, current_price: float, live_positions: List[Dict]) -> bool:
         """MINIMAL FIX: Only protect orders very close to execution"""
         try:
@@ -2051,6 +2295,9 @@ class GridStrategy:
                             continue
                         
                         if new_order and 'id' in new_order:
+                            # CRITICAL: Track TP/SL order placement time
+                            self._last_order_placement_time = time.time()
+                            
                             self.pending_orders[new_order['id']] = {
                                 'type': expected_order_side,
                                 'price': price,
@@ -2217,7 +2464,7 @@ class GridStrategy:
             
             # Place market order to close position
             order = self.exchange.create_market_order(self.symbol, close_side, position.quantity)
-            
+            time.sleep(10)
             if order and 'average' in order:
                 # Update position with market close details
                 position.exit_time = time.time()
