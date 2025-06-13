@@ -105,58 +105,91 @@ class Exchange:
             raise
 
     def create_conditional_order(self, symbol: str, order_type: str, side: str, amount: float, stop_price: float) -> Dict:
-        """Create conditional order (stop-loss or take-profit) with hedge mode support."""
+        """
+        FIXED: Correct positionSide logic for hedge mode TP/SL orders
+        """
         try:
             symbol_id = self._get_symbol_id(symbol)
-            self.logger.debug(f"Creating {order_type} {side} order for symbol ID: {symbol_id} at stop price: {stop_price}")
+            self.logger.info(f"🚀 EXCHANGE CONDITIONAL ORDER: {order_type.upper()} {side.upper()} {amount:.6f} {symbol_id} @ ${stop_price:.6f}")
             
             params = {
-                'stopPrice': stop_price,                  # Only reduce existing position
+                'stopPrice': stop_price,
                 'timeInForce': 'GTC'
             }
             
-            # Add positionSide parameter if hedge mode is enabled
+            # FIXED: Correct positionSide logic for hedge mode
             if self.hedge_mode_enabled:
-                params['positionSide'] = 'LONG' if side.lower() == 'buy' else 'SHORT'
+                # ✅ CORRECT LOGIC: positionSide indicates WHICH POSITION to close
+                # To close LONG position: SELL with positionSide='LONG'
+                # To close SHORT position: BUY with positionSide='SHORT'
+                if side.lower() == 'sell':
+                    params['positionSide'] = 'LONG'   # SELL closes LONG position
+                else:  # buy
+                    params['positionSide'] = 'SHORT'  # BUY closes SHORT position
             
-            return self._rate_limited_request(
+            result = self._rate_limited_request(
                 self.exchange.create_order,
                 symbol_id, 
-                order_type,  # 'stop_market' or 'take_profit_market'
+                order_type,
                 side, 
                 amount, 
-                None,  # No limit price for market orders
+                None,
                 params
             )
+            
+            if result and 'id' in result:
+                order_id = result['id']
+                position_side = params.get('positionSide', 'BOTH')
+                self.logger.info(f"✅ EXCHANGE CONDITIONAL ORDER CREATED: {order_type.upper()} {side.upper()} {amount:.6f} {symbol_id} @ ${stop_price:.6f}, "
+                            f"positionSide={position_side}, ID: {order_id[:8]}")
+            else:
+                self.logger.error(f"❌ EXCHANGE CONDITIONAL ORDER FAILED: Invalid response")
+                
+            return result
+            
         except Exception as e:
-            self.logger.error(f"Error creating {order_type} {side} order for {symbol} (ID: {self._get_symbol_id(symbol)}): {e}")
+            self.logger.error(f"❌ EXCHANGE CONDITIONAL ORDER ERROR: {e}")
             raise
 
     def create_stop_market_order(self, symbol: str, side: str, amount: float, stop_price: float) -> Dict:
-        """Create a stop-market order (stop-loss) with hedge mode support."""
+        """
+        FIXED: Correct positionSide logic for hedge mode stop orders
+        """
         try:
             symbol_id = self._get_symbol_id(symbol)
-            self.logger.debug(f"Creating {side} stop-market order for symbol ID: {symbol_id} at stop price: {stop_price}")
+            self.logger.info(f"🚀 EXCHANGE STOP MARKET ORDER: {side.upper()} {amount:.6f} {symbol_id} @ ${stop_price:.6f}")
             
-            # Prepare parameters
             params = {'stopPrice': stop_price}
             
-            # Add positionSide parameter if hedge mode is enabled
+            # FIXED: Same logic as conditional orders
             if self.hedge_mode_enabled:
-                params['positionSide'] = 'LONG' if side.lower() == 'buy' else 'SHORT'
+                if side.lower() == 'sell':
+                    params['positionSide'] = 'LONG'   # SELL closes LONG position
+                else:  # buy
+                    params['positionSide'] = 'SHORT'  # BUY closes SHORT position
             
-            # Use CCXT's create_order with stop_market type
-            return self._rate_limited_request(
+            result = self._rate_limited_request(
                 self.exchange.create_order,
                 symbol_id, 
-                'stop_market',  # Order type
+                'stop_market',
                 side, 
                 amount, 
-                None,  # No limit price for stop-market
-                params  # Stop trigger price and position side
+                None,
+                params
             )
+            
+            if result and 'id' in result:
+                order_id = result['id']
+                position_side = params.get('positionSide', 'BOTH')
+                self.logger.info(f"✅ EXCHANGE STOP MARKET ORDER CREATED: {side.upper()} {amount:.6f} {symbol_id} @ ${stop_price:.6f}, "
+                            f"positionSide={position_side}, ID: {order_id[:8]}")
+            else:
+                self.logger.error(f"❌ EXCHANGE STOP MARKET ORDER FAILED: Invalid response")
+                
+            return result
+            
         except Exception as e:
-            self.logger.error(f"Error creating {side} stop-market order for {symbol} (ID: {self._get_symbol_id(symbol)}): {e}")
+            self.logger.error(f"❌ EXCHANGE STOP MARKET ORDER ERROR: {e}")
             raise
 
     def _rate_limited_request(self, func, *args, **kwargs):
@@ -271,18 +304,20 @@ class Exchange:
             raise
     
     def create_limit_order(self, symbol: str, side: str, amount: float, price: float) -> Dict:
-        """MODIFIED: Create a limit order with hedge mode support."""
+        """
+        FIXED: Enhanced logging for limit order creation
+        """
         try:
             symbol_id = self._get_symbol_id(symbol)
-            self.logger.debug(f"Creating {side} limit order for symbol ID: {symbol_id}")
             
-            # Add positionSide parameter if hedge mode is enabled
+            # ENHANCED: Pre-creation logging
+            self.logger.info(f"🚀 EXCHANGE LIMIT ORDER: {side.upper()} {amount:.6f} {symbol_id} @ ${price:.6f}")
+            
             params = {}
             if self.hedge_mode_enabled:
-                # Use correct position side for hedge mode: LONG for buy, SHORT for sell
                 params['positionSide'] = 'LONG' if side.lower() == 'buy' else 'SHORT'
                 
-            return self._rate_limited_request(
+            result = self._rate_limited_request(
                 self.exchange.create_limit_order, 
                 symbol_id, 
                 side, 
@@ -290,21 +325,33 @@ class Exchange:
                 price, 
                 params
             )
+            
+            # ENHANCED: Success logging
+            if result and 'id' in result:
+                order_id = result['id']
+                self.logger.info(f"✅ EXCHANGE LIMIT ORDER CREATED: {side.upper()} {amount:.6f} {symbol_id} @ ${price:.6f}, ID: {order_id[:8]}")
+            else:
+                self.logger.error(f"❌ EXCHANGE LIMIT ORDER FAILED: Invalid response for {side.upper()} {amount:.6f} {symbol_id}")
+                
+            return result
+            
         except Exception as e:
-            self.logger.error(f"Error creating {side} limit order for {symbol} (ID: {self._get_symbol_id(symbol)}): {e}")
+            self.logger.error(f"❌ EXCHANGE LIMIT ORDER ERROR: {side.upper()} {amount:.6f} {symbol} @ ${price:.6f} - {e}")
             raise
-    
+        
     def create_market_order(self, symbol: str, side: str, amount: float) -> Dict:
-        """FIXED: Create a market order with hedge mode support."""
+        """
+        FIXED: Ensure market orders also use correct positionSide logic
+        """
         try:
             symbol_id = self._get_symbol_id(symbol)
-            self.logger.debug(f"Creating {side} market order for symbol ID: {symbol_id}")
+            self.logger.info(f"🚀 EXCHANGE MARKET ORDER: {side.upper()} {amount:.6f} {symbol_id} @ MARKET")
             
-            # Add positionSide parameter if hedge mode is enabled
             if self.hedge_mode_enabled:
-                # Use correct position side for hedge mode: LONG for buy, SHORT for sell
+                # For market orders creating NEW positions:
+                # BUY creates LONG position, SELL creates SHORT position
                 params = {'positionSide': 'LONG' if side.lower() == 'buy' else 'SHORT'}
-                return self._rate_limited_request(
+                result = self._rate_limited_request(
                     self.exchange.create_market_order, 
                     symbol_id, 
                     side, 
@@ -313,14 +360,28 @@ class Exchange:
                     params
                 )
             else:
-                return self._rate_limited_request(
+                result = self._rate_limited_request(
                     self.exchange.create_market_order, 
                     symbol_id, 
                     side, 
                     amount
                 )
+            
+            if result and 'id' in result:
+                order_id = result['id']
+                fill_price = result.get('average', 'pending')
+                
+                if fill_price != 'pending':
+                    self.logger.info(f"✅ EXCHANGE MARKET ORDER FILLED: {side.upper()} {amount:.6f} {symbol_id} @ ${float(fill_price):.6f}, ID: {order_id[:8]}")
+                else:
+                    self.logger.info(f"✅ EXCHANGE MARKET ORDER CREATED: {side.upper()} {amount:.6f} {symbol_id} @ MARKET, ID: {order_id[:8]}")
+            else:
+                self.logger.error(f"❌ EXCHANGE MARKET ORDER FAILED: Invalid response")
+                
+            return result
+            
         except Exception as e:
-            self.logger.error(f"Error creating {side} market order for {symbol} (ID: {self._get_symbol_id(symbol)}): {e}")
+            self.logger.error(f"❌ EXCHANGE MARKET ORDER ERROR: {e}")
             raise
         
     def cancel_order(self, order_id: str, symbol: str) -> Dict:
