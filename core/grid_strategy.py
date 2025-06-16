@@ -1,6 +1,6 @@
 """
 Simplified Grid Trading Strategy - Places buy/sell orders at grid intervals.
-No hedge mode, no complex market intelligence, just simple grid trading.
+Enhanced with 2% stop-loss orders when positions exist.
 """
 
 import logging
@@ -21,10 +21,11 @@ from core.exchange import Exchange
 
 class GridStrategy:
     """
-    Simplified Grid Trading Strategy
+    Simplified Grid Trading Strategy with Stop-Loss Orders
     
     Places buy orders below current price and sell orders above current price
     at calculated grid intervals. When orders fill, places counter orders.
+    Enhanced with 2% stop-loss orders when positions are detected.
     """
     
     def __init__(self, 
@@ -48,6 +49,11 @@ class GridStrategy:
         self.original_symbol = symbol
         self.symbol = exchange._get_symbol_id(symbol) if hasattr(exchange, '_get_symbol_id') else symbol
         self.placed_order_ids: set = set()
+        
+        # ENHANCEMENT: Track stop-loss orders separately
+        self.stop_loss_order_ids: set = set()
+        self.stop_loss_percentage = 0.02  # 2% stop-loss
+        
         # Fetch market information
         self._fetch_market_info()
         
@@ -82,7 +88,7 @@ class GridStrategy:
         self.enable_grid_adaptation = enable_grid_adaptation
         
         # FIXED: Tight spacing for ping-pong orders (configurable)
-        self.ping_pong_spacing_pct = 0.01  # 1% default spacing
+        self.ping_pong_spacing_pct = 0.001  # 1% default spacing
 
         # Core tracking - simplified
         self.grid_orders: Dict[str, Dict] = {}  # Track grid orders
@@ -99,7 +105,8 @@ class GridStrategy:
         
         self.logger.info(f"Simplified Grid initialized: {self.original_symbol}, "
                         f"Range: ${self.user_price_lower:.6f}-${self.user_price_upper:.6f}, "
-                        f"Levels: {self.user_grid_number}, Investment: ${self.user_total_investment:.2f}")
+                        f"Levels: {self.user_grid_number}, Investment: ${self.user_total_investment:.2f}, "
+                        f"Stop-Loss: {self.stop_loss_percentage*100}%")
         
     def _fetch_market_info(self):
         """Fetch market precision and limits from exchange"""
@@ -250,7 +257,7 @@ class GridStrategy:
         except Exception as e:
             self.logger.error(f"❌ CRITICAL ERROR in grid setup: {e}")
             return False
-    # Add this method to GridStrategy class
+    
     def _get_technical_direction(self) -> str:
         """Get trading direction using JMA and KAMA technical analysis."""
         direction = 'buy'  # FIXED: Initialize direction first
@@ -309,8 +316,9 @@ class GridStrategy:
             direction = 'buy'  # FIXED: Ensure direction is always set
         
         return direction
+
     def _ensure_ping_pong_orders(self):
-        """Fixed: Prevent multiple orders with better tracking"""
+        """Fixed: Prevent multiple orders with better tracking + Stop-Loss Enhancement"""
         try:
             current_time = time.time()
             last_ensure_time = getattr(self, '_last_ensure_orders_time', 0)
@@ -336,6 +344,7 @@ class GridStrategy:
             # Check positions with lower threshold
             has_long_position = False
             has_short_position = False
+            position_size = 0.0
             
             for pos in live_positions:
                 # FIXED: Check symbol in both direct field and nested info field
@@ -347,12 +356,17 @@ class GridStrategy:
                 position_value_usd = abs(size) * current_price
                 
                 if position_value_usd >= 0.10:  # $0.10 minimum
+                    position_size = size
                     if side == 'long':
                         has_long_position = True
                         self.logger.info(f"📈 LONG position: {size:.6f} tokens = ${position_value_usd:.6f}")
                     elif side == 'short':
                         has_short_position = True  
                         self.logger.info(f"📉 SHORT position: {size:.6f} tokens = ${position_value_usd:.6f}")
+            
+            # ENHANCEMENT: Ensure stop-loss orders for existing positions
+            if has_long_position or has_short_position:
+                self._ensure_stop_loss_orders(has_long_position, has_short_position, current_price, position_size, live_orders)
             
             # Count live orders with proper symbol checking (check both direct and info fields)
             buy_orders = 0
@@ -461,7 +475,71 @@ class GridStrategy:
                         
         except Exception as e:
             self.logger.error(f"❌ Error ensuring ping-pong orders: {e}")
-        
+
+    def _ensure_stop_loss_orders(self, has_long_position: bool, has_short_position: bool, 
+                                current_price: float, position_size: float, live_orders: List[Dict]):
+        """ENHANCEMENT: Ensure stop-loss orders exist for positions"""
+        try:
+            # Count existing stop-loss orders
+            existing_sl_orders = 0
+            for order in live_orders:
+                order_symbol = order.get('info', {}).get('symbol', '')
+                if order_symbol != self.symbol:
+                    continue
+                
+                order_id = order.get('id', '')
+                if order_id in self.stop_loss_order_ids:
+                    existing_sl_orders += 1
+            
+            # If we already have stop-loss orders, don't place more
+            if existing_sl_orders > 0:
+                self.logger.debug(f"🛡️ Stop-loss already active: {existing_sl_orders} order(s)")
+                return
+            
+            # Calculate stop-loss price based on position type
+            if has_long_position:
+                # For LONG position: stop-loss BELOW current price (sell order)
+                sl_price = self._round_price(current_price * (1 - self.stop_loss_percentage))
+                sl_side = 'sell'
+                sl_amount = abs(position_size)
+                
+            elif has_short_position:
+                # For SHORT position: stop-loss ABOVE current price (buy order) 
+                sl_price = self._round_price(current_price * (1 + self.stop_loss_percentage))
+                sl_side = 'buy'
+                sl_amount = abs(position_size)
+            else:
+                return
+            
+            # Validate stop-loss price is within grid range
+            if sl_price < self.user_price_lower or sl_price > self.user_price_upper:
+                self.logger.warning(f"🛡️ Stop-loss price ${sl_price:.6f} outside grid range, skipping")
+                return
+            
+            # Ensure minimum amount
+            if sl_amount < self.min_amount:
+                sl_amount = self.min_amount
+            
+            # Place stop-loss order
+            try:
+                sl_order = self.exchange.create_limit_order(self.symbol, sl_side, sl_amount, sl_price)
+                if sl_order and 'id' in sl_order:
+                    self.stop_loss_order_ids.add(sl_order['id'])
+                    
+                    position_type = "LONG" if has_long_position else "SHORT"
+                    loss_pct = self.stop_loss_percentage * 100
+                    
+                    self.logger.info(f"🛡️ STOP-LOSS PLACED: {position_type} position @ ${current_price:.6f}")
+                    self.logger.info(f"🛡️ SL Order: {sl_side.upper()} {sl_amount:.6f} @ ${sl_price:.6f} ({loss_pct}% protection)")
+                else:
+                    self.logger.error(f"❌ Failed to place stop-loss order")
+                    
+            except Exception as e:
+                self.logger.error(f"❌ Error placing stop-loss order: {e}")
+                
+        except Exception as e:
+            self.logger.error(f"❌ Error ensuring stop-loss orders: {e}")
+    
     def _place_initial_grid_orders(self, current_price: float, grid_levels: List[float]) -> int:
         """Place only 2 initial orders: 1 buy below current price, 1 sell above current price"""
         orders_placed = 0
@@ -573,7 +651,7 @@ class GridStrategy:
             self.logger.error(f"❌ Error updating grid: {e}")
     
     def _check_filled_orders(self):
-        """Simplified: Check live orders vs our placed orders, no internal cache sync"""
+        """Enhanced: Check both regular and stop-loss filled orders"""
         try:
             # Get current live orders
             live_orders = self.exchange.get_open_orders(self.symbol)
@@ -585,8 +663,11 @@ class GridStrategy:
                 if order_symbol == self.symbol:
                     live_order_ids.add(order['id'])
             
-            # Find our filled orders (placed but no longer live)
+            # Find filled regular orders
             filled_order_ids = self.placed_order_ids - live_order_ids
+            
+            # ENHANCEMENT: Find filled stop-loss orders
+            filled_sl_order_ids = self.stop_loss_order_ids - live_order_ids
             
             if filled_order_ids:
                 self.logger.info(f"🎯 FOUND {len(filled_order_ids)} FILLED ORDERS")
@@ -598,9 +679,64 @@ class GridStrategy:
                     self.placed_order_ids.discard(order_id)
                 
                 self.logger.info(f"✅ Processed {len(filled_order_ids)} filled orders")
+            
+            # ENHANCEMENT: Process filled stop-loss orders
+            if filled_sl_order_ids:
+                self.logger.info(f"🛡️ FOUND {len(filled_sl_order_ids)} FILLED STOP-LOSS ORDERS")
+                
+                for sl_order_id in filled_sl_order_ids:
+                    self._process_filled_stop_loss_order(sl_order_id)
+                    # Remove from stop-loss tracking
+                    self.stop_loss_order_ids.discard(sl_order_id)
+                
+                self.logger.info(f"🛡️ Processed {len(filled_sl_order_ids)} filled stop-loss orders")
                     
         except Exception as e:
             self.logger.error(f"❌ Error checking filled orders: {e}")
+
+    def _process_filled_stop_loss_order(self, sl_order_id: str):
+        """ENHANCEMENT: Process filled stop-loss orders"""
+        try:
+            # Get stop-loss order details
+            order_status = self.exchange.get_order_status(sl_order_id, self.symbol)
+            
+            if order_status.get('status') not in ['filled', 'closed']:
+                return
+            
+            fill_side = order_status.get('side', '').lower()
+            fill_price = float(order_status.get('average', 0))
+            fill_amount = float(order_status.get('filled', 0))
+            
+            self.logger.warning(f"🛡️ STOP-LOSS TRIGGERED: {fill_side.upper()} {fill_amount:.6f} @ ${fill_price:.6f}")
+            
+            # Record the stop-loss fill for PnL tracking
+            self.filled_orders.append({
+                'id': sl_order_id,
+                'side': fill_side,
+                'price': fill_price,
+                'amount': fill_amount,
+                'timestamp': time.time(),
+                'type': 'stop_loss'
+            })
+            
+            self.total_trades += 1
+            
+            # Cancel any remaining orders to prevent further trading after stop-loss
+            try:
+                cancelled_orders = self.exchange.cancel_all_orders(self.symbol)
+                if cancelled_orders:
+                    self.logger.warning(f"🛡️ Cancelled {len(cancelled_orders)} remaining orders after stop-loss")
+                
+                # Clear tracking
+                self.placed_order_ids.clear()
+                self.stop_loss_order_ids.clear()
+                
+            except Exception as e:
+                self.logger.error(f"❌ Error cancelling orders after stop-loss: {e}")
+            
+        except Exception as e:
+            self.logger.error(f"❌ Error processing stop-loss order {sl_order_id}: {e}")
+
     def _process_filled_order_live(self, order_id: str):
         """Process filled order using live exchange data only"""
         try:
@@ -686,105 +822,7 @@ class GridStrategy:
                 
         except Exception as e:
             self.logger.error(f"Error processing filled order {order_id}: {e}")
-    def _process_filled_order(self, order_id: str):
-        """Process a filled order and place counter order (maintain max 2 orders)"""
-        try:
-            if order_id not in self.grid_orders:
-                return
-            
-            filled_order = self.grid_orders[order_id]
-            
-            # Get actual fill details from exchange
-            try:
-                order_status = self.exchange.get_order_status(order_id, self.symbol)
-                fill_price = float(order_status.get('average', filled_order['price']))
-                fill_amount = float(order_status.get('filled', filled_order['amount']))
-            except:
-                # Fallback to tracked values
-                fill_price = filled_order['price']
-                fill_amount = filled_order['amount']
-            
-            # Record the fill
-            self.filled_orders.append({
-                'id': order_id,
-                'side': filled_order['side'],
-                'price': fill_price,
-                'amount': fill_amount,
-                'timestamp': time.time()
-            })
-            
-            self.total_trades += 1
-            
-            # Calculate counter order side
-            counter_side = 'sell' if filled_order['side'] == 'buy' else 'buy'
-            
-            # FIXED: Check if we already have an order of the counter type
-            # Count existing orders by side (excluding the filled order)
-            remaining_orders = {order['side']: 0 for order in self.grid_orders.values() if order['id'] != order_id}
-            for order in self.grid_orders.values():
-                if order['id'] != order_id:
-                    side = order['side']
-                    remaining_orders[side] = remaining_orders.get(side, 0) + 1
-            
-            counter_side_count = remaining_orders.get(counter_side, 0)
-            
-            # Only place counter order if we don't already have one of that type
-            if counter_side_count > 0:
-                self.logger.info(f"⚠️ Already have {counter_side_count} {counter_side.upper()} order(s), skipping counter order placement")
-                return
-            
-            # FIXED: Use tight spacing for counter orders
-            tight_spacing = fill_price * self.ping_pong_spacing_pct
-            
-            if counter_side == 'sell':
-                # Place sell order above fill price
-                counter_price = self._round_price(fill_price + tight_spacing)
-            else:
-                # Place buy order below fill price
-                counter_price = self._round_price(fill_price - tight_spacing)
-            
-            # Ensure counter price is within grid range
-            if counter_price < self.user_price_lower or counter_price > self.user_price_upper:
-                self.logger.info(f"Counter order price ${counter_price:.6f} outside grid range, skipping")
-                return
-            
-            # Place counter order to maintain ping-pong trading
-            try:
-                amount = self._calculate_order_amount(counter_price)
-                if amount >= self.min_amount:
-                    counter_order = self.exchange.create_limit_order(self.symbol, counter_side, amount, counter_price)
-                    if counter_order and 'id' in counter_order:
-                        self.grid_orders[counter_order['id']] = {
-                            'id': counter_order['id'],
-                            'side': counter_side,
-                            'price': counter_price,
-                            'amount': amount,
-                            'timestamp': time.time(),
-                            'type': 'counter'
-                        }
-                        
-                        distance_pct = abs((counter_price - fill_price) / fill_price) * 100
-                        self.logger.info(f"🔄 COUNTER ORDER: {filled_order['side'].upper()} @ ${fill_price:.6f} → "
-                                    f"{counter_side.upper()} @ ${counter_price:.6f} ({distance_pct:.2f}% spacing)")
-                        
-                        # Log current order count by side
-                        final_buy_count = sum(1 for o in self.grid_orders.values() if o['side'] == 'buy' and o['id'] != order_id)
-                        final_sell_count = sum(1 for o in self.grid_orders.values() if o['side'] == 'sell' and o['id'] != order_id)
-                        if counter_side == 'buy':
-                            final_buy_count += 1
-                        else:
-                            final_sell_count += 1
-                        
-                        self.logger.info(f"📊 Order status: {final_buy_count} BUY, {final_sell_count} SELL orders active")
-                    else:
-                        self.logger.error(f"❌ Failed to place counter order")
-                        
-            except Exception as e:
-                self.logger.error(f"❌ Error placing counter order: {e}")
-                
-        except Exception as e:
-            self.logger.error(f"Error processing filled order {order_id}: {e}")
-    
+
     def _update_pnl(self):
         """Update PnL calculations"""
         try:
@@ -841,7 +879,7 @@ class GridStrategy:
             self.logger.error(f"Error checking TP/SL: {e}")
     
     def stop_grid(self):
-        """Stop grid and clear minimal tracking"""
+        """Enhanced: Stop grid and clear all tracking including stop-loss orders"""
         try:
             if not self.running:
                 return
@@ -853,8 +891,9 @@ class GridStrategy:
             if cancelled_orders:
                 self.logger.info(f"Cancelled {len(cancelled_orders)} orders")
             
-            # Clear minimal tracking
+            # ENHANCEMENT: Clear all tracking including stop-loss orders
             self.placed_order_ids.clear()
+            self.stop_loss_order_ids.clear()
             
             # Close positions at market
             positions = self.exchange.get_positions(self.symbol)
@@ -881,8 +920,9 @@ class GridStrategy:
                 # Calculate PnL percentage
                 pnl_percentage = (self.total_pnl / self.user_total_investment * 100) if self.user_total_investment > 0 else 0.0
                 
-                # Count active orders
+                # Count active orders (including stop-loss)
                 active_orders = len(self.grid_orders)
+                active_sl_orders = len(self.stop_loss_order_ids)
                 
                 return {
                     # Identification
@@ -900,6 +940,7 @@ class GridStrategy:
                     # Strategy settings
                     'take_profit_pnl': self.take_profit_pnl,
                     'stop_loss_pnl': self.stop_loss_pnl,
+                    'stop_loss_percentage': self.stop_loss_percentage * 100,  # ENHANCEMENT: Show SL%
                     'enable_grid_adaptation': self.enable_grid_adaptation,
                     'enable_samig': False,  # Always False for simplified version
                     
@@ -907,6 +948,7 @@ class GridStrategy:
                     'running': self.running,
                     'active_positions': 0,  # No position tracking in simplified version
                     'orders_count': active_orders,
+                    'stop_loss_orders_count': active_sl_orders,  # ENHANCEMENT: Show SL orders
                     'trades_count': self.total_trades,
                     
                     # Performance
