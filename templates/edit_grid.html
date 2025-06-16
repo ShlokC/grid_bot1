@@ -31,20 +31,12 @@
     
     <div class="grid-details">
         <p><strong>Grid ID:</strong> {{ grid.grid_id }}</p>
-        <p><strong>Symbol:</strong> {{ grid.symbol }}</p>
-        <p><strong>Price Range:</strong> {{ grid.price_lower }} - {{ grid.price_upper }}</p>
-        <p><strong>Grid Number:</strong> {{ grid.grid_number }}</p>
-        <p><strong>Investment:</strong> {{ "%.2f"|format(grid.investment) }}</p>
-        <p><strong>PnL:</strong> {{ "%.2f"|format(grid.pnl) }} ({{ "%.2f"|format(grid.pnl_percentage) }}%)</p>
+        <p><strong>Symbol:</strong> {{ grid.display_symbol or grid.symbol }}</p>
+        <p><strong>Grid Levels:</strong> {{ grid.grid_number }}</p>
+        <p><strong>Investment:</strong> ${{ "%.2f"|format(grid.investment) }}</p>
+        <p><strong>Leverage:</strong> {{ "%.1f"|format(grid.leverage) }}x</p>
+        <p><strong>PnL:</strong> ${{ "%.2f"|format(grid.pnl) }} ({{ "%.2f"|format(grid.pnl_percentage) }}%)</p>
         <p><strong>Status:</strong> {{ "Running" if grid.running else "Stopped" }}</p>
-        {% if grid.get('enable_samig') %}
-        <p><strong>SAMIG Status:</strong> {{ "Active" if grid.get('samig_active', False) else "Inactive" }}</p>
-        {% if grid.get('samig_active') %}
-        <p><strong>Adaptations:</strong> {{ grid.get('adaptation_count', 0) }}</p>
-        <p><strong>Market Volatility:</strong> {{ "%.2f"|format(grid.get('volatility_regime', 1.0)) }}</p>
-        <p><strong>Momentum:</strong> {{ "%.3f"|format(grid.get('momentum', 0.0)) }}</p>
-        {% endif %}
-        {% endif %}
     </div>
     
     {% if error %}
@@ -66,12 +58,6 @@
             <input type="checkbox" id="enable_grid_adaptation" name="enable_grid_adaptation" 
                    {% if grid.get('enable_grid_adaptation', False) %}checked{% endif %}>
             <label for="enable_grid_adaptation">Enable Grid Adaptation</label>
-        </div>
-        
-        <div class="checkbox-group">
-            <input type="checkbox" id="enable_samig" name="enable_samig" 
-                   {% if grid.get('enable_samig', False) %}checked{% endif %}>
-            <label for="enable_samig">Enable SAMIG (Self-Adaptive Market Intelligence)</label>
         </div>
         
         <div class="form-group">

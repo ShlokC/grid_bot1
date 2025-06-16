@@ -1,6 +1,6 @@
 """
 Exchange module for handling communication with Binance USDM Futures using CCXT.
-Updated to support hedge mode for simultaneous long/short positions.
+Simplified version without hedge mode - uses standard grid trading with buy/sell orders.
 """
 import ccxt
 import logging
@@ -10,12 +10,12 @@ from typing import Dict, List, Any, Optional, Tuple
 
 class Exchange:
     def __init__(self, api_key: str, api_secret: str):
-        """Initialize the exchange connection with rate limiting and hedge mode support."""
+        """Initialize the exchange connection with rate limiting."""
         self.logger = logging.getLogger(__name__)
         self.api_key = api_key
         self.api_secret = api_secret
         
-        # ADDED: Rate limiting and thread safety
+        # Rate limiting and thread safety
         self.api_lock = Lock()
         self.rate_limiter = Semaphore(10)  # Max 10 concurrent requests
         self.last_request_time = 0
@@ -24,176 +24,17 @@ class Exchange:
         # Initialize CCXT Binance USDM Futures exchange
         self.exchange = self._create_exchange()
         
-        # Track hedge mode status
-        self.hedge_mode_enabled = True
-        
-        # Pre-load markets and enable hedge mode
+        # Pre-load markets
         try:
             self.markets = self.exchange.load_markets()
             self.logger.info(f"Initialized exchange connection. Loaded {len(self.markets)} markets.")
-            
-            # ADDED: Enable hedge mode for dual position trading
-            # self._enable_hedge_mode()
             
         except Exception as e:
             self.logger.error(f"Failed to load markets: {e}")
             raise
 
-    def _enable_hedge_mode(self):
-        """Enable hedge mode to allow both long and short positions simultaneously"""
-        try:
-            # Check current position mode
-            response = self._rate_limited_request(
-                self.exchange.fapiPrivate_get_positionside_dual
-            )
-            
-            current_mode = response.get('dualSidePosition', False)
-            
-            if not current_mode:
-                # Enable hedge mode (dual side position)
-                self.logger.info("Enabling hedge mode (dual side positions)")
-                self._rate_limited_request(
-                    self.exchange.fapiPrivate_post_positionside_dual,
-                    params={'dualSidePosition': 'true'}
-                )
-                self.logger.info("✅ Hedge mode enabled successfully")
-                self.hedge_mode_enabled = True
-            else:
-                self.logger.info("✅ Hedge mode already enabled")
-                self.hedge_mode_enabled = True
-                
-        except Exception as e:
-            self.logger.warning(f"Failed to enable hedge mode: {e}")
-            self.hedge_mode_enabled = False
-            # Continue without hedge mode - fallback to one-way mode
-
-    def get_position_mode(self) -> Dict:
-        """Get current position mode status (One-way or Hedge Mode)"""
-        try:
-            response = self._rate_limited_request(
-                self.exchange.fapiPrivate_get_positionside_dual
-            )
-            
-            is_hedge_mode = response.get('dualSidePosition', False)
-            self.hedge_mode_enabled = is_hedge_mode  # Update internal status
-            
-            return {
-                'hedge_mode': is_hedge_mode,
-                'position_mode': 'Hedge Mode' if is_hedge_mode else 'One-way Mode',
-                'raw_response': response
-            }
-        except Exception as e:
-            self.logger.error(f"Error fetching position mode: {e}")
-            raise
-
-    def set_position_mode(self, hedge_mode: bool = True) -> Dict:
-        """Set position mode (True for Hedge Mode, False for One-way)"""
-        try:
-            self.logger.info(f"Setting position mode to: {'Hedge Mode' if hedge_mode else 'One-way Mode'}")
-            
-            response = self._rate_limited_request(
-                self.exchange.fapiPrivate_post_positionside_dual,
-                params={'dualSidePosition': 'true' if hedge_mode else 'false'}
-            )
-            
-            self.hedge_mode_enabled = hedge_mode
-            self.logger.info(f"✅ Position mode set to: {'Hedge Mode' if hedge_mode else 'One-way Mode'}")
-            
-            return response
-        except Exception as e:
-            self.logger.error(f"Error setting position mode: {e}")
-            raise
-
-    def create_conditional_order(self, symbol: str, order_type: str, side: str, amount: float, stop_price: float) -> Dict:
-        """
-        FIXED: Correct positionSide logic for hedge mode TP/SL orders
-        """
-        try:
-            symbol_id = self._get_symbol_id(symbol)
-            self.logger.info(f"🚀 EXCHANGE CONDITIONAL ORDER: {order_type.upper()} {side.upper()} {amount:.6f} {symbol_id} @ ${stop_price:.6f}")
-            
-            params = {
-                'stopPrice': stop_price,
-                'timeInForce': 'GTC'
-            }
-            
-            # FIXED: Correct positionSide logic for hedge mode
-            if self.hedge_mode_enabled:
-                # ✅ CORRECT LOGIC: positionSide indicates WHICH POSITION to close
-                # To close LONG position: SELL with positionSide='LONG'
-                # To close SHORT position: BUY with positionSide='SHORT'
-                if side.lower() == 'sell':
-                    params['positionSide'] = 'LONG'   # SELL closes LONG position
-                else:  # buy
-                    params['positionSide'] = 'SHORT'  # BUY closes SHORT position
-            
-            result = self._rate_limited_request(
-                self.exchange.create_order,
-                symbol_id, 
-                order_type,
-                side, 
-                amount, 
-                None,
-                params
-            )
-            
-            if result and 'id' in result:
-                order_id = result['id']
-                position_side = params.get('positionSide', 'BOTH')
-                self.logger.info(f"✅ EXCHANGE CONDITIONAL ORDER CREATED: {order_type.upper()} {side.upper()} {amount:.6f} {symbol_id} @ ${stop_price:.6f}, "
-                            f"positionSide={position_side}, ID: {order_id[:8]}")
-            else:
-                self.logger.error(f"❌ EXCHANGE CONDITIONAL ORDER FAILED: Invalid response")
-                
-            return result
-            
-        except Exception as e:
-            self.logger.error(f"❌ EXCHANGE CONDITIONAL ORDER ERROR: {e}")
-            raise
-
-    def create_stop_market_order(self, symbol: str, side: str, amount: float, stop_price: float) -> Dict:
-        """
-        FIXED: Correct positionSide logic for hedge mode stop orders
-        """
-        try:
-            symbol_id = self._get_symbol_id(symbol)
-            self.logger.info(f"🚀 EXCHANGE STOP MARKET ORDER: {side.upper()} {amount:.6f} {symbol_id} @ ${stop_price:.6f}")
-            
-            params = {'stopPrice': stop_price}
-            
-            # FIXED: Same logic as conditional orders
-            if self.hedge_mode_enabled:
-                if side.lower() == 'sell':
-                    params['positionSide'] = 'LONG'   # SELL closes LONG position
-                else:  # buy
-                    params['positionSide'] = 'SHORT'  # BUY closes SHORT position
-            
-            result = self._rate_limited_request(
-                self.exchange.create_order,
-                symbol_id, 
-                'stop_market',
-                side, 
-                amount, 
-                None,
-                params
-            )
-            
-            if result and 'id' in result:
-                order_id = result['id']
-                position_side = params.get('positionSide', 'BOTH')
-                self.logger.info(f"✅ EXCHANGE STOP MARKET ORDER CREATED: {side.upper()} {amount:.6f} {symbol_id} @ ${stop_price:.6f}, "
-                            f"positionSide={position_side}, ID: {order_id[:8]}")
-            else:
-                self.logger.error(f"❌ EXCHANGE STOP MARKET ORDER FAILED: Invalid response")
-                
-            return result
-            
-        except Exception as e:
-            self.logger.error(f"❌ EXCHANGE STOP MARKET ORDER ERROR: {e}")
-            raise
-
     def _rate_limited_request(self, func, *args, **kwargs):
-        """ADDED: Rate-limited API request wrapper"""
+        """Rate-limited API request wrapper"""
         with self.rate_limiter:
             with self.api_lock:
                 elapsed = time.time() - self.last_request_time
@@ -237,8 +78,8 @@ class Exchange:
             
         return symbol
     
-    def get_ohlcv(self, symbol: str, timeframe: str = '5m', limit: int = 1400) -> List[List]:
-        """MODIFIED: Get OHLCV historical data with rate limiting."""
+    def get_ohlcv(self, symbol: str, timeframe: str = '5m', limit: int = 100) -> List[List]:
+        """Get OHLCV historical data with rate limiting."""
         try:
             symbol_id = self._get_symbol_id(symbol)
             self.logger.debug(f"Fetching OHLCV for {symbol_id}, timeframe: {timeframe}, limit: {limit}")
@@ -249,40 +90,10 @@ class Exchange:
                 self.logger.warning(f"No OHLCV data received for {symbol_id}")
                 return []
             
-            # self.logger.info(f"Fetched {len(ohlcv)} OHLCV candles for {symbol_id}")
             return ohlcv
             
         except Exception as e:
-            self.logger.error(f"Error fetching OHLCV for {symbol} (ID: {self._get_symbol_id(symbol)}): {e}")
-            return []
-
-    def get_historical_prices(self, symbol: str, timeframe: str = '5m', limit: int = 1400) -> List[float]:
-        """
-        Get historical closing prices for technical analysis.
-        
-        Args:
-            symbol: Trading symbol
-            timeframe: Timeframe (5m for 5-minute candles)  
-            limit: Number of prices to fetch
-            
-        Returns:
-            List of closing prices (most recent last)
-        """
-        try:
-            ohlcv = self.get_ohlcv(symbol, timeframe, limit)
-            if not ohlcv:
-                return []
-            
-            # Extract closing prices (index 4 in OHLCV)
-            prices = [float(candle[4]) for candle in ohlcv]
-            
-            self.logger.info(f"Extracted {len(prices)} historical prices for {symbol}")
-            self.logger.debug(f"Price range: ${min(prices):.6f} - ${max(prices):.6f}")
-            
-            return prices
-            
-        except Exception as e:
-            self.logger.error(f"Error extracting historical prices for {symbol}: {e}")
+            self.logger.error(f"Error fetching OHLCV for {symbol}: {e}")
             return []
 
     def get_balance(self) -> Dict:
@@ -294,118 +105,96 @@ class Exchange:
             raise
     
     def get_ticker(self, symbol: str) -> Dict:
-        """MODIFIED: Get current ticker price for symbol with rate limiting."""
+        """Get current ticker price for symbol with rate limiting."""
         try:
             symbol_id = self._get_symbol_id(symbol)
             self.logger.debug(f"Fetching ticker for symbol ID: {symbol_id}")
             return self._rate_limited_request(self.exchange.fetch_ticker, symbol_id)
         except Exception as e:
-            self.logger.error(f"Error fetching ticker for {symbol} (ID: {self._get_symbol_id(symbol)}): {e}")
+            self.logger.error(f"Error fetching ticker for {symbol}: {e}")
             raise
     
     def create_limit_order(self, symbol: str, side: str, amount: float, price: float) -> Dict:
-        """
-        FIXED: Enhanced logging for limit order creation
-        """
+        """Create a limit order."""
         try:
             symbol_id = self._get_symbol_id(symbol)
             
-            # ENHANCED: Pre-creation logging
-            self.logger.info(f"🚀 EXCHANGE LIMIT ORDER: {side.upper()} {amount:.6f} {symbol_id} @ ${price:.6f}")
+            self.logger.info(f"🚀 LIMIT ORDER: {side.upper()} {amount:.6f} {symbol_id} @ ${price:.6f}")
             
-            params = {}
-            if self.hedge_mode_enabled:
-                params['positionSide'] = 'LONG' if side.lower() == 'buy' else 'SHORT'
-                
+            # Simple limit order without hedge mode
             result = self._rate_limited_request(
                 self.exchange.create_limit_order, 
                 symbol_id, 
                 side, 
                 amount, 
-                price, 
-                params
+                price
             )
             
-            # ENHANCED: Success logging
             if result and 'id' in result:
                 order_id = result['id']
-                self.logger.info(f"✅ EXCHANGE LIMIT ORDER CREATED: {side.upper()} {amount:.6f} {symbol_id} @ ${price:.6f}, ID: {order_id[:8]}")
+                self.logger.info(f"✅ LIMIT ORDER CREATED: {side.upper()} {amount:.6f} {symbol_id} @ ${price:.6f}, ID: {order_id[:8]}")
             else:
-                self.logger.error(f"❌ EXCHANGE LIMIT ORDER FAILED: Invalid response for {side.upper()} {amount:.6f} {symbol_id}")
+                self.logger.error(f"❌ LIMIT ORDER FAILED: Invalid response")
                 
             return result
             
         except Exception as e:
-            self.logger.error(f"❌ EXCHANGE LIMIT ORDER ERROR: {side.upper()} {amount:.6f} {symbol} @ ${price:.6f} - {e}")
+            self.logger.error(f"❌ LIMIT ORDER ERROR: {e}")
             raise
         
     def create_market_order(self, symbol: str, side: str, amount: float) -> Dict:
-        """
-        FIXED: Ensure market orders also use correct positionSide logic
-        """
+        """Create a market order (for closing positions)."""
         try:
             symbol_id = self._get_symbol_id(symbol)
-            self.logger.info(f"🚀 EXCHANGE MARKET ORDER: {side.upper()} {amount:.6f} {symbol_id} @ MARKET")
+            self.logger.info(f"🚀 MARKET ORDER: {side.upper()} {amount:.6f} {symbol_id}")
             
-            if self.hedge_mode_enabled:
-                # For market orders creating NEW positions:
-                # BUY creates LONG position, SELL creates SHORT position
-                params = {'positionSide': 'LONG' if side.lower() == 'buy' else 'SHORT'}
-                result = self._rate_limited_request(
-                    self.exchange.create_market_order, 
-                    symbol_id, 
-                    side, 
-                    amount, 
-                    None, 
-                    params
-                )
-            else:
-                result = self._rate_limited_request(
-                    self.exchange.create_market_order, 
-                    symbol_id, 
-                    side, 
-                    amount
-                )
+            # Simple market order without hedge mode
+            result = self._rate_limited_request(
+                self.exchange.create_market_order, 
+                symbol_id, 
+                side, 
+                amount
+            )
             
             if result and 'id' in result:
                 order_id = result['id']
                 fill_price = result.get('average', 'pending')
                 
                 if fill_price != 'pending':
-                    self.logger.info(f"✅ EXCHANGE MARKET ORDER FILLED: {side.upper()} {amount:.6f} {symbol_id} @ ${float(fill_price):.6f}, ID: {order_id[:8]}")
+                    self.logger.info(f"✅ MARKET ORDER FILLED: {side.upper()} {amount:.6f} {symbol_id} @ ${float(fill_price):.6f}, ID: {order_id[:8]}")
                 else:
-                    self.logger.info(f"✅ EXCHANGE MARKET ORDER CREATED: {side.upper()} {amount:.6f} {symbol_id} @ MARKET, ID: {order_id[:8]}")
+                    self.logger.info(f"✅ MARKET ORDER CREATED: {side.upper()} {amount:.6f} {symbol_id}, ID: {order_id[:8]}")
             else:
-                self.logger.error(f"❌ EXCHANGE MARKET ORDER FAILED: Invalid response")
+                self.logger.error(f"❌ MARKET ORDER FAILED: Invalid response")
                 
             return result
             
         except Exception as e:
-            self.logger.error(f"❌ EXCHANGE MARKET ORDER ERROR: {e}")
+            self.logger.error(f"❌ MARKET ORDER ERROR: {e}")
             raise
         
     def cancel_order(self, order_id: str, symbol: str) -> Dict:
-        """MODIFIED: Cancel an order by ID with rate limiting."""
+        """Cancel an order by ID with rate limiting."""
         try:
             symbol_id = self._get_symbol_id(symbol)
             self.logger.debug(f"Cancelling order {order_id} for symbol ID: {symbol_id}")
             return self._rate_limited_request(self.exchange.cancel_order, order_id, symbol_id)
         except Exception as e:
-            self.logger.error(f"Error cancelling order {order_id} for {symbol} (ID: {self._get_symbol_id(symbol)}): {e}")
+            self.logger.error(f"Error cancelling order {order_id} for {symbol}: {e}")
             raise
     
     def cancel_all_orders(self, symbol: str) -> List:
-        """MODIFIED: Cancel all orders for a symbol with rate limiting."""
+        """Cancel all orders for a symbol with rate limiting."""
         try:
             symbol_id = self._get_symbol_id(symbol)
             self.logger.debug(f"Cancelling all orders for symbol ID: {symbol_id}")
             return self._rate_limited_request(self.exchange.cancel_all_orders, symbol_id)
         except Exception as e:
-            self.logger.error(f"Error cancelling all orders for {symbol} (ID: {self._get_symbol_id(symbol)}): {e}")
+            self.logger.error(f"Error cancelling all orders for {symbol}: {e}")
             raise
 
     def get_open_orders(self, symbol: str = None) -> List[Dict]:
-        """MODIFIED: Get all open orders with rate limiting."""
+        """Get all open orders with rate limiting."""
         try:
             symbol_id = None
             if symbol:
@@ -414,12 +203,12 @@ class Exchange:
                 
             return self._rate_limited_request(self.exchange.fetch_open_orders, symbol_id)
         except Exception as e:
-            symbol_info = f" for {symbol} (ID: {self._get_symbol_id(symbol)})" if symbol else ""
+            symbol_info = f" for {symbol}" if symbol else ""
             self.logger.error(f"Error fetching open orders{symbol_info}: {e}")
             raise
     
     def get_positions(self, symbol: str = None) -> List[Dict]:
-        """MODIFIED: Get all open positions with rate limiting and hedge mode support."""
+        """Get all open positions with rate limiting."""
         try:
             symbols_array = None
             
@@ -430,30 +219,27 @@ class Exchange:
             
             positions = self._rate_limited_request(self.exchange.fetch_positions, symbols_array)
             
-            # Filter out positions with zero size and add position side info
+            # Filter out positions with zero size
             filtered_positions = []
             for pos in positions:
                 size = float(pos.get('contracts', 0))
                 if size != 0:
-                    # Add position side information for hedge mode compatibility
-                    if 'info' in pos and 'positionSide' in pos['info']:
-                        pos['positionSide'] = pos['info']['positionSide']
                     filtered_positions.append(pos)
             
             return filtered_positions
         except Exception as e:
-            symbol_info = f" for {symbol} (ID: {self._get_symbol_id(symbol)})" if symbol else ""
+            symbol_info = f" for {symbol}" if symbol else ""
             self.logger.error(f"Error fetching positions{symbol_info}: {e}")
             raise
     
     def get_order_status(self, order_id: str, symbol: str) -> Dict:
-        """MODIFIED: Get the status of an order with rate limiting."""
+        """Get the status of an order with rate limiting."""
         try:
             symbol_id = self._get_symbol_id(symbol)
             self.logger.debug(f"Fetching order {order_id} status for symbol ID: {symbol_id}")
             return self._rate_limited_request(self.exchange.fetch_order, order_id, symbol_id)
         except Exception as e:
-            self.logger.error(f"Error fetching order {order_id} status for {symbol} (ID: {self._get_symbol_id(symbol)}): {e}")
+            self.logger.error(f"Error fetching order {order_id} status for {symbol}: {e}")
             raise
     
     def get_market_info(self, symbol: str) -> Dict:
@@ -493,11 +279,10 @@ class Exchange:
                     self.logger.error(f"Symbol ID {symbol_id} not available. Available symbols include: {', '.join(available_symbols[:10])}...")
                     raise ValueError(f"Symbol {symbol_id} not available on Binance USDM futures")
             
-            # Use the correct symbol from markets for the fetch
             return market_info if market_info else self.exchange.market(symbol_id)
             
         except Exception as e:
-            self.logger.error(f"Error fetching market info for {symbol} (ID: {self._get_symbol_id(symbol)}): {e}")
+            self.logger.error(f"Error fetching market info for {symbol}: {e}")
             raise
     
     def get_available_symbols(self) -> List[str]:

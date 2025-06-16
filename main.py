@@ -1,12 +1,13 @@
 """
-Grid Trading Bot - Main Entry Point
+Grid Trading Bot - Simplified Main Entry Point
+No hedge mode, no complex features, just simple grid trading.
 """
 import os
 import sys
 import logging
 import json
 import argparse
-from typing import Dict, List, Any
+from typing import Dict
 
 from core.exchange import Exchange
 from core.data_store import DataStore
@@ -14,7 +15,7 @@ from core.grid_manager import GridManager
 from ui.ui import GridBotUI
 
 def setup_logging(log_level: str = 'INFO'):
-    """Setup logging configuration with Unicode support."""
+    """Setup logging configuration."""
     # Create logs directory if it doesn't exist
     os.makedirs('logs', exist_ok=True)
     
@@ -34,7 +35,7 @@ def setup_logging(log_level: str = 'INFO'):
         '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     )
     
-    # File handler with UTF-8 encoding
+    # File handler
     file_handler = logging.FileHandler(
         os.path.join('logs', 'grid_bot.log'), 
         encoding='utf-8'
@@ -42,7 +43,7 @@ def setup_logging(log_level: str = 'INFO'):
     file_handler.setFormatter(formatter)
     file_handler.setLevel(level)
     
-    # Console handler with UTF-8 encoding and error handling
+    # Console handler
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setFormatter(formatter)
     console_handler.setLevel(level)
@@ -59,20 +60,7 @@ def setup_logging(log_level: str = 'INFO'):
     root_logger.addHandler(file_handler)
     root_logger.addHandler(console_handler)
     
-    # Set console encoding for Windows
-    if sys.platform.startswith('win'):
-        try:
-            # Try to set console to UTF-8
-            import codecs
-            sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer)
-            sys.stderr = codecs.getwriter('utf-8')(sys.stderr.buffer)
-        except:
-            # Fallback: just avoid special characters
-            pass
-    
     return logging.getLogger(__name__)
-    
-    
 
 def load_config(config_file: str) -> Dict:
     """Load configuration from JSON file."""
@@ -86,15 +74,14 @@ def load_config(config_file: str) -> Dict:
 def main():
     """Main entry point."""
     # Parse command line arguments
-    parser = argparse.ArgumentParser(description='Grid Trading Bot')
+    parser = argparse.ArgumentParser(description='Simplified Grid Trading Bot')
     parser.add_argument('--config', type=str, default='config.json', help='Configuration file')
     parser.add_argument('--log-level', type=str, default='INFO', help='Logging level')
-    parser.add_argument('--testnet', action='store_true', help='Use testnet')
     args = parser.parse_args()
     
     # Setup logging
     logger = setup_logging(args.log_level)
-    logger.info("Starting Grid Trading Bot")
+    logger.info("Starting Simplified Grid Trading Bot")
     
     try:
         # Load configuration
@@ -110,17 +97,19 @@ def main():
             return 1
         
         # Initialize components
+        logger.info("Initializing exchange connection")
         exchange = Exchange(
             api_key=config['api_key'],
-            api_secret=config['api_secret'],
-            testnet=args.testnet or config.get('testnet', False)
+            api_secret=config['api_secret']
         )
         
         data_store = DataStore(data_dir=config.get('data_dir', 'data'))
         
+        logger.info("Initializing simplified grid manager")
         grid_manager = GridManager(exchange, data_store)
         
         # Initialize UI
+        logger.info("Starting simplified UI")
         ui = GridBotUI(grid_manager)
         
         # Run UI
@@ -129,11 +118,11 @@ def main():
         # Clean up
         grid_manager.stop_all_grids()
         
-        logger.info("Grid Trading Bot stopped")
+        logger.info("Simplified Grid Trading Bot stopped")
         return 0
         
     except Exception as e:
-        logger.exception(f"Error running Grid Trading Bot: {e}")
+        logger.exception(f"Error running Simplified Grid Trading Bot: {e}")
         return 1
 
 if __name__ == "__main__":

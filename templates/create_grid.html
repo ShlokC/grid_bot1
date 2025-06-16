@@ -7,6 +7,7 @@
     <style>
         body { font-family: Arial, sans-serif; margin: 0; padding: 20px; }
         h1 { color: #333; }
+        .subtitle { color: #666; margin-bottom: 20px; }
         .form-group { margin-bottom: 15px; }
         label { display: block; margin-bottom: 5px; }
         input[type="text"], input[type="number"], select { 
@@ -27,6 +28,7 @@
 </head>
 <body>
     <h1>Create New Grid</h1>
+    <p class="subtitle">Simplified grid - places buy orders below price, sell orders above price</p>
     
     {% if error %}
     <div class="error">{{ error }}</div>
@@ -44,48 +46,33 @@
         </div>
         
         <div class="form-group">
-            <label for="price_lower">Lower Price:</label>
-            <input type="number" id="price_lower" name="price_lower" step="any" required>
+            <label for="grid_number">Number of Grid Levels:</label>
+            <input type="number" id="grid_number" name="grid_number" min="2" max="20" value="10" required>
         </div>
         
         <div class="form-group">
-            <label for="price_upper">Upper Price:</label>
-            <input type="number" id="price_upper" name="price_upper" step="any" required>
-        </div>
-        
-        <div class="form-group">
-            <label for="grid_number">Number of Grids:</label>
-            <input type="number" id="grid_number" name="grid_number" required>
-        </div>
-        
-        <div class="form-group">
-            <label for="investment">Investment Amount:</label>
-            <input type="number" id="investment" name="investment" step="any" required>
+            <label for="investment">Investment Amount (USD):</label>
+            <input type="number" id="investment" name="investment" step="any" min="10" max="5000" value="100" required>
         </div>
         
         <div class="form-group">
             <label for="leverage">Leverage:</label>
-            <input type="number" id="leverage" name="leverage" step="0.1" min="1" max="75" value="25.0" required>
+            <input type="number" id="leverage" name="leverage" step="0.1" min="1" max="125" value="20.0" required>
         </div>
         
         <div class="form-group">
             <label for="take_profit_pnl">Take Profit (%):</label>
-            <input type="number" id="take_profit_pnl" name="take_profit_pnl" step="any" value="5.0" required>
+            <input type="number" id="take_profit_pnl" name="take_profit_pnl" step="any" value="10.0" required>
         </div>
         
         <div class="form-group">
             <label for="stop_loss_pnl">Stop Loss (%):</label>
-            <input type="number" id="stop_loss_pnl" name="stop_loss_pnl" step="any" value="3.0" required>
+            <input type="number" id="stop_loss_pnl" name="stop_loss_pnl" step="any" value="5.0" required>
         </div>
         
         <div class="checkbox-group">
             <input type="checkbox" id="enable_grid_adaptation" name="enable_grid_adaptation" checked>
             <label for="enable_grid_adaptation">Enable Grid Adaptation</label>
-        </div>
-        
-        <div class="checkbox-group">
-            <input type="checkbox" id="enable_samig" name="enable_samig">
-            <label for="enable_samig">Enable SAMIG (Self-Adaptive Market Intelligence)</label>
         </div>
         
         <div class="checkbox-group">

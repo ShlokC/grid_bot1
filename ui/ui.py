@@ -1,9 +1,10 @@
 """
-Tkinter UI for Grid Bot.
+Simplified Tkinter UI for Grid Bot.
+No hedge mode, no SAMIG, just simple grid trading.
 """
 import logging
 import tkinter as tk
-from tkinter import ttk, messagebox, simpledialog
+from tkinter import ttk, messagebox
 from typing import Dict, List, Any, Optional, Callable
 import threading
 import time
@@ -12,19 +13,14 @@ from core.grid_manager import GridManager
 
 class GridBotUI:
     def __init__(self, grid_manager: GridManager):
-        """
-        Initialize the Grid Bot UI.
-        
-        Args:
-            grid_manager: Grid manager instance
-        """
+        """Initialize the simplified Grid Bot UI."""
         self.logger = logging.getLogger(__name__)
         self.grid_manager = grid_manager
         
         # Create main window
         self.root = tk.Tk()
-        self.root.title("Grid Trading Bot")
-        self.root.geometry("1100x600")
+        self.root.title("Simplified Grid Trading Bot")
+        self.root.geometry("1000x600")
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         
         # Create UI components
@@ -34,24 +30,31 @@ class GridBotUI:
         self.update_timer = None
         
     def _create_ui(self):
-        """Create UI components."""
+        """Create simplified UI components."""
         # Main frame
         main_frame = ttk.Frame(self.root)
         main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        # Title
+        title_label = ttk.Label(main_frame, text="Simplified Grid Trading Bot", 
+                               font=('Arial', 14, 'bold'))
+        title_label.pack(pady=(0, 10))
+        
+        subtitle_label = ttk.Label(main_frame, text="Ping-pong strategy: 2 orders max (1 BUY, 1 SELL)")
+        subtitle_label.pack(pady=(0, 20))
         
         # Left panel: Grids list
         left_frame = ttk.LabelFrame(main_frame, text="Active Grids")
         left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5, pady=5)
         
-        # Grids Treeview
-        columns = ('grid_id', 'symbol', 'price_range', 'grids', 'investment', 'leverage', 'pnl', 'status')
+        # Grids Treeview - simplified columns
+        columns = ('grid_id', 'symbol', 'spacing', 'investment', 'leverage', 'pnl', 'status')
         self.grids_tree = ttk.Treeview(left_frame, columns=columns, show='headings')
         
         # Configure columns
         self.grids_tree.heading('grid_id', text='ID')
         self.grids_tree.heading('symbol', text='Symbol')
-        self.grids_tree.heading('price_range', text='Price Range')
-        self.grids_tree.heading('grids', text='Grids')
+        self.grids_tree.heading('spacing', text='Spacing')
         self.grids_tree.heading('investment', text='Investment')
         self.grids_tree.heading('leverage', text='Leverage')
         self.grids_tree.heading('pnl', text='PnL')
@@ -59,11 +62,10 @@ class GridBotUI:
         
         self.grids_tree.column('grid_id', width=60)
         self.grids_tree.column('symbol', width=80)
-        self.grids_tree.column('price_range', width=120)
-        self.grids_tree.column('grids', width=60)
+        self.grids_tree.column('spacing', width=60)
         self.grids_tree.column('investment', width=80)
-        self.grids_tree.column('leverage', width=60)
-        self.grids_tree.column('pnl', width=80)
+        self.grids_tree.column('leverage', width=70)
+        self.grids_tree.column('pnl', width=100)
         self.grids_tree.column('status', width=80)
         
         # Scrollbar for grids
@@ -141,8 +143,7 @@ class GridBotUI:
         # Add grids to tree
         for grid in grid_statuses:
             grid_id = grid['grid_id']
-            symbol = grid['symbol']
-            price_range = f"{grid['price_lower']} - {grid['price_upper']}"
+            symbol = grid.get('display_symbol', grid['symbol'])
             grid_number = str(grid['grid_number'])
             investment = f"{grid['investment']:.2f}"
             leverage = f"{grid.get('leverage', 1.0):.1f}x"
@@ -150,7 +151,7 @@ class GridBotUI:
             status = "Running" if grid['running'] else "Stopped"
             
             self.grids_tree.insert('', tk.END, values=(
-                grid_id, symbol, price_range, grid_number, investment, leverage, pnl, status
+                grid_id, symbol, grid_number, investment, leverage, pnl, status
             ))
     
     def on_grid_selected(self, event):
@@ -170,123 +171,104 @@ class GridBotUI:
             self.display_grid_details(grid_status)
     
     def display_grid_details(self, grid_status: Dict):
-        """Display grid details in the text area."""
+        """Display simplified grid details."""
         # Clear existing text
         self.details_text.delete(1.0, tk.END)
         
-        # Format grid details
+        # Format grid details - simplified
         details = f"Grid ID: {grid_status['grid_id']}\n"
-        details += f"Symbol: {grid_status['symbol']}\n"
-        details += f"Price Range: {grid_status['price_lower']} - {grid_status['price_upper']}\n"
-        details += f"Grid Number: {grid_status['grid_number']}\n"
-        details += f"Investment: {grid_status['investment']:.2f}\n"
+        details += f"Symbol: {grid_status.get('display_symbol', grid_status['symbol'])}\n"
+        details += f"Grid Spacing: {grid_status['grid_number']}\n"
+        details += f"Investment: ${grid_status['investment']:.2f}\n"
         details += f"Leverage: {grid_status.get('leverage', 1.0):.1f}x\n"
         details += f"Take Profit: {grid_status['take_profit_pnl']:.2f}%\n"
         details += f"Stop Loss: {grid_status['stop_loss_pnl']:.2f}%\n"
-        details += f"PnL: {grid_status['pnl']:.2f}\n"
+        details += f"PnL: ${grid_status['pnl']:.2f}\n"
         details += f"PnL Percentage: {grid_status.get('pnl_percentage', 0):.2f}%\n"
-        details += f"Trades Count: {grid_status['trades_count']}\n"
-        details += f"Open Orders: {grid_status.get('orders_count', 0)}\n"
+        details += f"Trades Count: {grid_status.get('trades_count', 0)}\n"
+        details += f"Active Orders: {grid_status.get('orders_count', 0)}\n"
         details += f"Status: {'Running' if grid_status['running'] else 'Stopped'}\n"
+        details += f"Grid Adaptation: {'Enabled' if grid_status.get('enable_grid_adaptation', False) else 'Disabled'}\n"
         
         # Insert details
         self.details_text.insert(tk.END, details)
     
     def create_new_grid(self):
-        """Create a new grid dialog."""
+        """Create a new simplified grid dialog."""
         # Create dialog window
         dialog = tk.Toplevel(self.root)
-        dialog.title("Create New Grid")
-        dialog.geometry("400x480")  # Increased height to accommodate leverage slider
+        dialog.title("Create New Simplified Grid")
+        dialog.geometry("500x350")
         dialog.transient(self.root)
         dialog.grab_set()
         
-        # Leverage slider - first control on the form
-        ttk.Label(dialog, text="Leverage:").grid(row=0, column=0, padx=5, pady=5, sticky=tk.W)
-        leverage_frame = ttk.Frame(dialog)
-        leverage_frame.grid(row=0, column=1, padx=5, pady=5, sticky=tk.W+tk.E)
-        
-        leverage_var = tk.DoubleVar()
-        leverage_var.set(10.0)  # Default value
-        
-        leverage_slider = ttk.Scale(leverage_frame, from_=1.0, to=75.0, variable=leverage_var, orient=tk.HORIZONTAL)
-        leverage_slider.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        
-        leverage_label = ttk.Label(leverage_frame, text="10.0x")
-        leverage_label.pack(side=tk.RIGHT, padx=5)
-        
-        # Update label when slider changes
-        def update_leverage_label(*args):
-            leverage_label.config(text=f"{leverage_var.get():.1f}x")
-        
-        leverage_var.trace_add("write", update_leverage_label)
-        
         # Symbol
-        ttk.Label(dialog, text="Symbol:").grid(row=1, column=0, padx=5, pady=5, sticky=tk.W)
+        ttk.Label(dialog, text="Symbol:").grid(row=0, column=0, padx=5, pady=5, sticky=tk.W)
         symbol_var = tk.StringVar()
-        ttk.Entry(dialog, textvariable=symbol_var).grid(row=1, column=1, padx=5, pady=5, sticky=tk.W+tk.E)
-        
-        # Price Range
-        ttk.Label(dialog, text="Lower Price:").grid(row=2, column=0, padx=5, pady=5, sticky=tk.W)
-        price_lower_var = tk.DoubleVar()
-        ttk.Entry(dialog, textvariable=price_lower_var).grid(row=2, column=1, padx=5, pady=5, sticky=tk.W+tk.E)
-        
-        ttk.Label(dialog, text="Upper Price:").grid(row=3, column=0, padx=5, pady=5, sticky=tk.W)
-        price_upper_var = tk.DoubleVar()
-        ttk.Entry(dialog, textvariable=price_upper_var).grid(row=3, column=1, padx=5, pady=5, sticky=tk.W+tk.E)
+        ttk.Entry(dialog, textvariable=symbol_var).grid(row=0, column=1, padx=5, pady=5, sticky=tk.W+tk.E)
         
         # Grid Number
-        ttk.Label(dialog, text="Number of Grids:").grid(row=4, column=0, padx=5, pady=5, sticky=tk.W)
+        ttk.Label(dialog, text="Grid Spacing (2-20):").grid(row=1, column=0, padx=5, pady=5, sticky=tk.W)
         grid_number_var = tk.IntVar()
-        ttk.Entry(dialog, textvariable=grid_number_var).grid(row=4, column=1, padx=5, pady=5, sticky=tk.W+tk.E)
+        grid_number_var.set(10)  # Default value
+        spacing_entry = ttk.Entry(dialog, textvariable=grid_number_var)
+        spacing_entry.grid(row=1, column=1, padx=5, pady=5, sticky=tk.W+tk.E)
+        
+        # Add explanation label
+        ttk.Label(dialog, text="(Higher = smaller distance between orders)", 
+                 font=('Arial', 8)).grid(row=1, column=2, padx=5, pady=5, sticky=tk.W)
         
         # Investment
-        ttk.Label(dialog, text="Investment Amount:").grid(row=5, column=0, padx=5, pady=5, sticky=tk.W)
+        ttk.Label(dialog, text="Investment Amount:").grid(row=2, column=0, padx=5, pady=5, sticky=tk.W)
         investment_var = tk.DoubleVar()
-        ttk.Entry(dialog, textvariable=investment_var).grid(row=5, column=1, padx=5, pady=5, sticky=tk.W+tk.E)
+        investment_var.set(100.0)  # Default value
+        ttk.Entry(dialog, textvariable=investment_var).grid(row=2, column=1, padx=5, pady=5, sticky=tk.W+tk.E)
+        
+        # Leverage
+        ttk.Label(dialog, text="Leverage:").grid(row=3, column=0, padx=5, pady=5, sticky=tk.W)
+        leverage_var = tk.DoubleVar()
+        leverage_var.set(20.0)  # Default value
+        ttk.Entry(dialog, textvariable=leverage_var).grid(row=3, column=1, padx=5, pady=5, sticky=tk.W+tk.E)
         
         # Take Profit
-        ttk.Label(dialog, text="Take Profit (%):").grid(row=6, column=0, padx=5, pady=5, sticky=tk.W)
+        ttk.Label(dialog, text="Take Profit (%):").grid(row=4, column=0, padx=5, pady=5, sticky=tk.W)
         take_profit_var = tk.DoubleVar()
-        take_profit_var.set(5.0)  # Default value
-        ttk.Entry(dialog, textvariable=take_profit_var).grid(row=6, column=1, padx=5, pady=5, sticky=tk.W+tk.E)
+        take_profit_var.set(10.0)  # Default value
+        ttk.Entry(dialog, textvariable=take_profit_var).grid(row=4, column=1, padx=5, pady=5, sticky=tk.W+tk.E)
         
         # Stop Loss
-        ttk.Label(dialog, text="Stop Loss (%):").grid(row=7, column=0, padx=5, pady=5, sticky=tk.W)
+        ttk.Label(dialog, text="Stop Loss (%):").grid(row=5, column=0, padx=5, pady=5, sticky=tk.W)
         stop_loss_var = tk.DoubleVar()
-        stop_loss_var.set(3.0)  # Default value
-        ttk.Entry(dialog, textvariable=stop_loss_var).grid(row=7, column=1, padx=5, pady=5, sticky=tk.W+tk.E)
+        stop_loss_var.set(5.0)  # Default value
+        ttk.Entry(dialog, textvariable=stop_loss_var).grid(row=5, column=1, padx=5, pady=5, sticky=tk.W+tk.E)
         
         # Start automatically
         auto_start_var = tk.BooleanVar()
         auto_start_var.set(False)
         ttk.Checkbutton(dialog, text="Start Grid Automatically", variable=auto_start_var).grid(
-            row=8, column=0, columnspan=2, padx=5, pady=5, sticky=tk.W)
-        samig_var = tk.BooleanVar()
-        samig_var.set(True)
-        ttk.Checkbutton(dialog, text="Enable SAMIG (Self-Adaptive Market Intelligence)", 
-                    variable=samig_var).grid(row=9, column=0, columnspan=2, padx=5, pady=5, sticky=tk.W)
+            row=6, column=0, columnspan=2, padx=5, pady=5, sticky=tk.W)
+        
+        # Grid adaptation
+        adaptation_var = tk.BooleanVar()
+        adaptation_var.set(True)
+        ttk.Checkbutton(dialog, text="Enable Grid Adaptation", variable=adaptation_var).grid(
+            row=7, column=0, columnspan=2, padx=5, pady=5, sticky=tk.W)
+        
         # Buttons
         def on_create():
             try:
-                symbol = symbol_var.get()
-                price_lower = price_lower_var.get()
-                price_upper = price_upper_var.get()
+                symbol = symbol_var.get().strip()
                 grid_number = grid_number_var.get()
                 investment = investment_var.get()
+                leverage = leverage_var.get()
                 take_profit = take_profit_var.get()
                 stop_loss = stop_loss_var.get()
-                leverage = leverage_var.get()
                 auto_start = auto_start_var.get()
-                enable_samig = samig_var.get()
+                enable_adaptation = adaptation_var.get()
                 
                 # Validate inputs
                 if not symbol:
                     messagebox.showerror("Error", "Symbol cannot be empty")
-                    return
-                    
-                if price_lower >= price_upper:
-                    messagebox.showerror("Error", "Lower price must be less than upper price")
                     return
                     
                 if grid_number <= 0:
@@ -297,22 +279,24 @@ class GridBotUI:
                     messagebox.showerror("Error", "Investment amount must be positive")
                     return
                 
-                if leverage < 1 or leverage > 75:
-                    messagebox.showerror("Error", "Leverage must be between 1x and 75x")
+                if leverage < 1 or leverage > 125:
+                    messagebox.showerror("Error", "Leverage must be between 1x and 125x")
                     return
                 
                 # Create grid
                 grid_id = self.grid_manager.create_grid(
                     symbol=symbol,
-                    price_lower=price_lower,
-                    price_upper=price_upper,
                     grid_number=grid_number,
                     investment=investment,
                     take_profit_pnl=take_profit,
                     stop_loss_pnl=stop_loss,
                     leverage=leverage,
-                    enable_samig=enable_samig
+                    enable_grid_adaptation=enable_adaptation
                 )
+                
+                if not grid_id:
+                    messagebox.showerror("Error", "Failed to create grid")
+                    return
                 
                 # Start grid if requested
                 if auto_start:
@@ -331,13 +315,14 @@ class GridBotUI:
             dialog.destroy()
         
         button_frame = ttk.Frame(dialog)
-        button_frame.grid(row=9, column=0, columnspan=2, padx=5, pady=10)
+        button_frame.grid(row=8, column=0, columnspan=2, padx=5, pady=10)
         
         ttk.Button(button_frame, text="Create", command=on_create).pack(side=tk.LEFT, padx=5)
         ttk.Button(button_frame, text="Cancel", command=on_cancel).pack(side=tk.LEFT, padx=5)
         
         # Configure grid weights
         dialog.columnconfigure(1, weight=1)
+        dialog.columnconfigure(2, weight=0)
         
         # Wait for dialog to close
         dialog.wait_window()
@@ -432,24 +417,25 @@ class GridBotUI:
         stop_loss_var.set(grid_status['stop_loss_pnl'])
         ttk.Entry(dialog, textvariable=stop_loss_var).grid(row=1, column=1, padx=5, pady=5, sticky=tk.W+tk.E)
         
-        # SAMIG Enable
-        ttk.Label(dialog, text="Enable SAMIG:").grid(row=2, column=0, padx=5, pady=5, sticky=tk.W)
-        samig_var = tk.BooleanVar()
-        samig_var.set(grid_status.get('enable_samig', False))
-        ttk.Checkbutton(dialog, variable=samig_var).grid(row=2, column=1, padx=5, pady=5, sticky=tk.W)
+        # Grid Adaptation
+        ttk.Label(dialog, text="Grid Adaptation:").grid(row=2, column=0, padx=5, pady=5, sticky=tk.W)
+        adaptation_var = tk.BooleanVar()
+        adaptation_var.set(grid_status.get('enable_grid_adaptation', False))
+        ttk.Checkbutton(dialog, variable=adaptation_var).grid(row=2, column=1, padx=5, pady=5, sticky=tk.W)
     
         # Buttons
         def on_update():
             try:
                 take_profit = take_profit_var.get()
                 stop_loss = stop_loss_var.get()
-                enable_samig = samig_var.get() 
+                enable_adaptation = adaptation_var.get()
+                
                 # Update grid config
                 if self.grid_manager.update_grid_config(
                     grid_id=grid_id,
                     take_profit_pnl=take_profit,
                     stop_loss_pnl=stop_loss,
-                    enable_samig=enable_samig
+                    enable_grid_adaptation=enable_adaptation
                 ):
                     messagebox.showinfo("Success", f"Grid {grid_id} configuration updated")
                     self.update_grids_list()
@@ -464,7 +450,7 @@ class GridBotUI:
             dialog.destroy()
         
         button_frame = ttk.Frame(dialog)
-        button_frame.grid(row=2, column=0, columnspan=2, padx=5, pady=10)
+        button_frame.grid(row=3, column=0, columnspan=2, padx=5, pady=10)
         
         ttk.Button(button_frame, text="Update", command=on_update).pack(side=tk.LEFT, padx=5)
         ttk.Button(button_frame, text="Cancel", command=on_cancel).pack(side=tk.LEFT, padx=5)
@@ -484,11 +470,11 @@ class GridBotUI:
                     self.root.after(0, self.update_grids_list)
                     
                     # Wait for next update
-                    time.sleep(5)
+                    time.sleep(10)  # Update every 10 seconds
                     
                 except Exception as e:
                     self.logger.error(f"Error in update loop: {e}")
-                    time.sleep(5)  # Wait and retry
+                    time.sleep(10)  # Wait and retry
         
         # Start update thread
         self.update_timer = threading.Thread(target=update_loop)

@@ -1,5 +1,6 @@
 """
-Grid Trading Bot - Web Interface Version
+Grid Trading Bot - Simplified Web Interface
+No hedge mode, no SAMIG, just simple grid trading.
 """
 import os
 import sys
@@ -7,7 +8,6 @@ import logging
 import json
 import argparse
 from typing import Dict, List, Any
-import threading
 
 from flask import Flask, render_template, request, redirect, url_for, jsonify
 
@@ -24,7 +24,7 @@ grid_manager = None
 logger = None
 
 def setup_logging(log_level: str = 'INFO'):
-    """Setup logging configuration with Unicode support."""
+    """Setup logging configuration."""
     # Create logs directory if it doesn't exist
     os.makedirs('logs', exist_ok=True)
     
@@ -44,7 +44,7 @@ def setup_logging(log_level: str = 'INFO'):
         '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     )
     
-    # File handler with UTF-8 encoding
+    # File handler
     file_handler = logging.FileHandler(
         os.path.join('logs', 'grid_bot.log'), 
         encoding='utf-8'
@@ -52,7 +52,7 @@ def setup_logging(log_level: str = 'INFO'):
     file_handler.setFormatter(formatter)
     file_handler.setLevel(level)
     
-    # Console handler with UTF-8 encoding and error handling
+    # Console handler
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setFormatter(formatter)
     console_handler.setLevel(level)
@@ -68,17 +68,6 @@ def setup_logging(log_level: str = 'INFO'):
     # Add our handlers
     root_logger.addHandler(file_handler)
     root_logger.addHandler(console_handler)
-    
-    # Set console encoding for Windows
-    if sys.platform.startswith('win'):
-        try:
-            # Try to set console to UTF-8
-            import codecs
-            sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer)
-            sys.stderr = codecs.getwriter('utf-8')(sys.stderr.buffer)
-        except:
-            # Fallback: just avoid special characters
-            pass
     
     return logging.getLogger(__name__)
 
@@ -117,7 +106,6 @@ def create_grid():
     """Create a new grid."""
     if request.method == 'POST':
         try:
-            # Get form data with explicit type conversion and validation
             logger.debug(f"Form data: {request.form}")
             
             # Get string fields with validation
@@ -130,13 +118,11 @@ def create_grid():
             
             # Get numeric fields with validation and type conversion
             try:
-                price_lower = float(request.form.get('price_lower', 0))
-                price_upper = float(request.form.get('price_upper', 0))
                 grid_number = int(request.form.get('grid_number', 0))
                 investment = float(request.form.get('investment', 0))
                 take_profit_pnl = float(request.form.get('take_profit_pnl', 5.0))
                 stop_loss_pnl = float(request.form.get('stop_loss_pnl', 3.0))
-                leverage = float(request.form.get('leverage', 25.0))
+                leverage = float(request.form.get('leverage', 20.0))
             except ValueError as e:
                 logger.error(f"Type conversion error: {e}")
                 available_symbols = grid_manager.exchange.get_available_symbols()
@@ -146,15 +132,9 @@ def create_grid():
             
             # Get boolean fields
             enable_grid_adaptation = 'enable_grid_adaptation' in request.form
-            enable_samig = 'enable_samig' in request.form
+            auto_start = 'auto_start' in request.form
             
             # Validate inputs
-            if price_lower >= price_upper:
-                available_symbols = grid_manager.exchange.get_available_symbols()
-                return render_template('create_grid.html', 
-                                      error='Lower price must be less than upper price',
-                                      available_symbols=available_symbols)
-                
             if grid_number <= 0:
                 available_symbols = grid_manager.exchange.get_available_symbols()
                 return render_template('create_grid.html', 
@@ -167,18 +147,16 @@ def create_grid():
                                       error='Investment amount must be positive',
                                       available_symbols=available_symbols)
             
-            if leverage < 1 or leverage > 75:
+            if leverage < 1 or leverage > 125:
                 available_symbols = grid_manager.exchange.get_available_symbols()
                 return render_template('create_grid.html', 
-                                      error='Leverage must be between 1x and 75x',
+                                      error='Leverage must be between 1x and 125x',
                                       available_symbols=available_symbols)
             
-            # Log the parameters for debugging
-            logger.info(f"Creating grid for {symbol} with {grid_number} levels")
-            logger.info(f"Price range: {price_lower} - {price_upper}")
-            logger.info(f"Investment: {investment}, Leverage: {leverage}x")
+            # Log the parameters
+            logger.info(f"Creating simplified grid for {symbol} with {grid_number} levels")
+            logger.info(f"Investment: ${investment:.2f}, Leverage: {leverage}x")
             logger.info(f"Grid adaptation: {'enabled' if enable_grid_adaptation else 'disabled'}")
-            logger.info(f"SAMIG: {'enabled' if enable_samig else 'disabled'}")
             
             # Create grid
             grid_id = grid_manager.create_grid(
@@ -188,8 +166,7 @@ def create_grid():
                 take_profit_pnl=take_profit_pnl,
                 stop_loss_pnl=stop_loss_pnl,
                 leverage=leverage,
-                enable_grid_adaptation=enable_grid_adaptation,
-                enable_samig=enable_samig  
+                enable_grid_adaptation=enable_grid_adaptation
             )
             
             if not grid_id:
@@ -199,10 +176,9 @@ def create_grid():
                                       available_symbols=available_symbols)
             
             # Start grid if requested
-            if 'auto_start' in request.form:
+            if auto_start:
                 success = grid_manager.start_grid(grid_id)
                 if not success:
-                    # Grid was created but not started
                     logger.warning(f"Grid {grid_id} was created but failed to start")
             
             return redirect(url_for('index'))
@@ -264,17 +240,15 @@ def edit_grid(grid_id):
             take_profit_pnl = float(request.form['take_profit_pnl'])
             stop_loss_pnl = float(request.form['stop_loss_pnl'])
             enable_grid_adaptation = 'enable_grid_adaptation' in request.form
-            enable_samig = 'enable_samig' in request.form
             
             logger.info(f"Updating grid {grid_id}: TP={take_profit_pnl}%, SL={stop_loss_pnl}%, "
-                       f"Adaptation={enable_grid_adaptation}, SAMIG={enable_samig}")
+                       f"Adaptation={enable_grid_adaptation}")
             
             if grid_manager.update_grid_config(
                 grid_id=grid_id,
                 take_profit_pnl=take_profit_pnl,
                 stop_loss_pnl=stop_loss_pnl,
-                enable_grid_adaptation=enable_grid_adaptation,
-                enable_samig=enable_samig
+                enable_grid_adaptation=enable_grid_adaptation
             ):
                 return redirect(url_for('index'))
             return render_template('error.html', error=f"Failed to update grid {grid_id}")
@@ -289,17 +263,18 @@ def create_templates_directory():
     # Create templates directory
     os.makedirs('templates', exist_ok=True)
     
-    # Create index.html
+    # Create simplified index.html
     with open('templates/index.html', 'w') as f:
         f.write("""
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Grid Trading Bot</title>
+    <title>Simplified Grid Trading Bot</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
         body { font-family: Arial, sans-serif; margin: 0; padding: 20px; }
         h1 { color: #333; }
+        .subtitle { color: #666; margin-bottom: 20px; }
         table { width: 100%; border-collapse: collapse; margin-top: 20px; }
         th, td { padding: 10px; text-align: left; border-bottom: 1px solid #ddd; }
         th { background-color: #f2f2f2; }
@@ -313,7 +288,9 @@ def create_templates_directory():
     </style>
 </head>
 <body>
-    <h1>Grid Trading Bot</h1>
+    <h1>Simplified Grid Trading Bot</h1>
+    <p class="subtitle">Buy/Sell orders at grid intervals - No hedge mode</p>
+    
     <a href="/grid/create" class="button">Create New Grid</a>
     
     <table>
@@ -321,9 +298,9 @@ def create_templates_directory():
             <tr>
                 <th>ID</th>
                 <th>Symbol</th>
-                <th>Price Range</th>
                 <th>Grids</th>
                 <th>Investment</th>
+                <th>Leverage</th>
                 <th>PnL</th>
                 <th>Status</th>
                 <th>Actions</th>
@@ -333,10 +310,10 @@ def create_templates_directory():
             {% for grid in grids %}
             <tr>
                 <td>{{ grid.grid_id[:8] }}</td>
-                <td>{{ grid.symbol }}</td>
-                <td>{{ grid.price_lower }} - {{ grid.price_upper }}</td>
+                <td>{{ grid.display_symbol or grid.symbol }}</td>
                 <td>{{ grid.grid_number }}</td>
                 <td>{{ "%.2f"|format(grid.investment) }}</td>
+                <td>{{ "%.1f"|format(grid.leverage) }}x</td>
                 <td>{{ "%.2f"|format(grid.pnl) }} ({{ "%.2f"|format(grid.pnl_percentage) }}%)</td>
                 <td>{{ "Running" if grid.running else "Stopped" }}</td>
                 <td class="action-cell">
@@ -346,7 +323,7 @@ def create_templates_directory():
                     <a href="/grid/start/{{ grid.grid_id }}" class="button blue">Start</a>
                     {% endif %}
                     <a href="/grid/edit/{{ grid.grid_id }}" class="button">Edit</a>
-                    <a href="/grid/delete/{{ grid.grid_id }}" class="button red" onclick="return confirm('Are you sure you want to delete this grid?')">Delete</a>
+                    <a href="/grid/delete/{{ grid.grid_id }}" class="button red" onclick="return confirm('Are you sure?')">Delete</a>
                 </td>
             </tr>
             {% else %}
@@ -358,16 +335,14 @@ def create_templates_directory():
     </table>
     
     <script>
-        // Auto-refresh the page every 30 seconds
-        setTimeout(function() {
-            location.reload();
-        }, 30000);
+        // Auto-refresh every 30 seconds
+        setTimeout(function() { location.reload(); }, 30000);
     </script>
 </body>
 </html>
         """)
     
-    # Create create_grid.html with SAMIG support
+    # Create simplified create_grid.html
     with open('templates/create_grid.html', 'w') as f:
         f.write("""
 <!DOCTYPE html>
@@ -378,6 +353,7 @@ def create_templates_directory():
     <style>
         body { font-family: Arial, sans-serif; margin: 0; padding: 20px; }
         h1 { color: #333; }
+        .subtitle { color: #666; margin-bottom: 20px; }
         .form-group { margin-bottom: 15px; }
         label { display: block; margin-bottom: 5px; }
         input[type="text"], input[type="number"], select { 
@@ -398,6 +374,7 @@ def create_templates_directory():
 </head>
 <body>
     <h1>Create New Grid</h1>
+    <p class="subtitle">Simplified grid - places buy orders below price, sell orders above price</p>
     
     {% if error %}
     <div class="error">{{ error }}</div>
@@ -415,48 +392,33 @@ def create_templates_directory():
         </div>
         
         <div class="form-group">
-            <label for="price_lower">Lower Price:</label>
-            <input type="number" id="price_lower" name="price_lower" step="any" required>
+            <label for="grid_number">Number of Grid Levels:</label>
+            <input type="number" id="grid_number" name="grid_number" min="2" max="20" value="10" required>
         </div>
         
         <div class="form-group">
-            <label for="price_upper">Upper Price:</label>
-            <input type="number" id="price_upper" name="price_upper" step="any" required>
-        </div>
-        
-        <div class="form-group">
-            <label for="grid_number">Number of Grids:</label>
-            <input type="number" id="grid_number" name="grid_number" required>
-        </div>
-        
-        <div class="form-group">
-            <label for="investment">Investment Amount:</label>
-            <input type="number" id="investment" name="investment" step="any" required>
+            <label for="investment">Investment Amount (USD):</label>
+            <input type="number" id="investment" name="investment" step="any" min="10" max="5000" value="100" required>
         </div>
         
         <div class="form-group">
             <label for="leverage">Leverage:</label>
-            <input type="number" id="leverage" name="leverage" step="0.1" min="1" max="75" value="25.0" required>
+            <input type="number" id="leverage" name="leverage" step="0.1" min="1" max="125" value="20.0" required>
         </div>
         
         <div class="form-group">
             <label for="take_profit_pnl">Take Profit (%):</label>
-            <input type="number" id="take_profit_pnl" name="take_profit_pnl" step="any" value="5.0" required>
+            <input type="number" id="take_profit_pnl" name="take_profit_pnl" step="any" value="10.0" required>
         </div>
         
         <div class="form-group">
             <label for="stop_loss_pnl">Stop Loss (%):</label>
-            <input type="number" id="stop_loss_pnl" name="stop_loss_pnl" step="any" value="3.0" required>
+            <input type="number" id="stop_loss_pnl" name="stop_loss_pnl" step="any" value="5.0" required>
         </div>
         
         <div class="checkbox-group">
             <input type="checkbox" id="enable_grid_adaptation" name="enable_grid_adaptation" checked>
             <label for="enable_grid_adaptation">Enable Grid Adaptation</label>
-        </div>
-        
-        <div class="checkbox-group">
-            <input type="checkbox" id="enable_samig" name="enable_samig">
-            <label for="enable_samig">Enable SAMIG (Self-Adaptive Market Intelligence)</label>
         </div>
         
         <div class="checkbox-group">
@@ -473,7 +435,7 @@ def create_templates_directory():
 </html>
         """)
     
-    # Create edit_grid.html with SAMIG support
+    # Create simplified edit_grid.html
     with open('templates/edit_grid.html', 'w') as f:
         f.write("""
 <!DOCTYPE html>
@@ -508,20 +470,12 @@ def create_templates_directory():
     
     <div class="grid-details">
         <p><strong>Grid ID:</strong> {{ grid.grid_id }}</p>
-        <p><strong>Symbol:</strong> {{ grid.symbol }}</p>
-        <p><strong>Price Range:</strong> {{ grid.price_lower }} - {{ grid.price_upper }}</p>
-        <p><strong>Grid Number:</strong> {{ grid.grid_number }}</p>
-        <p><strong>Investment:</strong> {{ "%.2f"|format(grid.investment) }}</p>
-        <p><strong>PnL:</strong> {{ "%.2f"|format(grid.pnl) }} ({{ "%.2f"|format(grid.pnl_percentage) }}%)</p>
+        <p><strong>Symbol:</strong> {{ grid.display_symbol or grid.symbol }}</p>
+        <p><strong>Grid Levels:</strong> {{ grid.grid_number }}</p>
+        <p><strong>Investment:</strong> ${{ "%.2f"|format(grid.investment) }}</p>
+        <p><strong>Leverage:</strong> {{ "%.1f"|format(grid.leverage) }}x</p>
+        <p><strong>PnL:</strong> ${{ "%.2f"|format(grid.pnl) }} ({{ "%.2f"|format(grid.pnl_percentage) }}%)</p>
         <p><strong>Status:</strong> {{ "Running" if grid.running else "Stopped" }}</p>
-        {% if grid.get('enable_samig') %}
-        <p><strong>SAMIG Status:</strong> {{ "Active" if grid.get('samig_active', False) else "Inactive" }}</p>
-        {% if grid.get('samig_active') %}
-        <p><strong>Adaptations:</strong> {{ grid.get('adaptation_count', 0) }}</p>
-        <p><strong>Market Volatility:</strong> {{ "%.2f"|format(grid.get('volatility_regime', 1.0)) }}</p>
-        <p><strong>Momentum:</strong> {{ "%.3f"|format(grid.get('momentum', 0.0)) }}</p>
-        {% endif %}
-        {% endif %}
     </div>
     
     {% if error %}
@@ -545,12 +499,6 @@ def create_templates_directory():
             <label for="enable_grid_adaptation">Enable Grid Adaptation</label>
         </div>
         
-        <div class="checkbox-group">
-            <input type="checkbox" id="enable_samig" name="enable_samig" 
-                   {% if grid.get('enable_samig', False) %}checked{% endif %}>
-            <label for="enable_samig">Enable SAMIG (Self-Adaptive Market Intelligence)</label>
-        </div>
-        
         <div class="form-group">
             <button type="submit" class="button">Update</button>
             <a href="/" class="button cancel">Cancel</a>
@@ -559,40 +507,14 @@ def create_templates_directory():
 </body>
 </html>
         """)
-    
-    # Create error.html
-    with open('templates/error.html', 'w') as f:
-        f.write("""
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Error</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <style>
-        body { font-family: Arial, sans-serif; margin: 0; padding: 20px; }
-        h1 { color: #f44336; }
-        .error-message { margin-bottom: 20px; }
-        .button { 
-            display: inline-block; padding: 10px 20px; text-decoration: none; 
-            color: white; background-color: #2196F3; border-radius: 4px;
-        }
-    </style>
-</head>
-<body>
-    <h1>Error</h1>
-    <div class="error-message">{{ error }}</div>
-    <a href="/" class="button">Back to Home</a>
-</body>
-</html>
-        """)
 
 def initialize_app(config_file, log_level):
-    """Initialize the application with enhanced grid loading."""
+    """Initialize the application."""
     global grid_manager, logger
     
     # Setup logging
     logger = setup_logging(log_level)
-    logger.info("Starting Grid Trading Bot (Web Interface)")
+    logger.info("Starting Simplified Grid Trading Bot (Web Interface)")
     
     # Load configuration
     config = load_config(config_file)
@@ -620,23 +542,9 @@ def initialize_app(config_file, log_level):
         logger.info(f"Initializing data store in directory: {data_dir}")
         data_store = DataStore(data_dir=data_dir)
         
-        # Initialize grid manager (which loads saved grids)
-        logger.info("Initializing grid manager and loading saved grids")
+        # Initialize grid manager
+        logger.info("Initializing simplified grid manager")
         grid_manager = GridManager(exchange, data_store)
-        
-        # Count loaded grids
-        num_grids = len(grid_manager.grids)
-        if num_grids > 0:
-            logger.info(f"Successfully loaded {num_grids} saved grid(s)")
-            
-            # Log each grid's status
-            for grid_id, grid in grid_manager.grids.items():
-                status = "Running" if grid.running else "Stopped"
-                logger.info(f"Grid {grid_id} ({grid.symbol}): {status}")
-        
-        # Ensure monitor thread is running
-        logger.info("Starting grid monitor thread")
-        grid_manager._ensure_monitor_running()
         
         # Create templates directory and HTML files
         create_templates_directory()
@@ -645,13 +553,13 @@ def initialize_app(config_file, log_level):
         logger.error(f"Error during initialization: {e}")
         return False
     
-    logger.info("Application initialization complete")
+    logger.info("Simplified application initialization complete")
     return True
 
 def main():
     """Main entry point."""
     # Parse command line arguments
-    parser = argparse.ArgumentParser(description='Grid Trading Bot (Web Interface)')
+    parser = argparse.ArgumentParser(description='Simplified Grid Trading Bot (Web Interface)')
     parser.add_argument('--config', type=str, default='config.json', help='Configuration file')
     parser.add_argument('--log-level', type=str, default='INFO', help='Logging level')
     parser.add_argument('--host', type=str, default='127.0.0.1', help='Host to run the web server on')
@@ -668,13 +576,13 @@ def main():
         return 0
         
     except Exception as e:
-        logger.exception(f"Error running Grid Trading Bot: {e}")
+        logger.exception(f"Error running Simplified Grid Trading Bot: {e}")
         return 1
     finally:
         # Clean up
         if grid_manager:
             grid_manager.stop_all_grids()
-            logger.info("Grid Trading Bot stopped")
+            logger.info("Simplified Grid Trading Bot stopped")
 
 if __name__ == "__main__":
     sys.exit(main())

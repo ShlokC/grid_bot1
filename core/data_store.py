@@ -1,5 +1,5 @@
 """
-Data storage module for grid bot that persists data in JSON format.
+Data storage module for simplified grid bot that persists data in JSON format.
 """
 import json
 import os
@@ -15,7 +15,7 @@ class DataStore:
         self.logger = logging.getLogger(__name__)
         self.data_dir = data_dir
         
-        # ADDED: Thread safety for file operations
+        # Thread safety for file operations
         self.file_locks = {}
         self.global_lock = Lock()
         
@@ -25,18 +25,18 @@ class DataStore:
         # File paths
         self.grids_file = os.path.join(data_dir, 'grids.json')
         self.orders_file = os.path.join(data_dir, 'orders.json')
-        self.positions_file = os.path.join(data_dir, 'positions.json')
         
-        # Initialize data structures
+        # Initialize data structures - simplified
         self.grids = self._load_json(self.grids_file, {})
         self.orders = self._load_json(self.orders_file, {})
-        self.positions = self._load_json(self.positions_file, {})
+        
     def _get_file_lock(self, file_path: str) -> Lock:
-        """ADDED: Get or create file-specific lock"""
+        """Get or create file-specific lock"""
         with self.global_lock:
             if file_path not in self.file_locks:
                 self.file_locks[file_path] = Lock()
             return self.file_locks[file_path]
+            
     def _load_json(self, file_path: str, default_value: Any) -> Any:
         """Load data from a JSON file."""
         try:
@@ -49,7 +49,7 @@ class DataStore:
             return default_value
     
     def _save_json(self, file_path: str, data: Any) -> bool:
-        """MODIFIED: Save data to a JSON file with thread safety."""
+        """Save data to a JSON file with thread safety."""
         file_lock = self._get_file_lock(file_path)
         
         with file_lock:
@@ -80,36 +80,22 @@ class DataStore:
                 return False
     
     def save_grid(self, grid_id: str, grid_data: Dict) -> bool:
-        """
-        Save grid configuration and status.
-        
-        Args:
-            grid_id: Unique grid identifier
-            grid_data: Grid configuration and status data
-                
-        Returns:
-            bool: Success status
-        """
+        """Save grid configuration and status."""
         # Add timestamp
         grid_data['last_updated'] = datetime.now().isoformat()
         
         # Ensure numeric values are properly serializable
-        # (convert any numeric values that might cause JSON serialization issues)
         for key, value in grid_data.items():
-            if isinstance(value, float) or isinstance(value, int):
-                grid_data[key] = float(value) if isinstance(value, float) else int(value)
+            if isinstance(value, float):
+                grid_data[key] = float(value)
+            elif isinstance(value, int):
+                grid_data[key] = int(value)
         
         # Update grids dictionary
         self.grids[grid_id] = grid_data
         
         # Save to file
-        success = self._save_json(self.grids_file, self.grids)
-        # if success:
-        #     self.logger.info(f"Saved grid data for {grid_id}")
-        # else:
-        #     self.logger.error(f"Failed to save grid data for {grid_id}")
-        
-        return success
+        return self._save_json(self.grids_file, self.grids)
     
     def get_grid(self, grid_id: str) -> Optional[Dict]:
         """Get grid data by ID."""
@@ -127,16 +113,7 @@ class DataStore:
         return False
     
     def save_orders(self, grid_id: str, orders: Dict) -> bool:
-        """
-        Save orders for a grid.
-        
-        Args:
-            grid_id: Grid identifier
-            orders: Dictionary of orders (order_id -> order_info)
-            
-        Returns:
-            bool: Success status
-        """
+        """Save orders for a grid."""
         # Add timestamp
         timestamp = datetime.now().isoformat()
         
@@ -166,46 +143,6 @@ class DataStore:
             return self._save_json(self.orders_file, self.orders)
         return False
     
-    def save_positions(self, grid_id: str, positions: Dict) -> bool:
-        """
-        Save positions for a grid.
-        
-        Args:
-            grid_id: Grid identifier
-            positions: Dictionary of positions (position_id -> position_info)
-            
-        Returns:
-            bool: Success status
-        """
-        # Add timestamp
-        timestamp = datetime.now().isoformat()
-        
-        # Update positions dictionary
-        self.positions[grid_id] = {
-            'last_updated': timestamp,
-            'positions': positions
-        }
-        
-        # Save to file
-        return self._save_json(self.positions_file, self.positions)
-    
-    def get_positions(self, grid_id: str) -> Optional[Dict]:
-        """Get positions for a grid."""
-        if grid_id in self.positions:
-            return self.positions[grid_id]['positions']
-        return None
-    
-    def get_all_positions(self) -> Dict:
-        """Get all positions data."""
-        return self.positions
-    
-    def delete_positions(self, grid_id: str) -> bool:
-        """Delete positions for a grid."""
-        if grid_id in self.positions:
-            del self.positions[grid_id]
-            return self._save_json(self.positions_file, self.positions)
-        return False
-    
     def backup_data(self) -> str:
         """Create a backup of all data files."""
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -215,7 +152,7 @@ class DataStore:
             os.makedirs(backup_dir, exist_ok=True)
             
             # Copy all JSON files
-            for file_name in ['grids.json', 'orders.json', 'positions.json']:
+            for file_name in ['grids.json', 'orders.json']:
                 src_path = os.path.join(self.data_dir, file_name)
                 if os.path.exists(src_path):
                     with open(src_path, 'r') as src_file:
