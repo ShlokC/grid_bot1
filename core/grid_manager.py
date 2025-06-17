@@ -451,8 +451,8 @@ class GridManager:
                 active_grids = [(grid_id, grid) for grid_id, grid in self.grids.items() if grid.running]
                 
                 # Log monitor activity every 10 cycles (50 seconds)
-                if cycle_count % 10 == 1:
-                    self.logger.info(f"🔍 Monitor cycle #{cycle_count}: {len(active_grids)} active grids")
+                # if cycle_count % 10 == 1:
+                #     self.logger.info(f"🔍 Monitor cycle #{cycle_count}: {len(active_grids)} active grids")
                 
                 if active_grids:
                     for grid_id, grid in active_grids:

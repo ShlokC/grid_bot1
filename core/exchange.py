@@ -78,7 +78,7 @@ class Exchange:
             
         return symbol
     
-    def get_ohlcv(self, symbol: str, timeframe: str = '5m', limit: int = 100) -> List[List]:
+    def get_ohlcv(self, symbol: str, timeframe: str = '3m', limit: int = 100) -> List[List]:
         """Get OHLCV historical data with rate limiting."""
         try:
             symbol_id = self._get_symbol_id(symbol)
@@ -191,7 +191,7 @@ class Exchange:
                 None,  # price parameter (None for market orders)
                 {
                     'stopPrice': stop_price,
-                    'timeInForce': 'GTC'
+                    'timeInForce': 'GTE_GTC'
                 }
             )
             
@@ -344,7 +344,7 @@ class Exchange:
             # Prepare order parameters
             params = {
                 'stopPrice': stop_price,
-                'timeInForce': 'GTC'  # Good Till Cancelled
+                'timeInForce': 'GTE_GTC'  # Good Till Cancelled
             }
             
             if order_type == 'stop_market':

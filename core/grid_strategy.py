@@ -263,8 +263,8 @@ class GridStrategy:
         direction = 'buy'  # FIXED: Initialize direction first
         
         try:
-            # Get OHLCV data for analysis (last 50 candles, 5m timeframe)
-            ohlcv_data = self.exchange.get_ohlcv(self.symbol, timeframe='5m', limit=50)
+            # Get OHLCV data for analysis (last 1400 candles, 3m timeframe)
+            ohlcv_data = self.exchange.get_ohlcv(self.symbol, timeframe='3m', limit=1400)
             
             if not ohlcv_data or len(ohlcv_data) < 20:
                 self.logger.warning("Insufficient OHLCV data for technical analysis, defaulting to BUY")
@@ -275,7 +275,7 @@ class GridStrategy:
             df['close'] = df['close'].astype(float)
             
             # Calculate JMA (Jurik Moving Average) - period 14
-            jma = ta.jma(df['close'], length=20, phase=0.5, pow=2.0)
+            jma = ta.jma(df['close'], length=20, phase=100, pow=2.0)
             
             # Calculate KAMA (Kaufman's Adaptive Moving Average) - period 14  
             kama = ta.kama(df['close'], length=10)
@@ -318,7 +318,7 @@ class GridStrategy:
         return direction
 
     def _ensure_ping_pong_orders(self):
-        """FIXED: Simplified position-based order placement using exchange data only"""
+        """FIXED: Pass already-detected entry price to stop-loss method"""
         try:
             current_time = time.time()
             last_ensure_time = getattr(self, '_last_ensure_orders_time', 0)
@@ -350,27 +350,36 @@ class GridStrategy:
                     entry_price = float(pos.get('entryPrice', current_price))
                     break
             
-            # Count current orders
-            active_orders = len([o for o in live_orders 
-                            if o.get('info', {}).get('symbol', '') == self.symbol])
+            # Count current orders BY TYPE for THIS SYMBOL
+            symbol_orders = [o for o in live_orders if o.get('info', {}).get('symbol', '') == self.symbol]
+            has_stop_orders = any('STOP' in o.get('type', '').upper() for o in symbol_orders)
+            has_tp_orders = any('TAKE_PROFIT' in o.get('type', '').upper() for o in symbol_orders)
             
             if has_position:
-                # We have position - ensure stop-loss and take-profit orders exist
-                self.logger.info(f"📊 Position detected: {position_side.upper()} {abs(position_size):.6f}")
+                # Get technical analysis for current position
+                tech_direction = self._get_technical_direction()
                 
-                # Check if we have stop-loss orders
-                has_stop_orders = any('STOP' in o.get('type', '').upper() or 'TAKE_PROFIT' in o.get('type', '').upper()
-                                    for o in live_orders 
-                                    if o.get('info', {}).get('symbol', '') == self.symbol)
+                # We have position - ensure BOTH stop-loss AND take-profit orders exist
+                self.logger.info(f"📊 Position detected: {position_side.upper()} {abs(position_size):.6f} @ ${entry_price:.6f}")
+                self.logger.info(f"📊 Technical Analysis: {tech_direction.upper()} signal for current position")
                 
+                # Check if technical analysis suggests exiting position
+                if self._check_exit_on_opposite_signal(position_side, position_size, tech_direction):
+                    return  # Position was closed, exit early
+                
+                # Place missing stop-loss order - FIXED: Pass entry_price
                 if not has_stop_orders:
-                    self.logger.info(f"📊 No stop/TP orders found, placing them...")
-                    # Place stop-loss order
+                    self.logger.info(f"🛡️ No stop-loss found for {self.symbol}, placing...")
                     is_long = position_side == 'long'
                     is_short = position_side == 'short'
-                    self._ensure_stop_loss_orders(is_long, is_short, current_price, position_size, live_orders)
+                    self._ensure_stop_loss_orders(is_long, is_short, entry_price, position_size, live_orders)
+                
+                # Place missing take-profit order
+                if not has_tp_orders:
+                    self.logger.info(f"🎯 No take-profit found for {self.symbol}, placing...")
+                    self._ensure_take_profit_orders(position_side, entry_price, position_size)
             
-            elif active_orders == 0:
+            elif len(symbol_orders) == 0:
                 # No position and no orders - place new market order
                 tech_direction = self._get_technical_direction()
                 if tech_direction != 'none':
@@ -392,9 +401,52 @@ class GridStrategy:
         except Exception as e:
             self.logger.error(f"❌ Error in simplified ping-pong logic: {e}")
 
+    def _ensure_take_profit_orders(self, position_side: str, entry_price: float, position_size: float):
+        """Place take-profit order for existing position"""
+        try:
+            if not entry_price or entry_price <= 0:
+                self.logger.error(f"🎯 Invalid entry price for take-profit: ${entry_price:.6f}")
+                return
+            
+            # Calculate take-profit price (2% profit target)
+            profit_percentage = 0.02  # 2% profit
+            
+            if position_side == 'long':
+                # For LONG position: take-profit ABOVE entry price (sell order)
+                tp_price = self._round_price(entry_price * (1 + profit_percentage))
+                tp_side = 'sell'
+            else:  # short
+                # For SHORT position: take-profit BELOW entry price (buy order)
+                tp_price = self._round_price(entry_price * (1 - profit_percentage))
+                tp_side = 'buy'
+            
+            tp_amount = max(abs(position_size), self.min_amount)
+            
+            # Use TAKE_PROFIT_MARKET order type for Binance USDM
+            try:
+                tp_order = self.exchange.create_take_profit_market_order(
+                    self.symbol, tp_side, tp_amount, tp_price
+                )
+                
+                if tp_order and 'id' in tp_order:
+                    profit_pct = profit_percentage * 100
+                    position_type = "LONG" if position_side == 'long' else "SHORT"
+                    
+                    self.logger.info(f"🎯 TAKE-PROFIT PLACED: {position_type} position")
+                    self.logger.info(f"🎯 TP Order: {tp_side.upper()} {tp_amount:.6f} TP @ ${tp_price:.6f} (+{profit_pct:.1f}% profit)")
+                    self.logger.info(f"🎯 Order ID: {tp_order['id']}")
+                else:
+                    self.logger.error(f"❌ Failed to place take-profit order")
+                    
+            except Exception as e:
+                self.logger.error(f"🎯 TAKE_PROFIT_MARKET failed: {e}")
+                
+        except Exception as e:
+            self.logger.error(f"❌ Error ensuring take-profit orders: {e}")
+
     def _ensure_stop_loss_orders(self, has_long_position: bool, has_short_position: bool, 
-                            current_price: float, position_size: float, live_orders: List[Dict]):
-        """ENHANCEMENT: Ensure stop-loss orders exist for positions using LIVE EXCHANGE DATA ONLY"""
+                        entry_price: float, position_size: float, live_orders: List[Dict]):
+        """FIXED: Use provided entry_price instead of re-fetching from exchange"""
         try:
             # Count existing stop-loss orders
             existing_sl_orders = 0
@@ -412,65 +464,14 @@ class GridStrategy:
                 self.logger.debug(f"🛡️ Stop-loss already active: {existing_sl_orders} order(s)")
                 return
             
-            # FIXED: Get entry price ONLY from live exchange position data
-            entry_price = None
-            position_side = None
-            
-            try:
-                # Get fresh position data from exchange
-                live_positions = self.exchange.get_positions(self.symbol)
-                self.logger.debug(f"🛡️ Fetched {len(live_positions)} live positions from exchange")
-                
-                for pos in live_positions:
-                    pos_symbol = pos.get('info', {}).get('symbol', '')
-                    if pos_symbol != self.symbol:
-                        continue
-                        
-                    size = float(pos.get('contracts', 0))
-                    side = pos.get('side', '').lower()
-                    
-                    # Debug position data
-                    self.logger.debug(f"🛡️ Position: size={size}, side={side}")
-                    
-                    # Check if this matches our detected position
-                    if (has_long_position and side == 'long' and size > 0) or \
-                    (has_short_position and side == 'short' and size < 0):
-                        
-                        # Try multiple entry price fields
-                        entry_price = float(pos.get('entryPrice', 0))
-                        if entry_price <= 0:
-                            entry_price = float(pos.get('avgPrice', 0))
-                        if entry_price <= 0:
-                            entry_price = float(pos.get('average', 0))
-                        if entry_price <= 0:
-                            # Last resort - check info field
-                            info = pos.get('info', {})
-                            entry_price = float(info.get('entryPrice', 0))
-                            if entry_price <= 0:
-                                entry_price = float(info.get('avgPrice', 0))
-                        
-                        if entry_price > 0:
-                            position_side = side
-                            self.logger.info(f"🛡️ LIVE ENTRY PRICE: ${entry_price:.6f} from exchange position data")
-                            break
-                        else:
-                            # Log available fields for debugging
-                            available_fields = list(pos.keys())
-                            info_fields = list(pos.get('info', {}).keys()) if pos.get('info') else []
-                            self.logger.warning(f"🛡️ No entry price found in position fields: {available_fields}")
-                            self.logger.warning(f"🛡️ Info fields available: {info_fields}")
-                            
-            except Exception as e:
-                self.logger.error(f"🛡️ Error fetching live position data: {e}")
-            
-            # FIXED: Fail if no live entry price found - don't use fallbacks
+            # FIXED: Use provided entry_price directly, no need to re-fetch
             if entry_price is None or entry_price <= 0:
-                self.logger.error(f"🛡️ CANNOT PLACE STOP-LOSS: No entry price in live exchange data")
-                self.logger.error(f"🛡️ Position detected but exchange doesn't provide entry price")
-                self.logger.error(f"🛡️ Manual stop-loss monitoring required")
+                self.logger.error(f"🛡️ Invalid entry price provided: ${entry_price:.6f}")
                 return
             
-            # Calculate stop-loss price based on LIVE ENTRY PRICE
+            self.logger.info(f"🛡️ Using provided entry price: ${entry_price:.6f}")
+            
+            # Calculate stop-loss price based on PROVIDED ENTRY PRICE
             if has_long_position:
                 # For LONG position: stop-loss BELOW entry price (sell order)
                 sl_price = self._round_price(entry_price * (1 - self.stop_loss_percentage))
@@ -498,48 +499,119 @@ class GridStrategy:
             loss_pct = self.stop_loss_percentage * 100
             expected_loss_pct = abs((sl_price - entry_price) / entry_price) * 100
             
-            self.logger.info(f"🛡️ Stop-loss calculation (LIVE DATA):")
-            self.logger.info(f"🛡️   Live entry price: ${entry_price:.6f}")
-            self.logger.info(f"🛡️   Current price: ${current_price:.6f}")
-            self.logger.info(f"🛡️   Stop-loss price: ${sl_price:.6f}")
-            self.logger.info(f"🛡️   Expected loss: {expected_loss_pct:.2f}% (target: {loss_pct:.1f}%)")
+            self.logger.info(f"🛡️ Stop-loss calculation: Entry price: ${entry_price:.6f} Stop-loss price: ${sl_price:.6f} Expected loss: {expected_loss_pct:.2f}% (target: {loss_pct:.1f}%)")
+            # self.logger.info(f"🛡️   Entry price: ${entry_price:.6f}")
+            # self.logger.info(f"🛡️   Stop-loss price: ${sl_price:.6f}")
+            # self.logger.info(f"🛡️   Expected loss: {expected_loss_pct:.2f}% (target: {loss_pct:.1f}%)")
             
             # Use proper Binance USDM futures stop order
             try:
-                # For Binance USDM futures, use STOP_MARKET order type
                 sl_order = self.exchange.exchange.create_order(
                     symbol=self.symbol,
-                    type='STOP_MARKET',  # Correct Binance USDM order type
-                    side=sl_side.upper(),  # Binance expects uppercase
+                    type='STOP_MARKET',
+                    side=sl_side.upper(),
                     amount=sl_amount,
-                    price=None,  # No price for STOP_MARKET
+                    price=None,
                     params={
-                        'stopPrice': sl_price,  # Trigger price
-                        'timeInForce': 'GTC'
+                        'stopPrice': sl_price,
+                        'timeInForce': 'GTE_GTC'
                     }
                 )
-                order_type_used = 'STOP_MARKET'
-                self.logger.info(f"🛡️ SUCCESS: Created STOP_MARKET order using live entry price")
                 
+                if sl_order and 'id' in sl_order:
+                    self.stop_loss_order_ids.add(sl_order['id'])
+                    
+                    position_type = "LONG" if has_long_position else "SHORT"
+                    
+                    self.logger.info(f"🛡️ STOP-LOSS PLACED: {position_type} position SL Order: {sl_side.upper()} {sl_amount:.6f} STOP @ ${sl_price:.6f} ({loss_pct}% protection) ")
+                    # self.logger.info(f"🛡️ SL Order: {sl_side.upper()} {sl_amount:.6f} STOP @ ${sl_price:.6f} ({loss_pct}% protection)")
+                    # self.logger.info(f"🛡️ Order ID: {sl_order['id']}")
+                else:
+                    self.logger.error(f"❌ Failed to place stop-loss order")
+                    
             except Exception as e:
                 self.logger.error(f"🛡️ STOP_MARKET failed: {e}")
-                self.logger.error(f"🛡️ SKIPPING stop-loss placement - exchange API issue")
-                return  # Don't use fallbacks that might execute incorrectly
-            
-            if sl_order and 'id' in sl_order:
-                self.stop_loss_order_ids.add(sl_order['id'])
                 
-                position_type = "LONG" if has_long_position else "SHORT"
-                
-                self.logger.info(f"🛡️ STOP-LOSS PLACED: {position_type} position (LIVE DATA)")
-                self.logger.info(f"🛡️ SL Order: {sl_side.upper()} {sl_amount:.6f} STOP @ ${sl_price:.6f} ({loss_pct}% protection)")
-                self.logger.info(f"🛡️ Order Type: {order_type_used}")
-                self.logger.info(f"🛡️ Order ID: {sl_order['id']}")
-            else:
-                self.logger.error(f"❌ Failed to place stop-loss order")
-                    
         except Exception as e:
             self.logger.error(f"❌ Error ensuring stop-loss orders: {e}")
+    def _check_exit_on_opposite_signal(self, position_side: str, position_size: float, tech_direction: str) -> bool:
+        """Check if technical analysis suggests exiting current position"""
+        try:
+            # Don't exit on mixed signals
+            if tech_direction == 'none':
+                self.logger.debug(f"📊 Mixed technical signals - keeping position")
+                return False
+            
+            # Check if signal is opposite to position
+            should_exit = False
+            exit_reason = ""
+            
+            if position_side == 'long' and tech_direction == 'sell':
+                should_exit = True
+                exit_reason = "LONG position but SELL signal detected"
+            elif position_side == 'short' and tech_direction == 'buy':
+                should_exit = True
+                exit_reason = "SHORT position but BUY signal detected"
+            
+            if should_exit:
+                self.logger.warning(f"🚨 TREND REVERSAL DETECTED: {exit_reason}")
+                self.logger.warning(f"🚨 Exiting {position_side.upper()} position {abs(position_size):.6f}")
+                
+                # Cancel all existing orders first
+                try:
+                    cancelled_orders = self.exchange.cancel_all_orders(self.symbol)
+                    if cancelled_orders:
+                        self.logger.info(f"🚨 Cancelled {len(cancelled_orders)} orders before exit")
+                    
+                    # Clear tracking
+                    self.placed_order_ids.clear()
+                    self.stop_loss_order_ids.clear()
+                    
+                except Exception as e:
+                    self.logger.error(f"❌ Error cancelling orders before exit: {e}")
+                
+                # Close position with market order
+                try:
+                    close_side = 'sell' if position_side == 'long' else 'buy'
+                    close_amount = abs(position_size)
+                    
+                    exit_order = self.exchange.create_market_order(self.symbol, close_side, close_amount)
+                    
+                    if exit_order and 'id' in exit_order:
+                        # Record the exit trade
+                        self.filled_orders.append({
+                            'id': exit_order['id'],
+                            'side': close_side,
+                            'price': float(exit_order.get('average', 0)),
+                            'amount': close_amount,
+                            'timestamp': time.time(),
+                            'type': 'trend_exit'
+                        })
+                        
+                        self.total_trades += 1
+                        
+                        self.logger.warning(f"🚨 POSITION CLOSED: {close_side.upper()} {close_amount:.6f} (Trend Exit)")
+                        self.logger.warning(f"🚨 Exit Order ID: {exit_order['id']}")
+                        
+                        return True  # Position was closed
+                    else:
+                        self.logger.error(f"❌ Failed to close position - invalid exit order")
+                        
+                except Exception as e:
+                    self.logger.error(f"❌ Error closing position on trend reversal: {e}")
+            else:
+                # Signal aligns with position or is neutral
+                signal_alignment = "ALIGNED" if (
+                    (position_side == 'long' and tech_direction == 'buy') or 
+                    (position_side == 'short' and tech_direction == 'sell')
+                ) else "NEUTRAL"
+                self.logger.debug(f"📊 Technical signal {signal_alignment} with {position_side.upper()} position")
+            
+            return False  # Position was not closed
+            
+        except Exception as e:
+            self.logger.error(f"❌ Error checking exit on opposite signal: {e}")
+            return False
     def _place_initial_grid_orders(self, current_price: float, grid_levels: List[float]) -> int:
         """Place single initial MARKET order based on technical analysis"""
         orders_placed = 0
@@ -549,8 +621,9 @@ class GridStrategy:
             tech_direction = self._get_technical_direction()
             
             if tech_direction == 'none':
-                tech_direction = 'buy'  # Default to buy if mixed signals
-                self.logger.info(f"Mixed technical signals - defaulting to BUY market order")
+                self.logger.info(f"📊 Mixed technical signals - NO ORDER will be placed")
+                self.logger.info(f"📊 Waiting for clear technical direction...")
+                return 0  # Don't place any order ✅
             
             self.logger.info(f"Placing 1 MARKET order: {tech_direction.upper()} (immediate execution)")
             
@@ -597,8 +670,8 @@ class GridStrategy:
                 update_count = getattr(self, '_update_count', 0) + 1
                 self._update_count = update_count
                 
-                if update_count % 12 == 1:
-                    self.logger.info(f"🔄 Grid update #{update_count}: Checking orders and fills...")
+                # if update_count % 12 == 1:
+                #     self.logger.info(f"🔄 Grid update #{update_count}: Checking orders and fills...")
                 
                 # Check for filled orders and place new ones
                 self._check_filled_orders()
