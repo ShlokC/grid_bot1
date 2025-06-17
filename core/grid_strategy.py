@@ -88,7 +88,7 @@ class GridStrategy:
         self.enable_grid_adaptation = enable_grid_adaptation
         
         # FIXED: Tight spacing for ping-pong orders (configurable)
-        self.ping_pong_spacing_pct = 0.001  # 1% default spacing
+        self.ping_pong_spacing_pct = 0.01  # 1% default spacing
 
         # Core tracking - simplified
         self.grid_orders: Dict[str, Dict] = {}  # Track grid orders
@@ -438,10 +438,9 @@ class GridStrategy:
                 
             self._last_ensure_orders_time = current_time
             
-            # Place orders - counter orders have no throttling restrictions
+            # FIXED: Place orders AT current price instead of using spacing
             if needs_buy_order:
-                # Use spacing for all orders (no more "at current price")
-                buy_price = self._round_price(current_price - (current_price * self.ping_pong_spacing_pct))
+                buy_price = self._round_price(current_price)  # AT current price
                 
                 if buy_price >= self.user_price_lower:
                     try:
@@ -451,14 +450,12 @@ class GridStrategy:
                             if order and 'id' in order:
                                 self.placed_order_ids.add(order['id'])
                                 self._last_buy_order_time = current_time
-                                distance_pct = ((current_price - buy_price) / current_price) * 100
-                                self.logger.info(f"✅ BUY: {amount:.6f} @ ${buy_price:.6f} ({distance_pct:.2f}% below)")
+                                self.logger.info(f"✅ BUY: {amount:.6f} @ ${buy_price:.6f} (at current price)")
                     except Exception as e:
                         self.logger.error(f"❌ BUY order failed: {e}")
             
             if needs_sell_order:
-                # Use spacing for all orders (no more "at current price")
-                sell_price = self._round_price(current_price + (current_price * self.ping_pong_spacing_pct))
+                sell_price = self._round_price(current_price)  # AT current price
                 
                 if sell_price <= self.user_price_upper:
                     try:
@@ -468,8 +465,7 @@ class GridStrategy:
                             if order and 'id' in order:
                                 self.placed_order_ids.add(order['id'])
                                 self._last_sell_order_time = current_time
-                                distance_pct = ((sell_price - current_price) / current_price) * 100
-                                self.logger.info(f"✅ SELL: {amount:.6f} @ ${sell_price:.6f} ({distance_pct:.2f}% above)")
+                                self.logger.info(f"✅ SELL: {amount:.6f} @ ${sell_price:.6f} (at current price)")
                     except Exception as e:
                         self.logger.error(f"❌ SELL order failed: {e}")
                         
@@ -477,8 +473,8 @@ class GridStrategy:
             self.logger.error(f"❌ Error ensuring ping-pong orders: {e}")
 
     def _ensure_stop_loss_orders(self, has_long_position: bool, has_short_position: bool, 
-                                current_price: float, position_size: float, live_orders: List[Dict]):
-        """ENHANCEMENT: Ensure stop-loss orders exist for positions"""
+                            current_price: float, position_size: float, live_orders: List[Dict]):
+        """ENHANCEMENT: Ensure stop-loss orders exist for positions using ENTRY PRICE"""
         try:
             # Count existing stop-loss orders
             existing_sl_orders = 0
@@ -496,16 +492,79 @@ class GridStrategy:
                 self.logger.debug(f"🛡️ Stop-loss already active: {existing_sl_orders} order(s)")
                 return
             
-            # Calculate stop-loss price based on position type
+            # Get entry price from exchange position data first, then fallback to filled_orders
+            entry_price = None
+            position_side = None
+            
+            # Method 1: Get entry price from live position data (most reliable)
+            try:
+                live_positions = self.exchange.get_positions(self.symbol)
+                for pos in live_positions:
+                    pos_symbol = pos.get('info', {}).get('symbol', '')
+                    if pos_symbol != self.symbol:
+                        continue
+                        
+                    size = float(pos.get('contracts', 0))
+                    side = pos.get('side', '').lower()
+                    
+                    # Check if this matches our detected position
+                    if (has_long_position and side == 'long' and size > 0) or \
+                    (has_short_position and side == 'short' and size < 0):
+                        
+                        # Try to get entry price from position data
+                        entry_price = float(pos.get('entryPrice', 0))
+                        if entry_price <= 0:
+                            # Some exchanges use different field names
+                            entry_price = float(pos.get('avgPrice', 0))
+                        if entry_price <= 0:
+                            entry_price = float(pos.get('markPrice', 0))
+                        
+                        if entry_price > 0:
+                            position_side = side
+                            self.logger.info(f"🛡️ Found entry price from position data: ${entry_price:.6f}")
+                            break
+                            
+            except Exception as e:
+                self.logger.warning(f"🛡️ Could not get entry price from position data: {e}")
+            
+            # Method 2: Fallback to filled_orders if position data didn't work
+            if entry_price is None or entry_price <= 0:
+                self.logger.info(f"🛡️ Trying to find entry price from filled orders...")
+                
+                if has_long_position:
+                    # Look for recent BUY order (entry for long position)
+                    for order in reversed(self.filled_orders):
+                        if order.get('side', '').lower() == 'buy' and order.get('type') != 'stop_loss':
+                            entry_price = float(order.get('price', 0))
+                            position_side = 'long'
+                            self.logger.info(f"🛡️ Found entry price from filled orders: ${entry_price:.6f}")
+                            break
+                elif has_short_position:
+                    # Look for recent SELL order (entry for short position)  
+                    for order in reversed(self.filled_orders):
+                        if order.get('side', '').lower() == 'sell' and order.get('type') != 'stop_loss':
+                            entry_price = float(order.get('price', 0))
+                            position_side = 'short'
+                            self.logger.info(f"🛡️ Found entry price from filled orders: ${entry_price:.6f}")
+                            break
+            
+            # Method 3: Final fallback to current price (with warning)
+            if entry_price is None or entry_price <= 0:
+                entry_price = current_price
+                position_side = 'long' if has_long_position else 'short'
+                self.logger.warning(f"🛡️ WARNING: Using current price ${entry_price:.6f} as entry price fallback")
+                self.logger.warning(f"🛡️ Stop-loss may not be exactly 2% from actual entry")
+            
+            # Calculate stop-loss price based on ENTRY PRICE
             if has_long_position:
-                # For LONG position: stop-loss BELOW current price (sell order)
-                sl_price = self._round_price(current_price * (1 - self.stop_loss_percentage))
+                # For LONG position: stop-loss BELOW entry price (sell order)
+                sl_price = self._round_price(entry_price * (1 - self.stop_loss_percentage))
                 sl_side = 'sell'
                 sl_amount = abs(position_size)
                 
             elif has_short_position:
-                # For SHORT position: stop-loss ABOVE current price (buy order) 
-                sl_price = self._round_price(current_price * (1 + self.stop_loss_percentage))
+                # For SHORT position: stop-loss ABOVE entry price (buy order) 
+                sl_price = self._round_price(entry_price * (1 + self.stop_loss_percentage))
                 sl_side = 'buy'
                 sl_amount = abs(position_size)
             else:
@@ -520,23 +579,69 @@ class GridStrategy:
             if sl_amount < self.min_amount:
                 sl_amount = self.min_amount
             
-            # Place stop-loss order
+            # Log the calculation for verification
+            loss_pct = self.stop_loss_percentage * 100
+            expected_loss_pct = abs((sl_price - entry_price) / entry_price) * 100
+            
+            self.logger.info(f"🛡️ Stop-loss calculation:")
+            self.logger.info(f"🛡️   Entry price: ${entry_price:.6f}")
+            self.logger.info(f"🛡️   Current price: ${current_price:.6f}")
+            self.logger.info(f"🛡️   Stop-loss price: ${sl_price:.6f}")
+            self.logger.info(f"🛡️   Expected loss: {expected_loss_pct:.2f}% (target: {loss_pct:.1f}%)")
+            
+            # FIXED: Use proper Binance USDM futures stop order
             try:
-                sl_order = self.exchange.create_limit_order(self.symbol, sl_side, sl_amount, sl_price)
-                if sl_order and 'id' in sl_order:
-                    self.stop_loss_order_ids.add(sl_order['id'])
-                    
-                    position_type = "LONG" if has_long_position else "SHORT"
-                    loss_pct = self.stop_loss_percentage * 100
-                    
-                    self.logger.info(f"🛡️ STOP-LOSS PLACED: {position_type} position @ ${current_price:.6f}")
-                    self.logger.info(f"🛡️ SL Order: {sl_side.upper()} {sl_amount:.6f} @ ${sl_price:.6f} ({loss_pct}% protection)")
-                else:
-                    self.logger.error(f"❌ Failed to place stop-loss order")
-                    
-            except Exception as e:
-                self.logger.error(f"❌ Error placing stop-loss order: {e}")
+                # For Binance USDM futures, use STOP_MARKET order type
+                sl_order = self.exchange.exchange.create_order(
+                    symbol=self.symbol,
+                    type='STOP_MARKET',  # Correct Binance USDM order type
+                    side=sl_side.upper(),  # Binance expects uppercase
+                    amount=sl_amount,
+                    price=None,  # No price for STOP_MARKET
+                    params={
+                        'stopPrice': sl_price,  # Trigger price
+                        'timeInForce': 'GTC'
+                    }
+                )
+                order_type_used = 'STOP_MARKET'
+                self.logger.info(f"🛡️ SUCCESS: Created STOP_MARKET order")
                 
+            except Exception as e:
+                self.logger.warning(f"🛡️ STOP_MARKET failed: {e}")
+                try:
+                    # Fallback: Try conditional order (some exchanges prefer this)
+                    sl_order = self.exchange.exchange.create_order(
+                        symbol=self.symbol,
+                        type='MARKET',  # Market order 
+                        side=sl_side.upper(),
+                        amount=sl_amount,
+                        price=None,
+                        params={
+                            'stopPrice': sl_price,
+                            'type': 'STOP_LOSS',  # Conditional type
+                            'timeInForce': 'GTC'
+                        }
+                    )
+                    order_type_used = 'CONDITIONAL_MARKET'
+                    self.logger.info(f"🛡️ SUCCESS: Created conditional stop order")
+                    
+                except Exception as e2:
+                    self.logger.error(f"🛡️ All stop order types failed: {e2}")
+                    self.logger.error(f"🛡️ SKIPPING stop-loss placement - manual monitoring required")
+                    return  # Don't place limit order fallback that executes immediately
+            
+            if sl_order and 'id' in sl_order:
+                self.stop_loss_order_ids.add(sl_order['id'])
+                
+                position_type = "LONG" if has_long_position else "SHORT"
+                
+                self.logger.info(f"🛡️ STOP-LOSS PLACED: {position_type} position")
+                self.logger.info(f"🛡️ SL Order: {sl_side.upper()} {sl_amount:.6f} STOP @ ${sl_price:.6f} ({loss_pct}% protection)")
+                self.logger.info(f"🛡️ Order Type: {order_type_used}")
+                self.logger.info(f"🛡️ Order ID: {sl_order['id']}")
+            else:
+                self.logger.error(f"❌ Failed to place stop-loss order")
+                    
         except Exception as e:
             self.logger.error(f"❌ Error ensuring stop-loss orders: {e}")
     
@@ -545,26 +650,21 @@ class GridStrategy:
         orders_placed = 0
         
         try:
-            # Split levels into buy and sell sides based on current price
-            buy_levels = [level for level in grid_levels if level < current_price]
-            sell_levels = [level for level in grid_levels if level > current_price]
+            # FIXED: Place first order AT current price, second at spacing distance
+            buy_price = self._round_price(current_price)  # AT current price
+            sell_price = self._round_price(current_price + (current_price * self.ping_pong_spacing_pct))  # At spacing distance
             
-            # Take only the closest level to current price for each side
-            if buy_levels:
-                buy_price = max(buy_levels)  # Highest buy price (closest to current)
-            else:
-                # FIXED: Use tight spacing for initial orders
-                tight_spacing = current_price * self.ping_pong_spacing_pct
-                buy_price = self._round_price(current_price - tight_spacing)
-            
-            if sell_levels:
-                sell_price = min(sell_levels)  # Lowest sell price (closest to current)
-            else:
-                # FIXED: Use tight spacing for initial orders
-                tight_spacing = current_price * self.ping_pong_spacing_pct
-                sell_price = self._round_price(current_price + tight_spacing)
+            # Validate prices are within grid range
+            if buy_price < self.user_price_lower:
+                buy_price = self.user_price_lower
+                self.logger.warning(f"Buy price adjusted to grid lower bound: ${buy_price:.6f}")
+                
+            if sell_price > self.user_price_upper:
+                sell_price = self.user_price_upper
+                self.logger.warning(f"Sell price adjusted to grid upper bound: ${sell_price:.6f}")
             
             self.logger.info(f"Placing 1 BUY order and 1 SELL order (ping-pong strategy)")
+            self.logger.info(f"BUY at current price, SELL at {self.ping_pong_spacing_pct*100:.1f}% above")
             
             # Place 1 BUY order (below current price)
             try:
@@ -581,8 +681,8 @@ class GridStrategy:
                             'type': 'grid'
                         }
                         orders_placed += 1
-                        distance_pct = ((current_price - buy_price) / current_price) * 100
-                        self.logger.info(f"✅ BUY order placed: {amount:.6f} @ ${buy_price:.6f} ({distance_pct:.2f}% below current)")
+                        distance_pct = 0.0  # At current price
+                        self.logger.info(f"✅ BUY order placed: {amount:.6f} @ ${buy_price:.6f} (at current price)")
                     else:
                         self.logger.error(f"❌ Failed to place BUY order @ ${buy_price:.6f}")
             except Exception as e:
@@ -607,7 +707,7 @@ class GridStrategy:
                         }
                         orders_placed += 1
                         distance_pct = ((sell_price - current_price) / current_price) * 100
-                        self.logger.info(f"✅ SELL order placed: {amount:.6f} @ ${sell_price:.6f} ({distance_pct:.2f}% above current)")
+                        self.logger.info(f"✅ SELL order placed: {amount:.6f} @ ${sell_price:.6f} ({distance_pct:.3f}% above current)")
                     else:
                         self.logger.error(f"❌ Failed to place SELL order @ ${sell_price:.6f}")
             except Exception as e:
@@ -695,7 +795,7 @@ class GridStrategy:
             self.logger.error(f"❌ Error checking filled orders: {e}")
 
     def _process_filled_stop_loss_order(self, sl_order_id: str):
-        """ENHANCEMENT: Process filled stop-loss orders"""
+        """ENHANCEMENT: Process filled stop-loss orders with 2% distance validation"""
         try:
             # Get stop-loss order details
             order_status = self.exchange.get_order_status(sl_order_id, self.symbol)
@@ -707,7 +807,52 @@ class GridStrategy:
             fill_price = float(order_status.get('average', 0))
             fill_amount = float(order_status.get('filled', 0))
             
-            self.logger.warning(f"🛡️ STOP-LOSS TRIGGERED: {fill_side.upper()} {fill_amount:.6f} @ ${fill_price:.6f}")
+            # FIXED: Validate 2% distance by checking against recent position entry
+            # Get the most recent opposite side fill (position entry price)
+            entry_price = None
+            expected_sl_side = None
+            
+            # Look for recent position entry (opposite side of stop-loss)
+            for order in reversed(self.filled_orders):
+                if order.get('type') == 'stop_loss':
+                    continue  # Skip other stop-losses
+                    
+                order_side = order.get('side', '').lower()
+                
+                # If stop-loss is SELL, look for BUY entry (long position)
+                # If stop-loss is BUY, look for SELL entry (short position)
+                if (fill_side == 'sell' and order_side == 'buy') or \
+                (fill_side == 'buy' and order_side == 'sell'):
+                    entry_price = float(order.get('price', 0))
+                    expected_sl_side = fill_side
+                    break
+            
+            if entry_price is None:
+                self.logger.warning(f"🛡️ STOP-LOSS TRIGGERED but no entry price found: {fill_side.upper()} {fill_amount:.6f} @ ${fill_price:.6f}")
+            else:
+                # FIXED: Calculate actual loss percentage and validate 2% distance
+                if fill_side == 'sell':  # Long position stop-loss
+                    loss_pct = ((entry_price - fill_price) / entry_price) * 100
+                    expected_sl_price = entry_price * (1 - self.stop_loss_percentage)
+                else:  # Short position stop-loss (buy)
+                    loss_pct = ((fill_price - entry_price) / entry_price) * 100  
+                    expected_sl_price = entry_price * (1 + self.stop_loss_percentage)
+                
+                # Validate stop-loss was triggered at approximately 2% loss
+                price_tolerance = 0.005  # 0.5% tolerance for price variations
+                expected_loss_pct = self.stop_loss_percentage * 100
+                
+                if abs(loss_pct - expected_loss_pct) <= (price_tolerance * 100):
+                    self.logger.warning(f"🛡️ VALID STOP-LOSS TRIGGERED: {loss_pct:.2f}% loss")
+                    self.logger.warning(f"🛡️ Entry: ${entry_price:.6f} → Stop-Loss: ${fill_price:.6f}")
+                else:
+                    self.logger.error(f"🛡️ INVALID STOP-LOSS: Expected ~{expected_loss_pct:.1f}% loss, got {loss_pct:.2f}% loss")
+                    self.logger.error(f"🛡️ Entry: ${entry_price:.6f}, Expected SL: ${expected_sl_price:.6f}, Actual SL: ${fill_price:.6f}")
+                    
+                    # Still process but flag as unusual
+                    self.logger.warning(f"🛡️ Processing stop-loss despite validation failure")
+            
+            self.logger.warning(f"🛡️ STOP-LOSS FILLED: {fill_side.upper()} {fill_amount:.6f} @ ${fill_price:.6f}")
             
             # Record the stop-loss fill for PnL tracking
             self.filled_orders.append({
@@ -716,7 +861,9 @@ class GridStrategy:
                 'price': fill_price,
                 'amount': fill_amount,
                 'timestamp': time.time(),
-                'type': 'stop_loss'
+                'type': 'stop_loss',
+                'entry_price': entry_price,  # Track entry price for analysis
+                'loss_percentage': loss_pct if entry_price else None
             })
             
             self.total_trades += 1

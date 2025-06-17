@@ -301,3 +301,58 @@ class Exchange:
         except Exception as e:
             self.logger.error(f"Error fetching available symbols: {e}")
             raise
+    def create_stop_order(self, symbol: str, side: str, amount: float, stop_price: float, order_type: str = 'stop_market') -> Dict:
+        """Create a stop-loss order (stop-market or stop-limit)."""
+        try:
+            symbol_id = self._get_symbol_id(symbol)
+            
+            self.logger.info(f"🛡️ STOP ORDER: {side.upper()} {amount:.6f} {symbol_id} STOP @ ${stop_price:.6f}")
+            
+            # Prepare order parameters
+            params = {
+                'stopPrice': stop_price,
+                'timeInForce': 'GTC'  # Good Till Cancelled
+            }
+            
+            if order_type == 'stop_market':
+                # Stop-market order (no limit price, executes at market when triggered)
+                result = self._rate_limited_request(
+                    self.exchange.create_order,
+                    symbol_id,
+                    'stop_market',
+                    side,
+                    amount,
+                    None,  # No limit price for stop-market
+                    None,  # No price parameter
+                    params
+                )
+            elif order_type == 'stop_limit':
+                # Stop-limit order (has both stop price and limit price)
+                limit_price = stop_price  # Use stop price as limit price for immediate execution
+                result = self._rate_limited_request(
+                    self.exchange.create_order,
+                    symbol_id,
+                    'stop_limit',
+                    side,
+                    amount,
+                    limit_price,
+                    None,
+                    params
+                )
+            else:
+                raise ValueError(f"Unsupported stop order type: {order_type}")
+            
+            if result and 'id' in result:
+                order_id = result['id']
+                self.logger.info(f"✅ STOP ORDER CREATED: {side.upper()} {amount:.6f} {symbol_id} STOP @ ${stop_price:.6f}, ID: {order_id[:8]}")
+            else:
+                self.logger.error(f"❌ STOP ORDER FAILED: Invalid response")
+                
+            return result
+            
+        except Exception as e:
+            self.logger.error(f"❌ STOP ORDER ERROR: {e}")
+            # If stop orders not supported, inform caller
+            if "stop" in str(e).lower() or "unsupported" in str(e).lower():
+                self.logger.warning(f"⚠️ Stop orders may not be supported on this exchange")
+            raise
