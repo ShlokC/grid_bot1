@@ -1,6 +1,6 @@
 """
 Exchange module for handling communication with Binance USDM Futures using CCXT.
-Simplified version without hedge mode - uses standard grid trading with buy/sell orders.
+Enhanced with take_profit_market order support.
 """
 import ccxt
 import logging
@@ -172,6 +172,38 @@ class Exchange:
         except Exception as e:
             self.logger.error(f"❌ MARKET ORDER ERROR: {e}")
             raise
+
+    # Add this method to the Exchange class
+    def create_take_profit_market_order(self, symbol: str, side: str, amount: float, stop_price: float) -> Dict:
+        """Create a take profit market order."""
+        try:
+            symbol_id = self._get_symbol_id(symbol)
+            
+            self.logger.info(f"🎯 TAKE_PROFIT_MARKET: {side.upper()} {amount:.6f} {symbol_id} @ ${stop_price:.6f}")
+            
+            # Fixed: Removed extra None parameter
+            result = self._rate_limited_request(
+                self.exchange.create_order,
+                symbol_id,
+                'TAKE_PROFIT_MARKET',
+                side,
+                amount,
+                None,  # price parameter (None for market orders)
+                {
+                    'stopPrice': stop_price,
+                    'timeInForce': 'GTC'
+                }
+            )
+            
+            if result and 'id' in result:
+                order_id = result['id']
+                self.logger.info(f"✅ TAKE_PROFIT_MARKET CREATED: ID: {order_id[:8]}")
+            
+            return result
+            
+        except Exception as e:
+            self.logger.error(f"❌ TAKE_PROFIT_MARKET ERROR: {e}")
+            raise
         
     def cancel_order(self, order_id: str, symbol: str) -> Dict:
         """Cancel an order by ID with rate limiting."""
@@ -301,6 +333,7 @@ class Exchange:
         except Exception as e:
             self.logger.error(f"Error fetching available symbols: {e}")
             raise
+
     def create_stop_order(self, symbol: str, side: str, amount: float, stop_price: float, order_type: str = 'stop_market') -> Dict:
         """Create a stop-loss order (stop-market or stop-limit)."""
         try:

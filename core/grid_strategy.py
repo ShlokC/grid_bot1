@@ -318,163 +318,83 @@ class GridStrategy:
         return direction
 
     def _ensure_ping_pong_orders(self):
-        """Fixed: Prevent multiple orders with better tracking + Stop-Loss Enhancement"""
+        """FIXED: Simplified position-based order placement using exchange data only"""
         try:
             current_time = time.time()
             last_ensure_time = getattr(self, '_last_ensure_orders_time', 0)
             if current_time - last_ensure_time < 30:
                 return
             
-            # FIXED: Separate throttling for same direction vs counter orders
-            last_sell_time = getattr(self, '_last_sell_order_time', 0)
-            last_buy_time = getattr(self, '_last_buy_order_time', 0)
-            
-            # Throttle same direction orders only (not counter orders)
-            min_same_direction_interval = 10
-            can_place_same_sell = (current_time - last_sell_time) > min_same_direction_interval
-            can_place_same_buy = (current_time - last_buy_time) > min_same_direction_interval
-            
-            # Get live data
+            # Get live data from exchange
             live_positions = self.exchange.get_positions(self.symbol)
             live_orders = self.exchange.get_open_orders(self.symbol)
             
             ticker = self.exchange.get_ticker(self.symbol)
             current_price = float(ticker['last'])
             
-            # Check positions with lower threshold
-            has_long_position = False
-            has_short_position = False
+            # Check current positions
+            has_position = False
             position_size = 0.0
+            entry_price = current_price
+            position_side = None
             
             for pos in live_positions:
-                # FIXED: Check symbol in both direct field and nested info field
                 pos_symbol = pos.get('info', {}).get('symbol', '')
                 if pos_symbol != self.symbol:
                     continue
                 size = float(pos.get('contracts', 0))
-                side = pos.get('side', '').lower()
-                position_value_usd = abs(size) * current_price
-                
-                if position_value_usd >= 0.10:  # $0.10 minimum
+                if abs(size) >= 0.001:  # Has meaningful position
+                    has_position = True
                     position_size = size
-                    if side == 'long':
-                        has_long_position = True
-                        self.logger.info(f"📈 LONG position: {size:.6f} tokens = ${position_value_usd:.6f}")
-                    elif side == 'short':
-                        has_short_position = True  
-                        self.logger.info(f"📉 SHORT position: {size:.6f} tokens = ${position_value_usd:.6f}")
+                    position_side = pos.get('side', '').lower()
+                    entry_price = float(pos.get('entryPrice', current_price))
+                    break
             
-            # ENHANCEMENT: Ensure stop-loss orders for existing positions
-            if has_long_position or has_short_position:
-                self._ensure_stop_loss_orders(has_long_position, has_short_position, current_price, position_size, live_orders)
+            # Count current orders
+            active_orders = len([o for o in live_orders 
+                            if o.get('info', {}).get('symbol', '') == self.symbol])
             
-            # Count live orders with proper symbol checking (check both direct and info fields)
-            buy_orders = 0
-            sell_orders = 0
-            for order in live_orders:
-                # FIXED: Check symbol in both direct field and nested info field
-                order_symbol = order.get('info', {}).get('symbol', '')
-                if order_symbol != self.symbol:
-                    continue
-                    
-                side = order.get('side', '').lower()
-                if side == 'buy':
-                    buy_orders += 1
-                elif side == 'sell':
-                    sell_orders += 1
-            
-            # Debug logging to verify order counting
-            if len(live_orders) > 0:
-                self.logger.debug(f"📊 Order count: {len(live_orders)} total, {buy_orders} BUY, {sell_orders} SELL for {self.symbol}")
-            
-            # Count total orders for ping-pong validation
-            total_orders = buy_orders + sell_orders
-            
-            # FIXED: Position-based logic with proper order checking
-            needs_buy_order = False
-            needs_sell_order = False
-            
-            if has_long_position:
-                # Have LONG → need SELL counter order only if no orders exist
-                if total_orders == 0:
-                    needs_sell_order = True
-                    self.logger.info(f"📊 LONG position → placing SELL counter order")
-                else:
-                    self.logger.info(f"📊 LONG position → waiting for existing {total_orders} order(s) to complete")
-                    
-            elif has_short_position:
-                # Have SHORT → need BUY counter order only if no orders exist
-                if total_orders == 0:
-                    needs_buy_order = True
-                    self.logger.info(f"📊 SHORT position → placing BUY counter order")
-                else:
-                    self.logger.info(f"📊 SHORT position → waiting for existing {total_orders} order(s) to complete")
-                    
-            else:
-                # No positions
-                if total_orders == 0:
-                    # No orders and no positions - use technical analysis with throttling
-                    time_since_last_order = min(current_time - last_buy_time, current_time - last_sell_time)
-                    
-                    if time_since_last_order > min_same_direction_interval:
-                        tech_direction = self._get_technical_direction()
-                        if tech_direction == 'buy':
-                            needs_buy_order = True
-                            self.logger.info(f"📊 First order: BUY (technical + {time_since_last_order:.0f}s since last)")
-                        elif tech_direction == 'sell':
-                            needs_sell_order = True
-                            self.logger.info(f"📊 First order: SELL (technical + {time_since_last_order:.0f}s since last)")
-                        else:  # tech_direction == 'none'
-                            self.logger.info(f"📊 Mixed technical signals - waiting for clear direction")
-                    else:
-                        self.logger.info(f"📊 No orders, but recently placed one ({time_since_last_order:.0f}s ago)")
-                else:
-                    # Have open orders - wait for them to complete (true ping-pong)
-                    self.logger.info(f"📊 No positions but {total_orders} order(s) pending - waiting for completion")
-                    self.logger.debug(f"📊 Open orders: {buy_orders} BUY, {sell_orders} SELL")
-            
-            if not needs_buy_order and not needs_sell_order:
-                return
+            if has_position:
+                # We have position - ensure stop-loss and take-profit orders exist
+                self.logger.info(f"📊 Position detected: {position_side.upper()} {abs(position_size):.6f}")
                 
+                # Check if we have stop-loss orders
+                has_stop_orders = any('STOP' in o.get('type', '').upper() or 'TAKE_PROFIT' in o.get('type', '').upper()
+                                    for o in live_orders 
+                                    if o.get('info', {}).get('symbol', '') == self.symbol)
+                
+                if not has_stop_orders:
+                    self.logger.info(f"📊 No stop/TP orders found, placing them...")
+                    # Place stop-loss order
+                    is_long = position_side == 'long'
+                    is_short = position_side == 'short'
+                    self._ensure_stop_loss_orders(is_long, is_short, current_price, position_size, live_orders)
+            
+            elif active_orders == 0:
+                # No position and no orders - place new market order
+                tech_direction = self._get_technical_direction()
+                if tech_direction != 'none':
+                    time_since_last_order = current_time - getattr(self, '_last_market_order_time', 0)
+                    if time_since_last_order > 60:  # 1 minute throttle
+                        try:
+                            amount = self._calculate_order_amount(current_price)
+                            if amount >= self.min_amount:
+                                order = self.exchange.create_market_order(self.symbol, tech_direction, amount)
+                                if order and 'id' in order:
+                                    self._last_market_order_time = current_time
+                                    self.logger.info(f"✅ New MARKET order: {tech_direction.upper()} {amount:.6f}")
+                                    time.sleep(2)  # Let position settle
+                        except Exception as e:
+                            self.logger.error(f"❌ Error placing new market order: {e}")
+            
             self._last_ensure_orders_time = current_time
-            
-            # FIXED: Place orders AT current price instead of using spacing
-            if needs_buy_order:
-                buy_price = self._round_price(current_price)  # AT current price
-                
-                if buy_price >= self.user_price_lower:
-                    try:
-                        amount = self._calculate_order_amount(buy_price)
-                        if amount >= self.min_amount:
-                            order = self.exchange.create_limit_order(self.symbol, 'buy', amount, buy_price)
-                            if order and 'id' in order:
-                                self.placed_order_ids.add(order['id'])
-                                self._last_buy_order_time = current_time
-                                self.logger.info(f"✅ BUY: {amount:.6f} @ ${buy_price:.6f} (at current price)")
-                    except Exception as e:
-                        self.logger.error(f"❌ BUY order failed: {e}")
-            
-            if needs_sell_order:
-                sell_price = self._round_price(current_price)  # AT current price
-                
-                if sell_price <= self.user_price_upper:
-                    try:
-                        amount = self._calculate_order_amount(sell_price)
-                        if amount >= self.min_amount:
-                            order = self.exchange.create_limit_order(self.symbol, 'sell', amount, sell_price)
-                            if order and 'id' in order:
-                                self.placed_order_ids.add(order['id'])
-                                self._last_sell_order_time = current_time
-                                self.logger.info(f"✅ SELL: {amount:.6f} @ ${sell_price:.6f} (at current price)")
-                    except Exception as e:
-                        self.logger.error(f"❌ SELL order failed: {e}")
-                        
+                    
         except Exception as e:
-            self.logger.error(f"❌ Error ensuring ping-pong orders: {e}")
+            self.logger.error(f"❌ Error in simplified ping-pong logic: {e}")
 
     def _ensure_stop_loss_orders(self, has_long_position: bool, has_short_position: bool, 
                             current_price: float, position_size: float, live_orders: List[Dict]):
-        """ENHANCEMENT: Ensure stop-loss orders exist for positions using ENTRY PRICE"""
+        """ENHANCEMENT: Ensure stop-loss orders exist for positions using LIVE EXCHANGE DATA ONLY"""
         try:
             # Count existing stop-loss orders
             existing_sl_orders = 0
@@ -492,13 +412,15 @@ class GridStrategy:
                 self.logger.debug(f"🛡️ Stop-loss already active: {existing_sl_orders} order(s)")
                 return
             
-            # Get entry price from exchange position data first, then fallback to filled_orders
+            # FIXED: Get entry price ONLY from live exchange position data
             entry_price = None
             position_side = None
             
-            # Method 1: Get entry price from live position data (most reliable)
             try:
+                # Get fresh position data from exchange
                 live_positions = self.exchange.get_positions(self.symbol)
+                self.logger.debug(f"🛡️ Fetched {len(live_positions)} live positions from exchange")
+                
                 for pos in live_positions:
                     pos_symbol = pos.get('info', {}).get('symbol', '')
                     if pos_symbol != self.symbol:
@@ -507,55 +429,48 @@ class GridStrategy:
                     size = float(pos.get('contracts', 0))
                     side = pos.get('side', '').lower()
                     
+                    # Debug position data
+                    self.logger.debug(f"🛡️ Position: size={size}, side={side}")
+                    
                     # Check if this matches our detected position
                     if (has_long_position and side == 'long' and size > 0) or \
                     (has_short_position and side == 'short' and size < 0):
                         
-                        # Try to get entry price from position data
+                        # Try multiple entry price fields
                         entry_price = float(pos.get('entryPrice', 0))
                         if entry_price <= 0:
-                            # Some exchanges use different field names
                             entry_price = float(pos.get('avgPrice', 0))
                         if entry_price <= 0:
-                            entry_price = float(pos.get('markPrice', 0))
+                            entry_price = float(pos.get('average', 0))
+                        if entry_price <= 0:
+                            # Last resort - check info field
+                            info = pos.get('info', {})
+                            entry_price = float(info.get('entryPrice', 0))
+                            if entry_price <= 0:
+                                entry_price = float(info.get('avgPrice', 0))
                         
                         if entry_price > 0:
                             position_side = side
-                            self.logger.info(f"🛡️ Found entry price from position data: ${entry_price:.6f}")
+                            self.logger.info(f"🛡️ LIVE ENTRY PRICE: ${entry_price:.6f} from exchange position data")
                             break
+                        else:
+                            # Log available fields for debugging
+                            available_fields = list(pos.keys())
+                            info_fields = list(pos.get('info', {}).keys()) if pos.get('info') else []
+                            self.logger.warning(f"🛡️ No entry price found in position fields: {available_fields}")
+                            self.logger.warning(f"🛡️ Info fields available: {info_fields}")
                             
             except Exception as e:
-                self.logger.warning(f"🛡️ Could not get entry price from position data: {e}")
+                self.logger.error(f"🛡️ Error fetching live position data: {e}")
             
-            # Method 2: Fallback to filled_orders if position data didn't work
+            # FIXED: Fail if no live entry price found - don't use fallbacks
             if entry_price is None or entry_price <= 0:
-                self.logger.info(f"🛡️ Trying to find entry price from filled orders...")
-                
-                if has_long_position:
-                    # Look for recent BUY order (entry for long position)
-                    for order in reversed(self.filled_orders):
-                        if order.get('side', '').lower() == 'buy' and order.get('type') != 'stop_loss':
-                            entry_price = float(order.get('price', 0))
-                            position_side = 'long'
-                            self.logger.info(f"🛡️ Found entry price from filled orders: ${entry_price:.6f}")
-                            break
-                elif has_short_position:
-                    # Look for recent SELL order (entry for short position)  
-                    for order in reversed(self.filled_orders):
-                        if order.get('side', '').lower() == 'sell' and order.get('type') != 'stop_loss':
-                            entry_price = float(order.get('price', 0))
-                            position_side = 'short'
-                            self.logger.info(f"🛡️ Found entry price from filled orders: ${entry_price:.6f}")
-                            break
+                self.logger.error(f"🛡️ CANNOT PLACE STOP-LOSS: No entry price in live exchange data")
+                self.logger.error(f"🛡️ Position detected but exchange doesn't provide entry price")
+                self.logger.error(f"🛡️ Manual stop-loss monitoring required")
+                return
             
-            # Method 3: Final fallback to current price (with warning)
-            if entry_price is None or entry_price <= 0:
-                entry_price = current_price
-                position_side = 'long' if has_long_position else 'short'
-                self.logger.warning(f"🛡️ WARNING: Using current price ${entry_price:.6f} as entry price fallback")
-                self.logger.warning(f"🛡️ Stop-loss may not be exactly 2% from actual entry")
-            
-            # Calculate stop-loss price based on ENTRY PRICE
+            # Calculate stop-loss price based on LIVE ENTRY PRICE
             if has_long_position:
                 # For LONG position: stop-loss BELOW entry price (sell order)
                 sl_price = self._round_price(entry_price * (1 - self.stop_loss_percentage))
@@ -572,7 +487,7 @@ class GridStrategy:
             
             # Validate stop-loss price is within grid range
             if sl_price < self.user_price_lower or sl_price > self.user_price_upper:
-                self.logger.warning(f"🛡️ Stop-loss price ${sl_price:.6f} outside grid range, skipping")
+                self.logger.warning(f"🛡️ Stop-loss price ${sl_price:.6f} outside grid range [{self.user_price_lower:.6f}, {self.user_price_upper:.6f}], skipping")
                 return
             
             # Ensure minimum amount
@@ -583,13 +498,13 @@ class GridStrategy:
             loss_pct = self.stop_loss_percentage * 100
             expected_loss_pct = abs((sl_price - entry_price) / entry_price) * 100
             
-            self.logger.info(f"🛡️ Stop-loss calculation:")
-            self.logger.info(f"🛡️   Entry price: ${entry_price:.6f}")
+            self.logger.info(f"🛡️ Stop-loss calculation (LIVE DATA):")
+            self.logger.info(f"🛡️   Live entry price: ${entry_price:.6f}")
             self.logger.info(f"🛡️   Current price: ${current_price:.6f}")
             self.logger.info(f"🛡️   Stop-loss price: ${sl_price:.6f}")
             self.logger.info(f"🛡️   Expected loss: {expected_loss_pct:.2f}% (target: {loss_pct:.1f}%)")
             
-            # FIXED: Use proper Binance USDM futures stop order
+            # Use proper Binance USDM futures stop order
             try:
                 # For Binance USDM futures, use STOP_MARKET order type
                 sl_order = self.exchange.exchange.create_order(
@@ -604,38 +519,19 @@ class GridStrategy:
                     }
                 )
                 order_type_used = 'STOP_MARKET'
-                self.logger.info(f"🛡️ SUCCESS: Created STOP_MARKET order")
+                self.logger.info(f"🛡️ SUCCESS: Created STOP_MARKET order using live entry price")
                 
             except Exception as e:
-                self.logger.warning(f"🛡️ STOP_MARKET failed: {e}")
-                try:
-                    # Fallback: Try conditional order (some exchanges prefer this)
-                    sl_order = self.exchange.exchange.create_order(
-                        symbol=self.symbol,
-                        type='MARKET',  # Market order 
-                        side=sl_side.upper(),
-                        amount=sl_amount,
-                        price=None,
-                        params={
-                            'stopPrice': sl_price,
-                            'type': 'STOP_LOSS',  # Conditional type
-                            'timeInForce': 'GTC'
-                        }
-                    )
-                    order_type_used = 'CONDITIONAL_MARKET'
-                    self.logger.info(f"🛡️ SUCCESS: Created conditional stop order")
-                    
-                except Exception as e2:
-                    self.logger.error(f"🛡️ All stop order types failed: {e2}")
-                    self.logger.error(f"🛡️ SKIPPING stop-loss placement - manual monitoring required")
-                    return  # Don't place limit order fallback that executes immediately
+                self.logger.error(f"🛡️ STOP_MARKET failed: {e}")
+                self.logger.error(f"🛡️ SKIPPING stop-loss placement - exchange API issue")
+                return  # Don't use fallbacks that might execute incorrectly
             
             if sl_order and 'id' in sl_order:
                 self.stop_loss_order_ids.add(sl_order['id'])
                 
                 position_type = "LONG" if has_long_position else "SHORT"
                 
-                self.logger.info(f"🛡️ STOP-LOSS PLACED: {position_type} position")
+                self.logger.info(f"🛡️ STOP-LOSS PLACED: {position_type} position (LIVE DATA)")
                 self.logger.info(f"🛡️ SL Order: {sl_side.upper()} {sl_amount:.6f} STOP @ ${sl_price:.6f} ({loss_pct}% protection)")
                 self.logger.info(f"🛡️ Order Type: {order_type_used}")
                 self.logger.info(f"🛡️ Order ID: {sl_order['id']}")
@@ -644,79 +540,50 @@ class GridStrategy:
                     
         except Exception as e:
             self.logger.error(f"❌ Error ensuring stop-loss orders: {e}")
-    
     def _place_initial_grid_orders(self, current_price: float, grid_levels: List[float]) -> int:
-        """Place only 2 initial orders: 1 buy below current price, 1 sell above current price"""
+        """Place single initial MARKET order based on technical analysis"""
         orders_placed = 0
         
         try:
-            # FIXED: Place first order AT current price, second at spacing distance
-            buy_price = self._round_price(current_price)  # AT current price
-            sell_price = self._round_price(current_price + (current_price * self.ping_pong_spacing_pct))  # At spacing distance
+            # Get technical direction for initial market order
+            tech_direction = self._get_technical_direction()
             
-            # Validate prices are within grid range
-            if buy_price < self.user_price_lower:
-                buy_price = self.user_price_lower
-                self.logger.warning(f"Buy price adjusted to grid lower bound: ${buy_price:.6f}")
+            if tech_direction == 'none':
+                tech_direction = 'buy'  # Default to buy if mixed signals
+                self.logger.info(f"Mixed technical signals - defaulting to BUY market order")
+            
+            self.logger.info(f"Placing 1 MARKET order: {tech_direction.upper()} (immediate execution)")
+            
+            # Calculate amount for market order
+            amount = self._calculate_order_amount(current_price)
+            if amount < self.min_amount:
+                self.logger.error(f"Calculated amount {amount:.6f} below minimum {self.min_amount}")
+                return 0
+            
+            # Place MARKET order for immediate execution
+            order = self.exchange.create_market_order(self.symbol, tech_direction, amount)
+            if order and 'id' in order:
+                # Track as filled order immediately
+                fill_price = float(order.get('average', current_price))
+                self.filled_orders.append({
+                    'id': order['id'],
+                    'side': tech_direction,
+                    'price': fill_price,
+                    'amount': amount,
+                    'timestamp': time.time(),
+                    'type': 'market'
+                })
                 
-            if sell_price > self.user_price_upper:
-                sell_price = self.user_price_upper
-                self.logger.warning(f"Sell price adjusted to grid upper bound: ${sell_price:.6f}")
-            
-            self.logger.info(f"Placing 1 BUY order and 1 SELL order (ping-pong strategy)")
-            self.logger.info(f"BUY at current price, SELL at {self.ping_pong_spacing_pct*100:.1f}% above")
-            
-            # Place 1 BUY order (below current price)
-            try:
-                amount = self._calculate_order_amount(buy_price)
-                if amount >= self.min_amount:
-                    order = self.exchange.create_limit_order(self.symbol, 'buy', amount, buy_price)
-                    if order and 'id' in order:
-                        self.grid_orders[order['id']] = {
-                            'id': order['id'],
-                            'side': 'buy',
-                            'price': buy_price,
-                            'amount': amount,
-                            'timestamp': time.time(),
-                            'type': 'grid'
-                        }
-                        orders_placed += 1
-                        distance_pct = 0.0  # At current price
-                        self.logger.info(f"✅ BUY order placed: {amount:.6f} @ ${buy_price:.6f} (at current price)")
-                    else:
-                        self.logger.error(f"❌ Failed to place BUY order @ ${buy_price:.6f}")
-            except Exception as e:
-                self.logger.error(f"❌ Error placing BUY order @ ${buy_price:.6f}: {e}")
-            
-            # Small delay between orders
-            time.sleep(0.5)
-            
-            # Place 1 SELL order (above current price)
-            try:
-                amount = self._calculate_order_amount(sell_price)
-                if amount >= self.min_amount:
-                    order = self.exchange.create_limit_order(self.symbol, 'sell', amount, sell_price)
-                    if order and 'id' in order:
-                        self.grid_orders[order['id']] = {
-                            'id': order['id'],
-                            'side': 'sell',
-                            'price': sell_price,
-                            'amount': amount,
-                            'timestamp': time.time(),
-                            'type': 'grid'
-                        }
-                        orders_placed += 1
-                        distance_pct = ((sell_price - current_price) / current_price) * 100
-                        self.logger.info(f"✅ SELL order placed: {amount:.6f} @ ${sell_price:.6f} ({distance_pct:.3f}% above current)")
-                    else:
-                        self.logger.error(f"❌ Failed to place SELL order @ ${sell_price:.6f}")
-            except Exception as e:
-                self.logger.error(f"❌ Error placing SELL order @ ${sell_price:.6f}: {e}")
-            
+                self.total_trades += 1
+                orders_placed = 1
+                
+                self.logger.info(f"✅ MARKET order executed: {tech_direction.upper()} {amount:.6f} @ ${fill_price:.6f}")
+                time.sleep(2)  # Let position settle
+                    
             return orders_placed
             
         except Exception as e:
-            self.logger.error(f"Error placing initial grid orders: {e}")
+            self.logger.error(f"Error placing initial market order: {e}")
             return orders_placed
     
     def update_grid(self):
@@ -749,53 +616,231 @@ class GridStrategy:
                 
         except Exception as e:
             self.logger.error(f"❌ Error updating grid: {e}")
-    
-    def _check_filled_orders(self):
-        """Enhanced: Check both regular and stop-loss filled orders"""
+    def _place_stop_loss_immediately(self, position_size: float, position_side: str, entry_price: float):
+        """Place stop-loss based on current position data"""
         try:
-            # Get current live orders
+            if not entry_price or entry_price <= 0:
+                current_price = float(self.exchange.get_ticker(self.symbol)['last'])
+                entry_price = current_price
+                self.logger.warning(f"🛡️ Using current price as entry: ${entry_price:.6f}")
+            
+            # Calculate stop-loss
+            if position_side == 'long':
+                sl_price = self._round_price(entry_price * (1 - self.stop_loss_percentage))
+                sl_side = 'sell'
+            else:  # short
+                sl_price = self._round_price(entry_price * (1 + self.stop_loss_percentage))
+                sl_side = 'buy'
+            
+            sl_amount = max(abs(position_size), self.min_amount)
+            
+            # Place stop using existing exchange method
+            sl_order = self.exchange.create_stop_order(
+                symbol=self.symbol,
+                side=sl_side,
+                amount=sl_amount,
+                stop_price=sl_price,
+                order_type='stop_market'
+            )
+            
+            if sl_order and 'id' in sl_order:
+                self.logger.info(f"🛡️ STOP-LOSS PLACED: {sl_side.upper()} @ ${sl_price:.6f}")
+                self.logger.info(f"🛡️ Protection: {self.stop_loss_percentage*100:.1f}% from ${entry_price:.6f}")
+            
+        except Exception as e:
+            self.logger.error(f"❌ Stop-loss placement failed: {e}")
+    def _check_filled_orders(self):
+        """Enhanced: Check both regular and stop-loss filled orders - verify actual fill status"""
+        try:
+            # Get current open orders only
             live_orders = self.exchange.get_open_orders(self.symbol)
             live_order_ids = set()
             
-            # FIXED: Properly extract order IDs with symbol verification
+            # Extract order IDs with symbol verification
             for order in live_orders:
                 order_symbol = order.get('info', {}).get('symbol', '')
                 if order_symbol == self.symbol:
                     live_order_ids.add(order['id'])
             
-            # Find filled regular orders
-            filled_order_ids = self.placed_order_ids - live_order_ids
+            # Find orders that are no longer open (could be filled, cancelled, or rejected)
+            potentially_filled_order_ids = self.placed_order_ids - live_order_ids
+            potentially_filled_sl_order_ids = self.stop_loss_order_ids - live_order_ids
             
-            # ENHANCEMENT: Find filled stop-loss orders
-            filled_sl_order_ids = self.stop_loss_order_ids - live_order_ids
+            # FIXED: Verify actual fill status instead of assuming
+            actually_filled_order_ids = set()
+            actually_filled_sl_order_ids = set()
             
-            if filled_order_ids:
-                self.logger.info(f"🎯 FOUND {len(filled_order_ids)} FILLED ORDERS")
+            # Check regular orders
+            for order_id in potentially_filled_order_ids:
+                try:
+                    order_status = self.exchange.get_order_status(order_id, self.symbol)
+                    status = order_status.get('status', '').lower()
+                    
+                    if status in ['filled', 'closed']:
+                        actually_filled_order_ids.add(order_id)
+                        self.logger.debug(f"✅ Confirmed filled order: {order_id[:8]} - {status}")
+                    elif status in ['cancelled', 'canceled', 'rejected']:
+                        self.logger.info(f"🚫 Order {order_id[:8]} was {status}, removing from tracking")
+                        # Remove from tracking since it's not going to fill
+                        self.placed_order_ids.discard(order_id)
+                    else:
+                        self.logger.debug(f"⏳ Order {order_id[:8]} status: {status}")
+                        
+                except Exception as e:
+                    self.logger.warning(f"⚠️ Could not verify order {order_id[:8]} status: {e}")
+                    # Keep in tracking for next check
+            
+            # Check stop-loss orders
+            for sl_order_id in potentially_filled_sl_order_ids:
+                try:
+                    order_status = self.exchange.get_order_status(sl_order_id, self.symbol)
+                    status = order_status.get('status', '').lower()
+                    
+                    if status in ['filled', 'closed']:
+                        actually_filled_sl_order_ids.add(sl_order_id)
+                        self.logger.debug(f"🛡️ Confirmed filled stop-loss: {sl_order_id[:8]} - {status}")
+                    elif status in ['cancelled', 'canceled', 'rejected']:
+                        self.logger.info(f"🛡️ Stop-loss {sl_order_id[:8]} was {status}, removing from tracking")
+                        # Remove from tracking since it's not going to fill
+                        self.stop_loss_order_ids.discard(sl_order_id)
+                    else:
+                        self.logger.debug(f"🛡️ Stop-loss {sl_order_id[:8]} status: {status}")
+                        
+                except Exception as e:
+                    self.logger.warning(f"🛡️ Could not verify stop-loss {sl_order_id[:8]} status: {e}")
+                    # Keep in tracking for next check
+            
+            # Process actually filled regular orders
+            if actually_filled_order_ids:
+                self.logger.info(f"🎯 FOUND {len(actually_filled_order_ids)} FILLED ORDERS")
                 
-                # Process each filled order
-                for order_id in filled_order_ids:
+                for order_id in actually_filled_order_ids:
                     self._process_filled_order_live(order_id)
-                    # Remove from our placed orders tracking
+                    # Remove from tracking
                     self.placed_order_ids.discard(order_id)
                 
-                self.logger.info(f"✅ Processed {len(filled_order_ids)} filled orders")
+                self.logger.info(f"✅ Processed {len(actually_filled_order_ids)} filled orders")
             
-            # ENHANCEMENT: Process filled stop-loss orders
-            if filled_sl_order_ids:
-                self.logger.info(f"🛡️ FOUND {len(filled_sl_order_ids)} FILLED STOP-LOSS ORDERS")
+            # Process actually filled stop-loss orders
+            if actually_filled_sl_order_ids:
+                self.logger.info(f"🛡️ FOUND {len(actually_filled_sl_order_ids)} FILLED STOP-LOSS ORDERS")
                 
-                for sl_order_id in filled_sl_order_ids:
+                for sl_order_id in actually_filled_sl_order_ids:
                     self._process_filled_stop_loss_order(sl_order_id)
-                    # Remove from stop-loss tracking
+                    # Remove from tracking
                     self.stop_loss_order_ids.discard(sl_order_id)
                 
-                self.logger.info(f"🛡️ Processed {len(filled_sl_order_ids)} filled stop-loss orders")
+                self.logger.info(f"🛡️ Processed {len(actually_filled_sl_order_ids)} filled stop-loss orders")
                     
         except Exception as e:
             self.logger.error(f"❌ Error checking filled orders: {e}")
-
+    def _process_filled_stop_loss_from_exchange_data(self, order: Dict):
+        """Process filled stop-loss using exchange order data"""
+        try:
+            order_id = order.get('id', '')
+            fill_side = order.get('side', '').lower()
+            fill_price = float(order.get('average', 0))
+            fill_amount = float(order.get('filled', 0))
+            order_type = order.get('type', '').upper()
+            
+            self.logger.warning(f"🛡️ STOP/TP EXECUTED: {fill_side.upper()} {fill_amount:.6f} @ ${fill_price:.6f}")
+            self.logger.warning(f"🛡️ Order Type: {order_type}")
+            
+            # Record the stop-loss fill
+            self.filled_orders.append({
+                'id': order_id,
+                'side': fill_side,
+                'price': fill_price,
+                'amount': fill_amount,
+                'timestamp': time.time(),
+                'type': 'stop_loss'
+            })
+            
+            self.total_trades += 1
+            
+            # Cancel remaining orders after stop-loss
+            try:
+                cancelled_orders = self.exchange.cancel_all_orders(self.symbol)
+                if cancelled_orders:
+                    self.logger.warning(f"🛡️ Cancelled {len(cancelled_orders)} orders after stop/TP")
+                
+            except Exception as e:
+                self.logger.error(f"❌ Error cancelling orders after stop-loss: {e}")
+            
+        except Exception as e:
+            self.logger.error(f"❌ Error processing stop-loss from exchange data: {e}")
+    def _process_filled_order_from_exchange_data(self, order: Dict):
+        """Process filled order using exchange order data"""
+        try:
+            order_id = order.get('id', '')
+            fill_side = order.get('side', '').lower()
+            fill_price = float(order.get('average', 0))
+            fill_amount = float(order.get('filled', 0))
+            order_type = order.get('type', '').upper()
+            
+            if fill_price <= 0 or fill_amount <= 0:
+                self.logger.warning(f"Invalid fill data for order {order_id[:8]}")
+                return
+            
+            # Record the fill
+            self.filled_orders.append({
+                'id': order_id,
+                'side': fill_side,
+                'price': fill_price,
+                'amount': fill_amount,
+                'timestamp': time.time(),
+                'type': order_type.lower()
+            })
+            
+            self.total_trades += 1
+            
+            self.logger.info(f"✅ RECORDED FILL: {fill_side.upper()} {fill_amount:.6f} @ ${fill_price:.6f}")
+            
+            # For market orders, don't place counter orders (they create positions immediately)
+            if 'MARKET' in order_type:
+                self.logger.info(f"📊 Market order filled - position created, waiting for take profit")
+                return
+            
+            # For limit orders, place counter take profit order
+            self._place_counter_take_profit_order(fill_side, fill_price, fill_amount)
+                    
+        except Exception as e:
+            self.logger.error(f"Error processing filled order from exchange data: {e}")
+    def _place_counter_take_profit_order(self, filled_side: str, filled_price: float, filled_amount: float):
+        """Place counter take profit order after limit order fill"""
+        try:
+            # Determine counter side and price
+            counter_side = 'sell' if filled_side == 'buy' else 'buy'
+            
+            # Calculate take profit price (2% profit)
+            profit_pct = self.ping_pong_spacing_pct * 2  # 2% profit
+            
+            if counter_side == 'sell':
+                tp_price = self._round_price(filled_price * (1 + profit_pct))
+            else:
+                tp_price = self._round_price(filled_price * (1 - profit_pct))
+            
+            # Validate price is within range
+            if tp_price < self.user_price_lower or tp_price > self.user_price_upper:
+                self.logger.warning(f"Take profit price ${tp_price:.6f} outside grid range")
+                return
+            
+            # Place take profit order
+            try:
+                tp_order = self.exchange.create_take_profit_market_order(
+                    self.symbol, counter_side, filled_amount, tp_price
+                )
+                if tp_order and 'id' in tp_order:
+                    profit_pct_display = profit_pct * 100
+                    self.logger.info(f"🔄 COUNTER TP: {filled_side.upper()} @ ${filled_price:.6f} → "
+                                f"{counter_side.upper()} TP @ ${tp_price:.6f} (+{profit_pct_display:.1f}%)")
+            except Exception as e:
+                self.logger.error(f"❌ Error placing counter take profit: {e}")
+                
+        except Exception as e:
+            self.logger.error(f"❌ Error in counter take profit logic: {e}")
     def _process_filled_stop_loss_order(self, sl_order_id: str):
-        """ENHANCEMENT: Process filled stop-loss orders with 2% distance validation"""
+        """FIXED: Simplified stop-loss processing"""
         try:
             # Get stop-loss order details
             order_status = self.exchange.get_order_status(sl_order_id, self.symbol)
@@ -807,72 +852,25 @@ class GridStrategy:
             fill_price = float(order_status.get('average', 0))
             fill_amount = float(order_status.get('filled', 0))
             
-            # FIXED: Validate 2% distance by checking against recent position entry
-            # Get the most recent opposite side fill (position entry price)
-            entry_price = None
-            expected_sl_side = None
+            self.logger.warning(f"🛡️ STOP-LOSS EXECUTED: {fill_side.upper()} {fill_amount:.6f} @ ${fill_price:.6f}")
             
-            # Look for recent position entry (opposite side of stop-loss)
-            for order in reversed(self.filled_orders):
-                if order.get('type') == 'stop_loss':
-                    continue  # Skip other stop-losses
-                    
-                order_side = order.get('side', '').lower()
-                
-                # If stop-loss is SELL, look for BUY entry (long position)
-                # If stop-loss is BUY, look for SELL entry (short position)
-                if (fill_side == 'sell' and order_side == 'buy') or \
-                (fill_side == 'buy' and order_side == 'sell'):
-                    entry_price = float(order.get('price', 0))
-                    expected_sl_side = fill_side
-                    break
-            
-            if entry_price is None:
-                self.logger.warning(f"🛡️ STOP-LOSS TRIGGERED but no entry price found: {fill_side.upper()} {fill_amount:.6f} @ ${fill_price:.6f}")
-            else:
-                # FIXED: Calculate actual loss percentage and validate 2% distance
-                if fill_side == 'sell':  # Long position stop-loss
-                    loss_pct = ((entry_price - fill_price) / entry_price) * 100
-                    expected_sl_price = entry_price * (1 - self.stop_loss_percentage)
-                else:  # Short position stop-loss (buy)
-                    loss_pct = ((fill_price - entry_price) / entry_price) * 100  
-                    expected_sl_price = entry_price * (1 + self.stop_loss_percentage)
-                
-                # Validate stop-loss was triggered at approximately 2% loss
-                price_tolerance = 0.005  # 0.5% tolerance for price variations
-                expected_loss_pct = self.stop_loss_percentage * 100
-                
-                if abs(loss_pct - expected_loss_pct) <= (price_tolerance * 100):
-                    self.logger.warning(f"🛡️ VALID STOP-LOSS TRIGGERED: {loss_pct:.2f}% loss")
-                    self.logger.warning(f"🛡️ Entry: ${entry_price:.6f} → Stop-Loss: ${fill_price:.6f}")
-                else:
-                    self.logger.error(f"🛡️ INVALID STOP-LOSS: Expected ~{expected_loss_pct:.1f}% loss, got {loss_pct:.2f}% loss")
-                    self.logger.error(f"🛡️ Entry: ${entry_price:.6f}, Expected SL: ${expected_sl_price:.6f}, Actual SL: ${fill_price:.6f}")
-                    
-                    # Still process but flag as unusual
-                    self.logger.warning(f"🛡️ Processing stop-loss despite validation failure")
-            
-            self.logger.warning(f"🛡️ STOP-LOSS FILLED: {fill_side.upper()} {fill_amount:.6f} @ ${fill_price:.6f}")
-            
-            # Record the stop-loss fill for PnL tracking
+            # Record the stop-loss fill
             self.filled_orders.append({
                 'id': sl_order_id,
                 'side': fill_side,
                 'price': fill_price,
                 'amount': fill_amount,
                 'timestamp': time.time(),
-                'type': 'stop_loss',
-                'entry_price': entry_price,  # Track entry price for analysis
-                'loss_percentage': loss_pct if entry_price else None
+                'type': 'stop_loss'
             })
             
             self.total_trades += 1
             
-            # Cancel any remaining orders to prevent further trading after stop-loss
+            # Cancel remaining orders after stop-loss
             try:
                 cancelled_orders = self.exchange.cancel_all_orders(self.symbol)
                 if cancelled_orders:
-                    self.logger.warning(f"🛡️ Cancelled {len(cancelled_orders)} remaining orders after stop-loss")
+                    self.logger.warning(f"🛡️ Cancelled {len(cancelled_orders)} orders after stop-loss")
                 
                 # Clear tracking
                 self.placed_order_ids.clear()
