@@ -458,8 +458,8 @@ class GridManager:
                     for grid_id, grid in active_grids:
                         try:
                             # FIXED: Call update_grid() with logging
-                            if cycle_count % 10 == 1:
-                                self.logger.info(f"🔄 Updating grid {grid_id[:8]}...")
+                            # if cycle_count % 10 == 1:
+                            #     self.logger.info(f"🔄 Updating grid {grid_id[:8]}...")
                             grid.update_grid()
                             
                             # Save updated status

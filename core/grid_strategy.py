@@ -239,81 +239,244 @@ class GridStrategy:
                 self.logger.error("Failed to calculate grid levels")
                 return False
             
-            # Place initial 2 orders (ping-pong strategy)
+            # Place initial orders (ping-pong strategy)
             orders_placed = self._place_initial_grid_orders(current_price, grid_levels)
             
-            if orders_placed >= 1:  # At least 1 order should be placed
-                self.running = True
+            # FIXED: Allow grid to start even with 0 orders (for mixed signals)
+            # The grid will wait for clear signals and place orders during monitoring
+            self.running = True
+            
+            if orders_placed >= 1:
                 self.logger.info(f"✅ PING-PONG GRID SETUP COMPLETE: {orders_placed} orders placed")
                 if orders_placed == 2:
                     self.logger.info(f"🎯 Perfect setup: Both BUY and SELL orders active")
                 else:
                     self.logger.warning(f"⚠️ Partial setup: Only {orders_placed} order(s) placed due to insufficient margin")
-                return True
             else:
-                self.logger.error("❌ GRID SETUP FAILED: No orders placed")
-                return False
-                
+                # FIXED: Don't treat 0 orders as failure - grid can start and wait for signals
+                self.logger.info(f"✅ GRID STARTED IN STANDBY MODE: No initial orders placed")
+                self.logger.info(f"📊 Grid will monitor and place orders when clear signals appear")
+            
+            return True
+            
         except Exception as e:
             self.logger.error(f"❌ CRITICAL ERROR in grid setup: {e}")
             return False
     
     def _get_technical_direction(self) -> str:
-        """Get trading direction using JMA and KAMA technical analysis."""
-        direction = 'buy'  # FIXED: Initialize direction first
+        """Enhanced momentum signal with multiple confirmation layers"""
+        # FIXED: Default to 'none' instead of 'buy'
+        direction = 'none'  # Safe default - no trade
         
         try:
-            # Get OHLCV data for analysis (last 1400 candles, 3m timeframe)
-            ohlcv_data = self.exchange.get_ohlcv(self.symbol, timeframe='3m', limit=1400)
+            # Get OHLCV data (keep 3m but add more confirmations)
+            ohlcv_data = self.exchange.get_ohlcv(self.symbol, timeframe='3m', limit=100)
             
-            if not ohlcv_data or len(ohlcv_data) < 20:
-                self.logger.warning("Insufficient OHLCV data for technical analysis, defaulting to BUY")
-                return direction
+            if not ohlcv_data or len(ohlcv_data) < 30:
+                self.logger.warning("Insufficient OHLCV data for technical analysis")
+                return 'none'  # FIXED: Return 'none' instead of 'buy'
             
             # Convert to DataFrame
             df = pd.DataFrame(ohlcv_data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
             df['close'] = df['close'].astype(float)
             
-            # Calculate JMA (Jurik Moving Average) - period 14
-            jma = ta.jma(df['close'], length=20, phase=100, pow=2.0)
+            # Calculate indicators - OPTIMIZED for small crypto momentum
+            jma = ta.jma(df['close'], length=12, phase=50, pow=1.5)  # Faster response, less smoothing
+            kama = ta.kama(df['close'], length=12)  # Aligned period, faster adaptation
+            rsi = ta.rsi(df['close'], length=14)  # Keep standard RSI
             
-            # Calculate KAMA (Kaufman's Adaptive Moving Average) - period 14  
-            kama = ta.kama(df['close'], length=10)
+            # Add MACD for momentum confirmation - FIXED: Handle both pandas and numpy returns
+            try:
+                macd_result = ta.macd(df['close'], fast=8, slow=21, signal=9)
+                if hasattr(macd_result, 'iloc'):
+                    # pandas DataFrame result
+                    macd_hist = macd_result.iloc[:, 2]  # Get histogram column
+                else:
+                    # numpy array result - convert to pandas Series
+                    macd_hist = pd.Series(macd_result[2], index=df.index)
+            except Exception as e:
+                self.logger.warning(f"MACD calculation failed: {e}, using RSI only")
+                macd_hist = None
             
-            if jma is None or kama is None or len(jma) < 2 or len(kama) < 2:
-                self.logger.warning("Failed to calculate JMA/KAMA, defaulting to BUY")
-                return direction
+            if jma is None or kama is None or rsi is None:
+                self.logger.warning("Failed to calculate core technical indicators")
+                return 'none'  # FIXED: Return 'none' for failed calculations
             
-            # Get latest values (skip NaN)
+            # Clean and get latest values
             jma_clean = jma.dropna()
             kama_clean = kama.dropna()
+            rsi_clean = rsi.dropna()
             
-            if jma_clean.empty or kama_clean.empty:
-                self.logger.warning("JMA/KAMA values are empty, defaulting to BUY")
-                return direction
-                
+            # Handle MACD (might be None if calculation failed)
+            if macd_hist is not None:
+                macd_hist_clean = macd_hist.dropna()
+                macd_available = len(macd_hist_clean) >= 3
+            else:
+                macd_hist_clean = None
+                macd_available = False
+            
+            if len(jma_clean) < 5 or len(kama_clean) < 5 or len(rsi_clean) < 3:
+                self.logger.warning("Insufficient cleaned indicator data")
+                return 'none'  # FIXED: Return 'none' for insufficient data
+            
+            current_price = float(df['close'].iloc[-1])
             latest_jma = jma_clean.iloc[-1]
             latest_kama = kama_clean.iloc[-1]
-            current_price = float(df['close'].iloc[-1])
+            latest_rsi = rsi_clean.iloc[-1]
             
-            # Direction logic: Both JMA and KAMA must agree
-            jma_bullish = current_price > latest_jma
-            kama_bullish = current_price > latest_kama
-            
-            if jma_bullish and kama_bullish:
-                direction = 'buy'
-                self.logger.info(f"📈 Technical Analysis: BUY signal (Price: ${current_price:.6f}, JMA: ${latest_jma:.6f}, KAMA: ${latest_kama:.6f})")
-            elif not jma_bullish and not kama_bullish:
-                direction = 'sell'
-                self.logger.info(f"📉 Technical Analysis: SELL signal (Price: ${current_price:.6f}, JMA: ${latest_jma:.6f}, KAMA: ${latest_kama:.6f})")
+            # Handle MACD values (if available)
+            if macd_available:
+                latest_macd_hist = macd_hist_clean.iloc[-1]
+                prev_macd_hist = macd_hist_clean.iloc[-2]
             else:
-                # FIXED: Mixed signals = NO TRADE (don't force arbitrary direction)
+                latest_macd_hist = 0
+                prev_macd_hist = 0
+            
+            # ENHANCEMENT 1: MA Direction Filter - More sensitive for small cryptos
+            jma_rising = latest_jma > jma_clean.iloc[-4]  # Check over 4 periods for trend
+            kama_rising = latest_kama > kama_clean.iloc[-4]  # More periods for confirmation
+            
+            # ENHANCEMENT 2: MA Separation Filter - Adjusted for small crypto volatility
+            ma_separation = abs(latest_jma - latest_kama) / current_price
+            min_separation = 0.0015  # Reduced to 0.15% for small crypto sensitivity
+            mas_aligned = ma_separation < min_separation
+            
+            # ENHANCEMENT 3: Price Position with stronger momentum requirement
+            price_above_jma = current_price > latest_jma
+            price_above_kama = current_price > latest_kama
+            price_strongly_above = current_price > max(latest_jma, latest_kama) * 1.002  # 0.2% above both
+            price_strongly_below = current_price < min(latest_jma, latest_kama) * 0.998  # 0.2% below both
+            
+            # ENHANCEMENT 4: Multi-layer momentum confirmation
+            rsi_momentum_up = latest_rsi > 55 and latest_rsi > rsi_clean.iloc[-2]  # Stronger RSI requirement
+            rsi_momentum_down = latest_rsi < 45 and latest_rsi < rsi_clean.iloc[-2]
+            
+            # MACD momentum confirmation (if available)
+            if macd_available:
+                macd_momentum_up = latest_macd_hist > 0 and latest_macd_hist > prev_macd_hist
+                macd_momentum_down = latest_macd_hist < 0 and latest_macd_hist < prev_macd_hist
+            else:
+                # Fallback to RSI-based momentum if MACD unavailable
+                macd_momentum_up = rsi_momentum_up
+                macd_momentum_down = rsi_momentum_down
+            
+            # ENHANCEMENT 5: Adaptive Rate of Change - Based on recent volatility
+            price_roc_3 = (current_price - df['close'].iloc[-4]) / df['close'].iloc[-4] * 100
+            recent_volatility = df['close'].rolling(10).std().iloc[-1] / current_price * 100
+            
+            # Dynamic momentum threshold based on volatility
+            base_threshold = 0.25
+            momentum_threshold = max(base_threshold, recent_volatility * 0.5)  # Adaptive threshold
+            
+            strong_momentum_up = price_roc_3 > momentum_threshold
+            strong_momentum_down = price_roc_3 < -momentum_threshold
+            
+            # ENHANCEMENT 6: Signal Persistence (prevent immediate flips)
+            last_signal = getattr(self, '_last_signal', 'none')
+            last_signal_time = getattr(self, '_last_signal_time', 0)
+            current_time = time.time()
+            
+            # Don't flip signals too quickly (minimum 2 minutes)
+            signal_too_recent = (current_time - last_signal_time) < 120
+            
+            # ENHANCED SIGNAL LOGIC - Optimized for sustained momentum moves
+            
+            # STRONG BULLISH: All primary conditions + momentum confirmation
+            strong_bullish_conditions = [
+                price_strongly_above,                      # Price clearly above both MAs
+                jma_rising and kama_rising,                # Both MAs trending up strongly
+                not mas_aligned,                           # MAs have clear separation
+                rsi_momentum_up,                           # RSI showing upward momentum
+                macd_momentum_up,                          # MACD confirming momentum
+                strong_momentum_up,                        # Price has strong momentum
+            ]
+            
+            # MODERATE BULLISH: Relaxed conditions for continuation
+            moderate_bullish_conditions = [
+                price_above_jma and price_above_kama,      # Price above both MAs
+                jma_rising or kama_rising,                 # At least one MA trending up
+                rsi_momentum_up or macd_momentum_up,       # At least one momentum indicator
+                price_roc_3 > momentum_threshold * 0.6,    # Moderate momentum
+            ]
+            
+            # STRONG BEARISH: All primary conditions + momentum confirmation  
+            strong_bearish_conditions = [
+                price_strongly_below,                      # Price clearly below both MAs
+                not jma_rising and not kama_rising,        # Both MAs trending down
+                not mas_aligned,                           # MAs have clear separation
+                rsi_momentum_down,                         # RSI showing downward momentum
+                macd_momentum_down,                        # MACD confirming momentum
+                strong_momentum_down,                      # Price has strong momentum
+            ]
+            
+            # MODERATE BEARISH: Relaxed conditions for continuation
+            moderate_bearish_conditions = [
+                not price_above_jma and not price_above_kama,  # Price below both MAs
+                not jma_rising or not kama_rising,              # At least one MA trending down
+                rsi_momentum_down or macd_momentum_down,        # At least one momentum indicator
+                price_roc_3 < -momentum_threshold * 0.6,        # Moderate momentum
+            ]
+            
+            # SIGNAL DECISION - Prioritize strong signals, allow moderate for continuation
+            if all(strong_bullish_conditions):
+                if last_signal != 'buy' or not signal_too_recent:
+                    direction = 'buy'
+                    self._last_signal = 'buy'
+                    self._last_signal_time = current_time
+                    self.logger.info(f"📈 STRONG BUY: Price: ${current_price:.6f}, JMA: ${latest_jma:.6f}, KAMA: ${latest_kama:.6f}")
+                    if macd_available:
+                        self.logger.info(f"📈 Momentum: RSI: {latest_rsi:.1f}, MACD: {latest_macd_hist:.6f}, ROC: {price_roc_3:.2f}%")
+                    else:
+                        self.logger.info(f"📈 Momentum: RSI: {latest_rsi:.1f}, ROC: {price_roc_3:.2f}% (MACD unavailable)")
+                else:
+                    direction = last_signal
+                    
+            elif all(moderate_bullish_conditions) and last_signal == 'buy':
+                # Continue bullish if already in position and moderate conditions met
+                direction = 'buy'
+                self.logger.debug(f"📈 MODERATE BUY (continuation): Keeping bullish bias")
+                
+            elif all(strong_bearish_conditions):
+                if last_signal != 'sell' or not signal_too_recent:
+                    direction = 'sell'
+                    self._last_signal = 'sell'
+                    self._last_signal_time = current_time
+                    self.logger.info(f"📉 STRONG SELL: Price: ${current_price:.6f}, JMA: ${latest_jma:.6f}, KAMA: ${latest_kama:.6f}")
+                    if macd_available:
+                        self.logger.info(f"📉 Momentum: RSI: {latest_rsi:.1f}, MACD: {latest_macd_hist:.6f}, ROC: {price_roc_3:.2f}%")
+                    else:
+                        self.logger.info(f"📉 Momentum: RSI: {latest_rsi:.1f}, ROC: {price_roc_3:.2f}% (MACD unavailable)")
+                else:
+                    direction = last_signal
+                    
+            elif all(moderate_bearish_conditions) and last_signal == 'sell':
+                # Continue bearish if already in position and moderate conditions met
+                direction = 'sell'
+                self.logger.debug(f"📉 MODERATE SELL (continuation): Keeping bearish bias")
+                
+            else:
+                # NO CLEAR SIGNAL - prevents whipsaws in unclear conditions
                 direction = 'none'
-                self.logger.info(f"⚠️ Technical Analysis: Mixed signals, NO TRADE (JMA: {jma_bullish}, KAMA: {kama_bullish})")
+                
+                # Enhanced debug logging
+                failed_conditions = []
+                if mas_aligned:
+                    failed_conditions.append(f"MAs too close ({ma_separation*100:.3f}%)")
+                if not strong_momentum_up and not strong_momentum_down:
+                    failed_conditions.append(f"Weak momentum (ROC: {price_roc_3:.2f}%, threshold: ±{momentum_threshold:.2f}%)")
+                if not (rsi_momentum_up or rsi_momentum_down):
+                    failed_conditions.append(f"RSI unclear ({latest_rsi:.1f})")
+                if macd_available and not (macd_momentum_up or macd_momentum_down):
+                    failed_conditions.append(f"MACD flat ({latest_macd_hist:.6f})")
+                elif not macd_available:
+                    failed_conditions.append("MACD unavailable")
+                    
+                if failed_conditions:
+                    self.logger.debug(f"⚠️ NO SIGNAL: {', '.join(failed_conditions[:2])}")  # Show first 2 reasons
             
         except Exception as e:
-            self.logger.error(f"Error in technical analysis: {e}")
-            direction = 'buy'  # FIXED: Ensure direction is always set
+            self.logger.error(f"Error in enhanced technical analysis: {e}")
+            direction = 'none'  # FIXED: Return 'none' on exception, not 'buy'
         
         return direction
 
@@ -360,24 +523,24 @@ class GridStrategy:
                 tech_direction = self._get_technical_direction()
                 
                 # We have position - ensure BOTH stop-loss AND take-profit orders exist
-                self.logger.info(f"📊 Position detected: {position_side.upper()} {abs(position_size):.6f} @ ${entry_price:.6f}")
-                self.logger.info(f"📊 Technical Analysis: {tech_direction.upper()} signal for current position")
-                
+                self.logger.info(f"📊 {self.symbol} Position detected: {position_side.upper()} {abs(position_size):.6f} @ ${entry_price:.6f}")
+                self.logger.info(f"📊 {self.symbol} Technical Analysis: {tech_direction.upper()} signal for current position")
+
                 # Check if technical analysis suggests exiting position
                 if self._check_exit_on_opposite_signal(position_side, position_size, tech_direction):
                     return  # Position was closed, exit early
                 
                 # Place missing stop-loss order - FIXED: Pass entry_price
-                if not has_stop_orders:
-                    self.logger.info(f"🛡️ No stop-loss found for {self.symbol}, placing...")
-                    is_long = position_side == 'long'
-                    is_short = position_side == 'short'
-                    self._ensure_stop_loss_orders(is_long, is_short, entry_price, position_size, live_orders)
+                # if not has_stop_orders:
+                #     self.logger.info(f"🛡️ No stop-loss found for {self.symbol}, placing...")
+                #     is_long = position_side == 'long'
+                #     is_short = position_side == 'short'
+                #     self._ensure_stop_loss_orders(is_long, is_short, entry_price, position_size, live_orders)
                 
-                # Place missing take-profit order
-                if not has_tp_orders:
-                    self.logger.info(f"🎯 No take-profit found for {self.symbol}, placing...")
-                    self._ensure_take_profit_orders(position_side, entry_price, position_size)
+                # # Place missing take-profit order
+                # if not has_tp_orders:
+                #     self.logger.info(f"🎯 No take-profit found for {self.symbol}, placing...")
+                #     self._ensure_take_profit_orders(position_side, entry_price, position_size)
             
             elif len(symbol_orders) == 0:
                 # No position and no orders - place new market order
@@ -535,11 +698,11 @@ class GridStrategy:
         except Exception as e:
             self.logger.error(f"❌ Error ensuring stop-loss orders: {e}")
     def _check_exit_on_opposite_signal(self, position_side: str, position_size: float, tech_direction: str) -> bool:
-        """Check if technical analysis suggests exiting current position"""
+        """Enhanced signal-based exit with improved logging and error handling"""
         try:
-            # Don't exit on mixed signals
+            # Don't exit on mixed signals - this is correct behavior
             if tech_direction == 'none':
-                self.logger.debug(f"📊 Mixed technical signals - keeping position")
+                self.logger.debug(f"📊 Mixed technical signals - keeping {position_side.upper()} position")
                 return False
             
             # Check if signal is opposite to position
@@ -554,23 +717,24 @@ class GridStrategy:
                 exit_reason = "SHORT position but BUY signal detected"
             
             if should_exit:
-                self.logger.warning(f"🚨 TREND REVERSAL DETECTED: {exit_reason}")
-                self.logger.warning(f"🚨 Exiting {position_side.upper()} position {abs(position_size):.6f}")
+                self.logger.warning(f"🚨 SIGNAL-BASED EXIT: {exit_reason}")
+                self.logger.warning(f"🚨 Closing {position_side.upper()} position {abs(position_size):.6f}")
                 
-                # Cancel all existing orders first
+                # Cancel all existing orders first - MORE ROBUST
                 try:
                     cancelled_orders = self.exchange.cancel_all_orders(self.symbol)
                     if cancelled_orders:
-                        self.logger.info(f"🚨 Cancelled {len(cancelled_orders)} orders before exit")
+                        self.logger.info(f"🚨 Cancelled {len(cancelled_orders)} orders before signal exit")
                     
-                    # Clear tracking
+                    # Clear ALL tracking (not just regular orders)
                     self.placed_order_ids.clear()
-                    self.stop_loss_order_ids.clear()
+                    self.stop_loss_order_ids.clear()  # Keep for cleanup
                     
                 except Exception as e:
-                    self.logger.error(f"❌ Error cancelling orders before exit: {e}")
+                    self.logger.error(f"❌ Error cancelling orders before signal exit: {e}")
+                    # Continue with exit even if cancellation fails
                 
-                # Close position with market order
+                # Close position with market order - ENHANCED ERROR HANDLING
                 try:
                     close_side = 'sell' if position_side == 'long' else 'buy'
                     close_amount = abs(position_size)
@@ -578,40 +742,40 @@ class GridStrategy:
                     exit_order = self.exchange.create_market_order(self.symbol, close_side, close_amount)
                     
                     if exit_order and 'id' in exit_order:
-                        # Record the exit trade
+                        # Record the exit trade with enhanced info
                         self.filled_orders.append({
                             'id': exit_order['id'],
                             'side': close_side,
                             'price': float(exit_order.get('average', 0)),
                             'amount': close_amount,
                             'timestamp': time.time(),
-                            'type': 'trend_exit'
+                            'type': 'signal_exit',  # Clear identification
+                            'exit_reason': exit_reason  # Additional context
                         })
                         
                         self.total_trades += 1
                         
-                        self.logger.warning(f"🚨 POSITION CLOSED: {close_side.upper()} {close_amount:.6f} (Trend Exit)")
-                        self.logger.warning(f"🚨 Exit Order ID: {exit_order['id']}")
+                        self.logger.warning(f"🚨 POSITION CLOSED: {close_side.upper()} {close_amount:.6f} (Signal Exit)")
+                        self.logger.info(f"✅ Exit Order ID: {exit_order['id']}")
                         
-                        return True  # Position was closed
+                        return True  # Position was successfully closed
                     else:
-                        self.logger.error(f"❌ Failed to close position - invalid exit order")
+                        self.logger.error(f"❌ Failed to close position - invalid exit order response")
+                        return False  # Exit failed
                         
                 except Exception as e:
-                    self.logger.error(f"❌ Error closing position on trend reversal: {e}")
+                    self.logger.error(f"❌ Error closing position on signal reversal: {e}")
+                    return False  # Exit failed
             else:
-                # Signal aligns with position or is neutral
-                signal_alignment = "ALIGNED" if (
-                    (position_side == 'long' and tech_direction == 'buy') or 
-                    (position_side == 'short' and tech_direction == 'sell')
-                ) else "NEUTRAL"
-                self.logger.debug(f"📊 Technical signal {signal_alignment} with {position_side.upper()} position")
-            
+                # Signal aligns with position - enhanced logging
+                if (position_side == 'long' and tech_direction == 'buy') or (position_side == 'short' and tech_direction == 'sell'):
+                    self.logger.debug(f"📊 Signal ALIGNED: {position_side.upper()} position with {tech_direction.upper()} signal")
+                
             return False  # Position was not closed
             
         except Exception as e:
-            self.logger.error(f"❌ Error checking exit on opposite signal: {e}")
-            return False
+            self.logger.error(f"❌ Error in signal-based exit check: {e}")
+            return False  # Fail safe - don't exit on errors
     def _place_initial_grid_orders(self, current_price: float, grid_levels: List[float]) -> int:
         """Place single initial MARKET order based on technical analysis"""
         orders_placed = 0
@@ -764,24 +928,24 @@ class GridStrategy:
                     # Keep in tracking for next check
             
             # Check stop-loss orders
-            for sl_order_id in potentially_filled_sl_order_ids:
-                try:
-                    order_status = self.exchange.get_order_status(sl_order_id, self.symbol)
-                    status = order_status.get('status', '').lower()
+            # for sl_order_id in potentially_filled_sl_order_ids:
+            #     try:
+            #         order_status = self.exchange.get_order_status(sl_order_id, self.symbol)
+            #         status = order_status.get('status', '').lower()
                     
-                    if status in ['filled', 'closed']:
-                        actually_filled_sl_order_ids.add(sl_order_id)
-                        self.logger.debug(f"🛡️ Confirmed filled stop-loss: {sl_order_id[:8]} - {status}")
-                    elif status in ['cancelled', 'canceled', 'rejected']:
-                        self.logger.info(f"🛡️ Stop-loss {sl_order_id[:8]} was {status}, removing from tracking")
-                        # Remove from tracking since it's not going to fill
-                        self.stop_loss_order_ids.discard(sl_order_id)
-                    else:
-                        self.logger.debug(f"🛡️ Stop-loss {sl_order_id[:8]} status: {status}")
+            #         if status in ['filled', 'closed']:
+            #             actually_filled_sl_order_ids.add(sl_order_id)
+            #             self.logger.debug(f"🛡️ Confirmed filled stop-loss: {sl_order_id[:8]} - {status}")
+            #         elif status in ['cancelled', 'canceled', 'rejected']:
+            #             self.logger.info(f"🛡️ Stop-loss {sl_order_id[:8]} was {status}, removing from tracking")
+            #             # Remove from tracking since it's not going to fill
+            #             self.stop_loss_order_ids.discard(sl_order_id)
+            #         else:
+            #             self.logger.debug(f"🛡️ Stop-loss {sl_order_id[:8]} status: {status}")
                         
-                except Exception as e:
-                    self.logger.warning(f"🛡️ Could not verify stop-loss {sl_order_id[:8]} status: {e}")
-                    # Keep in tracking for next check
+            #     except Exception as e:
+            #         self.logger.warning(f"🛡️ Could not verify stop-loss {sl_order_id[:8]} status: {e}")
+            #         # Keep in tracking for next check
             
             # Process actually filled regular orders
             if actually_filled_order_ids:
