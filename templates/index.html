@@ -2,7 +2,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Simplified Grid Trading Bot</title>
+    <title>TSI Signal Trading Bot</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta charset="UTF-8">
     <style>
@@ -15,11 +15,20 @@
         .left-panel { flex: 2; min-width: 600px; }
         .right-panel { flex: 1; min-width: 300px; }
         
-        /* Grid table styles */
-        .grids-section { background: white; border-radius: 8px; padding: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        /* Strategy table styles */
+        .strategies-section { background: white; border-radius: 8px; padding: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
         table { width: 100%; border-collapse: collapse; margin-top: 20px; }
         th, td { padding: 10px; text-align: left; border-bottom: 1px solid #ddd; }
         th { background-color: #f2f2f2; }
+        
+        /* Auto-sync controls */
+        .auto-sync-info { background: #e8f5e8; border: 1px solid #c3e6c3; border-radius: 4px; padding: 15px; margin-bottom: 15px; }
+        .auto-sync-info h3 { margin-top: 0; color: #2d5016; }
+        .sync-button { 
+            background-color: #28a745; color: white; border: none; padding: 10px 20px; 
+            border-radius: 4px; cursor: pointer; font-weight: bold;
+        }
+        .sync-button:hover { background-color: #218838; }
         
         /* Active symbols section */
         .active-symbols-section { background: white; border-radius: 8px; padding: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); margin-bottom: 20px; }
@@ -34,6 +43,10 @@
         .negative { border-left-color: #dc3545 !important; }
         .change-positive { color: #28a745; font-weight: bold; }
         .change-negative { color: #dc3545; font-weight: bold; }
+        
+        /* Active strategy indicator */
+        .active-strategy { border-left-color: #007bff !important; background-color: #f0f8ff; }
+        .strategy-indicator { font-size: 12px; color: #007bff; font-weight: bold; }
         
         /* Symbol info layout */
         .symbol-info { display: flex; flex-direction: column; }
@@ -71,51 +84,55 @@
     </style>
 </head>
 <body>
-    <h1>Simplified Grid Trading Bot</h1>
-    <p class="subtitle">Buy/Sell orders at grid intervals - No hedge mode</p>
+    <h1>TSI Signal Trading Bot</h1>
+    <p class="subtitle">Auto-managed TSI signal trading for most active symbols</p>
     
     <div class="main-container">
-        <!-- Left Panel: Grids -->
+        <!-- Left Panel: Auto-Managed Strategies -->
         <div class="left-panel">
-            <div class="grids-section">
-                <a href="/grid/create" class="button">Create New Grid</a>
+            <div class="strategies-section">
+                <div class="auto-sync-info">
+                    <h3>🤖 Auto-Strategy Management</h3>
+                    <p>System automatically manages strategies for the top 10 most active symbols. Strategies auto-start and symbols get replaced based on market activity and positions.</p>
+                    <form action="/sync-active-symbols" method="post" style="display: inline;">
+                        <button type="submit" class="sync-button">🔄 Sync Active Symbols Now</button>
+                    </form>
+                </div>
                 
                 <table>
                     <thead>
                         <tr>
-                            <th>ID</th>
                             <th>Symbol</th>
-                            <th>Grids</th>
-                            <th>Investment</th>
-                            <th>Leverage</th>
-                            <th>PnL</th>
+                            <th>Real-time PnL</th>
+                            <th>Trades</th>
                             <th>Status</th>
-                            <th>Actions</th>
                         </tr>
                     </thead>
                     <tbody>
-                        {% for grid in grids %}
+                        {% for strategy in strategies %}
                         <tr>
-                            <td>{{ grid.grid_id[:8] }}</td>
-                            <td>{{ grid.display_symbol or grid.symbol }}</td>
-                            <td>{{ grid.grid_number }}</td>
-                            <td>{{ "%.2f"|format(grid.investment) }}</td>
-                            <td>{{ "%.1f"|format(grid.leverage) }}x</td>
-                            <td>{{ "%.2f"|format(grid.pnl) }} ({{ "%.2f"|format(grid.pnl_percentage) }}%)</td>
-                            <td>{{ "Running" if grid.running else "Stopped" }}</td>
-                            <td class="action-cell">
-                                {% if grid.running %}
-                                <a href="/grid/stop/{{ grid.grid_id }}" class="button red">Stop</a>
+                            <td><strong>{{ strategy.display_symbol or strategy.symbol }}</strong></td>
+                            <td>
+                                <span class="{{ 'change-positive' if strategy.pnl >= 0 else 'change-negative' }}">
+                                    ${{ "%.2f"|format(strategy.pnl) }} ({{ "%.2f"|format(strategy.pnl_percentage) }}%)
+                                </span>
+                            </td>
+                            <td>{{ strategy.trades_count or 0 }}</td>
+                            <td>
+                                {% if strategy.running %}
+                                    {% if strategy.has_position %}
+                                        <span style="color: #28a745;">🟢 Auto-Running (Position)</span>
+                                    {% else %}
+                                        <span style="color: #28a745;">🟢 Auto-Running</span>
+                                    {% endif %}
                                 {% else %}
-                                <a href="/grid/start/{{ grid.grid_id }}" class="button blue">Start</a>
+                                    <span style="color: #dc3545;">🔴 Auto-Stopped</span>
                                 {% endif %}
-                                <a href="/grid/edit/{{ grid.grid_id }}" class="button">Edit</a>
-                                <a href="/grid/delete/{{ grid.grid_id }}" class="button red" onclick="return confirm('Are you sure?')">Delete</a>
                             </td>
                         </tr>
                         {% else %}
                         <tr>
-                            <td colspan="8">No grids found</td>
+                            <td colspan="4">No strategies found. Click "Sync Active Symbols" to auto-create strategies for top 10 most active symbols.</td>
                         </tr>
                         {% endfor %}
                     </tbody>
@@ -123,15 +140,15 @@
             </div>
         </div>
         
-        <!-- Right Panel: Active Symbols -->
+        <!-- Right Panel: Top 10 Auto-Traded Symbols -->
         <div class="right-panel">
             <div class="active-symbols-section">
                 <div class="refresh-info">
                     <h3 style="margin: 0;">
-                        <span class="category-icon active-icon">&#9202;</span>Market Activity
+                        <span class="category-icon active-icon">📈</span>Top 10 Auto-Traded
                     </h3>
                     <div>
-                        <button class="refresh-btn" onclick="refreshActiveSymbols()">&#8634;</button>
+                        <button class="refresh-btn" onclick="refreshActiveSymbols()">🔄</button>
                         <div class="last-update" id="lastUpdate">
                             Last: {{ active_symbols.last_updated_formatted if active_symbols else 'Never' }}
                         </div>
@@ -139,17 +156,17 @@
                 </div>
                 
                 <div class="symbols-grid" id="symbolsContainer">
-                    <!-- Top Active Symbols -->
+                    <!-- Top 10 Auto-Traded Symbols -->
                     <div class="symbol-category">
-                        <h4><span class="category-icon active-icon">&#9733;</span>Most Active (24hr)</h4>
+                        <h4><span class="category-icon active-icon">🤖</span>Auto-Strategies (Top 10)</h4>
                         <div id="topActiveList">
                             {% if active_symbols and active_symbols.top_active %}
-                                {% for symbol in active_symbols.top_active %}
-                                <div class="symbol-item {{ 'positive' if symbol.price_change_pct > 0 else 'negative' }}">
+                                {% for symbol in active_symbols.top_active[:10] %}
+                                <div class="symbol-item active-strategy">
                                     <div class="symbol-info">
                                         <div class="symbol-name">{{ symbol.symbol }}</div>
                                         <div class="symbol-price">${{ "%.6f"|format(symbol.current_price) }}</div>
-                                        <div class="symbol-volume" style="font-size: 10px; color: #999;">Vol: {{ "%.0f"|format(symbol.volume) if symbol.volume else 'N/A' }}</div>
+                                        <div class="strategy-indicator">AUTO-STRATEGY</div>
                                     </div>
                                     <div class="symbol-change {{ 'change-positive' if symbol.price_change_pct > 0 else 'change-negative' }}">
                                         {{ "{:+.2f}".format(symbol.price_change_pct) }}%
@@ -157,54 +174,24 @@
                                 </div>
                                 {% endfor %}
                             {% else %}
-                            <div style="text-align: center; color: #666; padding: 20px;">Loading...</div>
+                            <div style="text-align: center; color: #666; padding: 20px;">Loading active symbols...</div>
                             {% endif %}
                         </div>
                     </div>
                     
-                    <!-- Top Gainers -->
+                    <!-- Market Stats -->
                     <div class="symbol-category">
-                        <h4><span class="category-icon gain-icon">&#9650;</span>Top Gainers (24hr)</h4>
-                        <div id="gainersList">
-                            {% if active_symbols and active_symbols.gainers %}
-                                {% for symbol in active_symbols.gainers %}
-                                <div class="symbol-item positive">
-                                    <div class="symbol-info">
-                                        <div class="symbol-name">{{ symbol.symbol }}</div>
-                                        <div class="symbol-price">${{ "%.6f"|format(symbol.current_price) }}</div>
-                                        <div class="symbol-volume" style="font-size: 10px; color: #999;">Vol: {{ "%.0f"|format(symbol.volume) if symbol.volume else 'N/A' }}</div>
-                                    </div>
-                                    <div class="symbol-change change-positive">
-                                        +{{ "%.2f"|format(symbol.price_change_pct) }}%
-                                    </div>
-                                </div>
-                                {% endfor %}
-                            {% else %}
-                            <div style="text-align: center; color: #666; padding: 20px;">Loading...</div>
-                            {% endif %}
-                        </div>
-                    </div>
-                    
-                    <!-- Top Losers -->
-                    <div class="symbol-category">
-                        <h4><span class="category-icon loss-icon">&#9660;</span>Top Losers (24hr)</h4>
-                        <div id="losersList">
-                            {% if active_symbols and active_symbols.losers %}
-                                {% for symbol in active_symbols.losers %}
-                                <div class="symbol-item negative">
-                                    <div class="symbol-info">
-                                        <div class="symbol-name">{{ symbol.symbol }}</div>
-                                        <div class="symbol-price">${{ "%.6f"|format(symbol.current_price) }}</div>
-                                        <div class="symbol-volume" style="font-size: 10px; color: #999;">Vol: {{ "%.0f"|format(symbol.volume) if symbol.volume else 'N/A' }}</div>
-                                    </div>
-                                    <div class="symbol-change change-negative">
-                                        {{ "%.2f"|format(symbol.price_change_pct) }}%
-                                    </div>
-                                </div>
-                                {% endfor %}
-                            {% else %}
-                            <div style="text-align: center; color: #666; padding: 20px;">Loading...</div>
-                            {% endif %}
+                        <h4><span class="category-icon gain-icon">📊</span>Auto-Trading Stats</h4>
+                        <div>
+                            <p style="font-size: 12px; color: #666; margin: 5px 0;">
+                                🤖 Auto-Strategies: 10 max ($1 each, 20x leverage)
+                            </p>
+                            <p style="font-size: 12px; color: #666; margin: 5px 0;">
+                                🔄 Auto-replacement when no position
+                            </p>
+                            <p style="font-size: 12px; color: #666; margin: 5px 0;">
+                                📈 Real-time PnL tracking
+                            </p>
                         </div>
                     </div>
                 </div>
@@ -257,34 +244,32 @@
         }
         
         function updateSymbolsDisplay(data) {
-            updateSymbolList('topActiveList', data.top_active, true);
-            updateSymbolList('gainersList', data.gainers, false);
-            updateSymbolList('losersList', data.losers, false);
+            updateTopActiveList(data.top_active);
         }
         
-        function updateSymbolList(containerId, symbols, showDirection) {
-            const container = document.getElementById(containerId);
+        function updateTopActiveList(symbols) {
+            const container = document.getElementById('topActiveList');
             if (!container || !symbols) return;
             
             if (symbols.length === 0) {
-                container.innerHTML = '<div style="text-align: center; color: #666; padding: 20px;">No data</div>';
+                container.innerHTML = '<div style="text-align: center; color: #666; padding: 20px;">No active symbols</div>';
                 return;
             }
             
-            const html = symbols.map(symbol => {
+            // Show only top 5 with auto-strategy indicators
+            const html = symbols.slice(0, 5).map(symbol => {
                 const isPositive = symbol.price_change_pct > 0;
                 const changeClass = isPositive ? 'change-positive' : 'change-negative';
-                const itemClass = isPositive ? 'positive' : 'negative';
-                const changePrefix = showDirection ? (isPositive ? '+' : '') : (isPositive ? '+' : '');
                 
                 return `
-                    <div class="symbol-item ${itemClass}">
+                    <div class="symbol-item active-strategy">
                         <div class="symbol-info">
                             <div class="symbol-name">${symbol.symbol}</div>
-                            <div class="symbol-price">$${symbol.current_price.toFixed(6)}</div>
+                            <div class="symbol-price">${symbol.current_price.toFixed(6)}</div>
+                            <div class="strategy-indicator">AUTO-STRATEGY</div>
                         </div>
                         <div class="symbol-change ${changeClass}">
-                            ${changePrefix}${symbol.price_change_pct.toFixed(2)}%
+                            ${symbol.price_change_pct > 0 ? '+' : ''}${symbol.price_change_pct.toFixed(2)}%
                         </div>
                     </div>
                 `;

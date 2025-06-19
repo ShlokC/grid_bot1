@@ -2,7 +2,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Create New Grid</title>
+    <title>Create New Strategy</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta charset="UTF-8">
     <style>
@@ -11,11 +11,10 @@
         .subtitle { color: #666; margin-bottom: 20px; }
         .form-group { margin-bottom: 15px; }
         label { display: block; margin-bottom: 5px; }
-        input[type="text"], input[type="number"], select { 
+        select { 
             width: 100%; padding: 8px; box-sizing: border-box; 
-            border: 1px solid #ddd; border-radius: 4px;
+            border: 1px solid #ddd; border-radius: 4px; height: 35px;
         }
-        select { height: 35px; }
         .button { 
             display: inline-block; padding: 10px 20px; text-decoration: none; 
             color: white; background-color: #4CAF50; border: none;
@@ -25,11 +24,23 @@
         .error { color: red; margin-bottom: 15px; }
         .checkbox-group { margin-bottom: 15px; }
         .checkbox-group label { display: inline; margin-left: 5px; }
+        .info-box { background: #e8f4f8; border: 1px solid #bee5eb; border-radius: 4px; padding: 15px; margin-bottom: 20px; }
+        .info-box h3 { margin-top: 0; color: #0c5460; }
     </style>
 </head>
 <body>
-    <h1>Create New Grid</h1>
-    <p class="subtitle">Simplified grid - places buy orders below price, sell orders above price</p>
+    <h1>Create New Signal Strategy</h1>
+    <p class="subtitle">TSI-based signal trading with fixed position sizing</p>
+    
+    <div class="info-box">
+        <h3>Fixed Parameters</h3>
+        <ul>
+            <li><strong>Position Size:</strong> $1 USD per strategy</li>
+            <li><strong>Leverage:</strong> 20x</li>
+            <li><strong>Strategy:</strong> TSI signal-based entries and exits</li>
+            <li><strong>Risk:</strong> Predictable $1 risk per symbol</li>
+        </ul>
+    </div>
     
     {% if error %}
     <div class="error">{{ error }}</div>
@@ -46,43 +57,13 @@
             </select>
         </div>
         
-        <div class="form-group">
-            <label for="grid_number">Number of Grid Levels:</label>
-            <input type="number" id="grid_number" name="grid_number" min="2" max="20" value="10" required>
-        </div>
-        
-        <div class="form-group">
-            <label for="investment">Investment Amount (USD):</label>
-            <input type="number" id="investment" name="investment" step="any" min="10" max="5000" value="100" required>
-        </div>
-        
-        <div class="form-group">
-            <label for="leverage">Leverage:</label>
-            <input type="number" id="leverage" name="leverage" step="0.1" min="1" max="125" value="20.0" required>
-        </div>
-        
-        <div class="form-group">
-            <label for="take_profit_pnl">Take Profit (%):</label>
-            <input type="number" id="take_profit_pnl" name="take_profit_pnl" step="any" value="10.0" required>
-        </div>
-        
-        <div class="form-group">
-            <label for="stop_loss_pnl">Stop Loss (%):</label>
-            <input type="number" id="stop_loss_pnl" name="stop_loss_pnl" step="any" value="5.0" required>
-        </div>
-        
-        <div class="checkbox-group">
-            <input type="checkbox" id="enable_grid_adaptation" name="enable_grid_adaptation" checked>
-            <label for="enable_grid_adaptation">Enable Grid Adaptation</label>
-        </div>
-        
         <div class="checkbox-group">
             <input type="checkbox" id="auto_start" name="auto_start">
-            <label for="auto_start">Start Grid Automatically</label>
+            <label for="auto_start">Start Strategy Automatically</label>
         </div>
         
         <div class="form-group">
-            <button type="submit" class="button">Create</button>
+            <button type="submit" class="button">Create Strategy</button>
             <a href="/" class="button cancel">Cancel</a>
         </div>
     </form>
