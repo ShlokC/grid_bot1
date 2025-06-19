@@ -264,12 +264,12 @@ class GridStrategy:
             return False
     
     def _get_technical_direction(self) -> str:
-        """Fully adaptive TSI momentum signal - no static thresholds"""
+        """FIXED: Fast-response TSI for small crypto momentum"""
         direction = 'none'
         
         try:
-            # Get OHLCV data
-            ohlcv_data = self.exchange.get_ohlcv(self.symbol, timeframe='3m', limit=100)
+            # Get OHLCV data - FIXED: Use 1m for faster signals
+            ohlcv_data = self.exchange.get_ohlcv(self.symbol, timeframe='1m', limit=100)
             
             if not ohlcv_data or len(ohlcv_data) < 50:
                 self.logger.warning("Insufficient OHLCV data for TSI analysis")
@@ -279,10 +279,10 @@ class GridStrategy:
             df = pd.DataFrame(ohlcv_data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
             df['close'] = df['close'].astype(float)
             
-            # Calculate TSI
-            tsi_result = ta.tsi(df['close'], slow=20, fast=10, signal=9)
+            # FIXED: Faster TSI parameters for small crypto momentum
+            tsi_result = ta.tsi(df['close'], slow=15, fast=8, signal=6)
             
-            if tsi_result is None or len(tsi_result.dropna()) < 15:
+            if tsi_result is None or len(tsi_result.dropna()) < 10:
                 self.logger.warning("Failed to calculate TSI or insufficient data")
                 return 'none'
             
@@ -296,7 +296,7 @@ class GridStrategy:
                 self.logger.warning("TSI result doesn't have expected columns")
                 return 'none'
             
-            if len(tsi_line) < 10:
+            if len(tsi_line) < 8:
                 return 'none'
             
             # Get current values
@@ -305,96 +305,108 @@ class GridStrategy:
             latest_tsi_signal = tsi_signal.iloc[-1]
             prev_tsi = tsi_line.iloc[-2]
             
-            # TSI momentum
+            # FIXED: More aggressive thresholds for small crypto
+            # Standard TSI levels: +25 overbought, -25 oversold
+            # Adjusted for small crypto volatility
+            OVERBOUGHT_LEVEL = 20.0
+            OVERSOLD_LEVEL = -20.0
+            
+            # FIXED: Simple, fast momentum detection
             tsi_momentum = latest_tsi - prev_tsi
+            tsi_crossover = latest_tsi - latest_tsi_signal
+            prev_crossover = tsi_line.iloc[-2] - tsi_signal.iloc[-2]
             
-            # FULLY ADAPTIVE APPROACH - Use percentiles and relative measures
-            recent_tsi = tsi_line.tail(20)
-            recent_signal = tsi_signal.tail(20)
+            # FIXED: Primary signal = crossover (remove double conditions)
+            bullish_crossover = (latest_tsi > latest_tsi_signal and prev_crossover <= 0)
+            bearish_crossover = (latest_tsi < latest_tsi_signal and prev_crossover >= 0)
             
-            # Calculate adaptive thresholds based on recent behavior
-            tsi_abs_values = recent_tsi.abs()
-            tsi_75th_percentile = tsi_abs_values.quantile(0.75)
-            tsi_median = tsi_abs_values.median()
+            # FIXED: Momentum confirmation (not requirement)
+            momentum_bullish = tsi_momentum > 0
+            momentum_bearish = tsi_momentum < 0
             
-            # Adaptive strength threshold - use recent TSI behavior
-            adaptive_strength = tsi_median  # Use median as baseline
+            # FIXED: Dynamic strength based on recent volatility (not median)
+            recent_tsi = tsi_line.tail(10)  # Shorter window for small crypto
+            tsi_range = recent_tsi.max() - recent_tsi.min()
+            min_strength = max(2.0, tsi_range * 0.3)  # Minimum strength threshold
             
-            # Adaptive separation - based on recent separations
-            recent_separations = abs(recent_tsi - recent_signal)
-            adaptive_separation = recent_separations.quantile(0.5)  # 50th percentile
+            current_strength = abs(latest_tsi)
+            has_strength = current_strength >= min_strength
             
-            # Current metrics
-            tsi_strength = abs(latest_tsi)
-            tsi_separation = abs(latest_tsi - latest_tsi_signal)
-            
-            # Relative comparisons - no static values
-            strong_momentum = tsi_strength > adaptive_strength
-            clear_separation = tsi_separation > adaptive_separation
-            
-            # Direction detection - simplified and adaptive
-            tsi_bullish = (
-                latest_tsi > latest_tsi_signal and  # Above signal
-                tsi_momentum > 0                    # Rising
-            )
-            
-            tsi_bearish = (
-                latest_tsi < latest_tsi_signal and  # Below signal
-                tsi_momentum < 0                    # Falling
-            )
-            
-            # Persistence check - adaptive based on volatility
-            recent_changes = recent_tsi.diff().dropna().abs()
-            avg_change = recent_changes.mean()
-            volatility_factor = recent_changes.std() / avg_change if avg_change > 0 else 1
-            
-            # More volatile = need longer persistence
-            adaptive_persistence = int(60 * (1 + volatility_factor))  # Base 60s, adjusted by volatility
-            
+            # FIXED: Much shorter persistence for small crypto (15-30 seconds max)
             last_signal = getattr(self, '_last_signal', 'none')
             last_signal_time = getattr(self, '_last_signal_time', 0)
             current_time = time.time()
             
-            signal_too_recent = (current_time - last_signal_time) < adaptive_persistence
+            # FIXED: Adaptive persistence based on market conditions
+            if latest_tsi > OVERBOUGHT_LEVEL or latest_tsi < OVERSOLD_LEVEL:
+                # Near extremes: allow faster reversals
+                min_persistence = 10  # 10 seconds
+            else:
+                # Normal range: slightly longer
+                min_persistence = 20  # 20 seconds
             
-            # SIGNAL DECISION - Simpler, more responsive
-            if tsi_bullish and (strong_momentum or clear_separation):
+            signal_too_recent = (current_time - last_signal_time) < min_persistence
+            
+            # FIXED: Overbought/Oversold Protection
+            at_overbought = latest_tsi >= OVERBOUGHT_LEVEL
+            at_oversold = latest_tsi <= OVERSOLD_LEVEL
+            
+            # SIGNAL LOGIC - FIXED: Fast and responsive
+            
+            # 1. STRONG BUY: Oversold bounce with bullish momentum
+            if (at_oversold and momentum_bullish and latest_tsi > latest_tsi_signal):
                 if last_signal != 'buy' or not signal_too_recent:
                     direction = 'buy'
                     self._last_signal = 'buy'
                     self._last_signal_time = current_time
+                    self.logger.info(f"🚀 OVERSOLD BOUNCE BUY: TSI={latest_tsi:.2f} Price=${current_price:.6f}")
                     
-                    self.logger.info(f"📈 TSI BUY: Price: ${current_price:.6f}")
-                    self.logger.info(f"📈 TSI: {latest_tsi:.2f}, Signal: {latest_tsi_signal:.2f}, "
-                                f"Momentum: {tsi_momentum:.2f}")
-                    self.logger.info(f"📈 Adaptive: Strength {tsi_strength:.2f}>{adaptive_strength:.2f}, "
-                                f"Sep {tsi_separation:.2f}>{adaptive_separation:.2f}")
-                else:
-                    direction = last_signal
-                    
-            elif tsi_bearish and (strong_momentum or clear_separation):
+            # 2. STRONG SELL: Overbought reversal with bearish momentum  
+            elif (at_overbought and momentum_bearish and latest_tsi < latest_tsi_signal):
                 if last_signal != 'sell' or not signal_too_recent:
                     direction = 'sell'
                     self._last_signal = 'sell'
                     self._last_signal_time = current_time
+                    self.logger.info(f"📉 OVERBOUGHT REVERSAL SELL: TSI={latest_tsi:.2f} Price=${current_price:.6f}")
                     
-                    self.logger.info(f"📉 TSI SELL: Price: ${current_price:.6f}")
-                    self.logger.info(f"📉 TSI: {latest_tsi:.2f}, Signal: {latest_tsi_signal:.2f}, "
-                                f"Momentum: {tsi_momentum:.2f}")
-                    self.logger.info(f"📉 Adaptive: Strength {tsi_strength:.2f}>{adaptive_strength:.2f}, "
-                                f"Sep {tsi_separation:.2f}>{adaptive_separation:.2f}")
-                else:
-                    direction = last_signal
+            # 3. BULLISH CROSSOVER: Fresh momentum up
+            elif (bullish_crossover and has_strength and not at_overbought):
+                if last_signal != 'buy' or not signal_too_recent:
+                    direction = 'buy'
+                    self._last_signal = 'buy'
+                    self._last_signal_time = current_time
+                    self.logger.info(f"📈 BULLISH CROSS BUY: TSI={latest_tsi:.2f}>{latest_tsi_signal:.2f} Price=${current_price:.6f}")
+                    
+            # 4. BEARISH CROSSOVER: Fresh momentum down
+            elif (bearish_crossover and has_strength and not at_oversold):
+                if last_signal != 'sell' or not signal_too_recent:
+                    direction = 'sell'
+                    self._last_signal = 'sell'
+                    self._last_signal_time = current_time
+                    self.logger.info(f"📉 BEARISH CROSS SELL: TSI={latest_tsi:.2f}<{latest_tsi_signal:.2f} Price=${current_price:.6f}")
+                    
+            # 5. MOMENTUM CONTINUATION: Strong trending
+            elif (latest_tsi > latest_tsi_signal and momentum_bullish and current_strength > min_strength * 1.5):
+                if last_signal != 'buy' or not signal_too_recent:
+                    direction = 'buy'
+                    self._last_signal = 'buy'
+                    self._last_signal_time = current_time
+                    self.logger.info(f"⚡ MOMENTUM BUY: TSI={latest_tsi:.2f} Strength={current_strength:.2f}")
+                    
+            elif (latest_tsi < latest_tsi_signal and momentum_bearish and current_strength > min_strength * 1.5):
+                if last_signal != 'sell' or not signal_too_recent:
+                    direction = 'sell'
+                    self._last_signal = 'sell'
+                    self._last_signal_time = current_time
+                    self.logger.info(f"⚡ MOMENTUM SELL: TSI={latest_tsi:.2f} Strength={current_strength:.2f}")
+            
+            # 6. HOLD PREVIOUS SIGNAL: No clear new direction
             else:
                 direction = 'none'
-                
-                # Debug info
-                self.logger.debug(f"⚠️ NO SIGNAL: TSI={latest_tsi:.2f}, Signal={latest_tsi_signal:.2f}")
-                self.logger.debug(f"📊 Bullish={tsi_bullish}, Bearish={tsi_bearish}, "
-                            f"Strong={strong_momentum}, Clear={clear_separation}")
+                self.logger.debug(f"⚠️ NO CLEAR SIGNAL: TSI={latest_tsi:.2f} Signal={latest_tsi_signal:.2f} Momentum={tsi_momentum:.2f}")
                 
         except Exception as e:
-            self.logger.error(f"Error in adaptive TSI analysis: {e}")
+            self.logger.error(f"Error in FIXED TSI analysis: {e}")
             direction = 'none'
         
         return direction

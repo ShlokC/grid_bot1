@@ -84,8 +84,13 @@ def load_config(config_file: str) -> Dict:
 @app.route('/')
 def index():
     """Home page route."""
-    grids = grid_manager.get_all_grids_status()
-    return render_template('index.html', grids=grids)
+    try:
+        grids = grid_manager.get_all_grids_status()
+        active_symbols = grid_manager.get_active_symbols_data()
+        return render_template('index.html', grids=grids, active_symbols=active_symbols)
+    except Exception as e:
+        logger.error(f"Error loading index page: {e}")
+        return render_template('error.html', error='Failed to load page data')
 
 @app.route('/api/grids')
 def get_grids():
@@ -193,7 +198,36 @@ def create_grid():
     # Load available symbols for the dropdown
     available_symbols = grid_manager.exchange.get_available_symbols()
     return render_template('create_grid.html', available_symbols=available_symbols)
+@app.route('/api/active-symbols')
+def get_active_symbols():
+    """API route to get active symbols data."""
+    try:
+        symbols_data = grid_manager.get_active_symbols_data()
+        return jsonify(symbols_data)
+    except Exception as e:
+        logger.error(f"Error getting active symbols: {e}")
+        return jsonify({'error': 'Failed to get active symbols'}), 500
 
+@app.route('/api/active-symbols/refresh')
+def refresh_active_symbols():
+    """API route to force refresh active symbols data."""
+    try:
+        success = grid_manager.force_update_active_symbols()
+        if success:
+            symbols_data = grid_manager.get_active_symbols_data()
+            return jsonify({
+                'success': True,
+                'message': 'Active symbols refreshed',
+                'data': symbols_data
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'message': 'Failed to refresh active symbols'
+            }), 500
+    except Exception as e:
+        logger.error(f"Error refreshing active symbols: {e}")
+        return jsonify({'error': 'Failed to refresh active symbols'}), 500
 @app.route('/grid/start/<grid_id>')
 def start_grid(grid_id):
     """Start a grid."""
@@ -259,25 +293,55 @@ def edit_grid(grid_id):
     return render_template('edit_grid.html', grid=grid)
 
 def create_templates_directory():
-    """Create templates directory and HTML files."""
+    """Create templates directory and HTML files with proper UTF-8 encoding."""
     # Create templates directory
     os.makedirs('templates', exist_ok=True)
     
-    # Create simplified index.html
-    with open('templates/index.html', 'w') as f:
+    # FIXED: Use UTF-8 encoding and simpler symbols for better compatibility
+    with open('templates/index.html', 'w', encoding='utf-8') as f:
         f.write("""
 <!DOCTYPE html>
 <html>
 <head>
     <title>Simplified Grid Trading Bot</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta charset="UTF-8">
     <style>
-        body { font-family: Arial, sans-serif; margin: 0; padding: 20px; }
-        h1 { color: #333; }
+        body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background-color: #f5f5f5; }
+        h1 { color: #333; margin-bottom: 10px; }
         .subtitle { color: #666; margin-bottom: 20px; }
+        
+        /* Container for main content */
+        .main-container { display: flex; gap: 20px; flex-wrap: wrap; }
+        .left-panel { flex: 2; min-width: 600px; }
+        .right-panel { flex: 1; min-width: 300px; }
+        
+        /* Grid table styles */
+        .grids-section { background: white; border-radius: 8px; padding: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
         table { width: 100%; border-collapse: collapse; margin-top: 20px; }
         th, td { padding: 10px; text-align: left; border-bottom: 1px solid #ddd; }
         th { background-color: #f2f2f2; }
+        
+        /* Active symbols section */
+        .active-symbols-section { background: white; border-radius: 8px; padding: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); margin-bottom: 20px; }
+        .symbols-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 15px; margin-top: 15px; }
+        .symbol-category { background: #f8f9fa; border-radius: 6px; padding: 15px; }
+        .symbol-category h4 { margin: 0 0 10px 0; color: #333; }
+        .symbol-item { background: white; border-radius: 4px; padding: 8px 12px; margin-bottom: 8px; border-left: 4px solid #ddd; display: flex; justify-content: space-between; align-items: center; }
+        .symbol-item:last-child { margin-bottom: 0; }
+        
+        /* Color coding for changes */
+        .positive { border-left-color: #28a745 !important; }
+        .negative { border-left-color: #dc3545 !important; }
+        .change-positive { color: #28a745; font-weight: bold; }
+        .change-negative { color: #dc3545; font-weight: bold; }
+        
+        /* Symbol info layout */
+        .symbol-info { display: flex; flex-direction: column; }
+        .symbol-name { font-weight: bold; font-size: 14px; }
+        .symbol-price { font-size: 12px; color: #666; }
+        
+        /* Button styles */
         .button { 
             display: inline-block; padding: 8px 16px; text-decoration: none; 
             color: white; background-color: #4CAF50; border-radius: 4px; margin-right: 5px;
@@ -285,71 +349,264 @@ def create_templates_directory():
         .button.red { background-color: #f44336; }
         .button.blue { background-color: #2196F3; }
         .action-cell { white-space: nowrap; }
+        
+        /* Refresh controls */
+        .refresh-info { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; }
+        .last-update { font-size: 12px; color: #666; }
+        .refresh-btn { background: none; border: 1px solid #ddd; border-radius: 4px; padding: 5px 10px; cursor: pointer; }
+        .refresh-btn:hover { background: #f0f0f0; }
+        .loading { opacity: 0.6; }
+        
+        /* Category icons */
+        .category-icon { display: inline-block; margin-right: 5px; }
+        .active-icon { color: #ff6b35; }
+        .gain-icon { color: #28a745; }
+        .loss-icon { color: #dc3545; }
+        
+        /* Mobile responsiveness */
+        @media (max-width: 768px) {
+            .main-container { flex-direction: column; }
+            .left-panel, .right-panel { min-width: auto; }
+            .symbols-grid { grid-template-columns: 1fr; }
+        }
     </style>
 </head>
 <body>
     <h1>Simplified Grid Trading Bot</h1>
     <p class="subtitle">Buy/Sell orders at grid intervals - No hedge mode</p>
     
-    <a href="/grid/create" class="button">Create New Grid</a>
-    
-    <table>
-        <thead>
-            <tr>
-                <th>ID</th>
-                <th>Symbol</th>
-                <th>Grids</th>
-                <th>Investment</th>
-                <th>Leverage</th>
-                <th>PnL</th>
-                <th>Status</th>
-                <th>Actions</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for grid in grids %}
-            <tr>
-                <td>{{ grid.grid_id[:8] }}</td>
-                <td>{{ grid.display_symbol or grid.symbol }}</td>
-                <td>{{ grid.grid_number }}</td>
-                <td>{{ "%.2f"|format(grid.investment) }}</td>
-                <td>{{ "%.1f"|format(grid.leverage) }}x</td>
-                <td>{{ "%.2f"|format(grid.pnl) }} ({{ "%.2f"|format(grid.pnl_percentage) }}%)</td>
-                <td>{{ "Running" if grid.running else "Stopped" }}</td>
-                <td class="action-cell">
-                    {% if grid.running %}
-                    <a href="/grid/stop/{{ grid.grid_id }}" class="button red">Stop</a>
-                    {% else %}
-                    <a href="/grid/start/{{ grid.grid_id }}" class="button blue">Start</a>
-                    {% endif %}
-                    <a href="/grid/edit/{{ grid.grid_id }}" class="button">Edit</a>
-                    <a href="/grid/delete/{{ grid.grid_id }}" class="button red" onclick="return confirm('Are you sure?')">Delete</a>
-                </td>
-            </tr>
-            {% else %}
-            <tr>
-                <td colspan="8">No grids found</td>
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
+    <div class="main-container">
+        <!-- Left Panel: Grids -->
+        <div class="left-panel">
+            <div class="grids-section">
+                <a href="/grid/create" class="button">Create New Grid</a>
+                
+                <table>
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>Symbol</th>
+                            <th>Grids</th>
+                            <th>Investment</th>
+                            <th>Leverage</th>
+                            <th>PnL</th>
+                            <th>Status</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for grid in grids %}
+                        <tr>
+                            <td>{{ grid.grid_id[:8] }}</td>
+                            <td>{{ grid.display_symbol or grid.symbol }}</td>
+                            <td>{{ grid.grid_number }}</td>
+                            <td>{{ "%.2f"|format(grid.investment) }}</td>
+                            <td>{{ "%.1f"|format(grid.leverage) }}x</td>
+                            <td>{{ "%.2f"|format(grid.pnl) }} ({{ "%.2f"|format(grid.pnl_percentage) }}%)</td>
+                            <td>{{ "Running" if grid.running else "Stopped" }}</td>
+                            <td class="action-cell">
+                                {% if grid.running %}
+                                <a href="/grid/stop/{{ grid.grid_id }}" class="button red">Stop</a>
+                                {% else %}
+                                <a href="/grid/start/{{ grid.grid_id }}" class="button blue">Start</a>
+                                {% endif %}
+                                <a href="/grid/edit/{{ grid.grid_id }}" class="button">Edit</a>
+                                <a href="/grid/delete/{{ grid.grid_id }}" class="button red" onclick="return confirm('Are you sure?')">Delete</a>
+                            </td>
+                        </tr>
+                        {% else %}
+                        <tr>
+                            <td colspan="8">No grids found</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        
+        <!-- Right Panel: Active Symbols -->
+        <div class="right-panel">
+            <div class="active-symbols-section">
+                <div class="refresh-info">
+                    <h3 style="margin: 0;">
+                        <span class="category-icon active-icon">&#9202;</span>Market Activity
+                    </h3>
+                    <div>
+                        <button class="refresh-btn" onclick="refreshActiveSymbols()">&#8634;</button>
+                        <div class="last-update" id="lastUpdate">
+                            Last: {{ active_symbols.last_updated_formatted if active_symbols else 'Never' }}
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="symbols-grid" id="symbolsContainer">
+                    <!-- Top Active Symbols -->
+                    <div class="symbol-category">
+                        <h4><span class="category-icon active-icon">&#9733;</span>Most Active (24hr)</h4>
+                        <div id="topActiveList">
+                            {% if active_symbols and active_symbols.top_active %}
+                                {% for symbol in active_symbols.top_active %}
+                                <div class="symbol-item {{ 'positive' if symbol.price_change_pct > 0 else 'negative' }}">
+                                    <div class="symbol-info">
+                                        <div class="symbol-name">{{ symbol.symbol }}</div>
+                                        <div class="symbol-price">${{ "%.6f"|format(symbol.current_price) }}</div>
+                                        <div class="symbol-volume" style="font-size: 10px; color: #999;">Vol: {{ "%.0f"|format(symbol.volume) if symbol.volume else 'N/A' }}</div>
+                                    </div>
+                                    <div class="symbol-change {{ 'change-positive' if symbol.price_change_pct > 0 else 'change-negative' }}">
+                                        {{ "{:+.2f}".format(symbol.price_change_pct) }}%
+                                    </div>
+                                </div>
+                                {% endfor %}
+                            {% else %}
+                            <div style="text-align: center; color: #666; padding: 20px;">Loading...</div>
+                            {% endif %}
+                        </div>
+                    </div>
+                    
+                    <!-- Top Gainers -->
+                    <div class="symbol-category">
+                        <h4><span class="category-icon gain-icon">&#9650;</span>Top Gainers (24hr)</h4>
+                        <div id="gainersList">
+                            {% if active_symbols and active_symbols.gainers %}
+                                {% for symbol in active_symbols.gainers %}
+                                <div class="symbol-item positive">
+                                    <div class="symbol-info">
+                                        <div class="symbol-name">{{ symbol.symbol }}</div>
+                                        <div class="symbol-price">${{ "%.6f"|format(symbol.current_price) }}</div>
+                                        <div class="symbol-volume" style="font-size: 10px; color: #999;">Vol: {{ "%.0f"|format(symbol.volume) if symbol.volume else 'N/A' }}</div>
+                                    </div>
+                                    <div class="symbol-change change-positive">
+                                        +{{ "%.2f"|format(symbol.price_change_pct) }}%
+                                    </div>
+                                </div>
+                                {% endfor %}
+                            {% else %}
+                            <div style="text-align: center; color: #666; padding: 20px;">Loading...</div>
+                            {% endif %}
+                        </div>
+                    </div>
+                    
+                    <!-- Top Losers -->
+                    <div class="symbol-category">
+                        <h4><span class="category-icon loss-icon">&#9660;</span>Top Losers (24hr)</h4>
+                        <div id="losersList">
+                            {% if active_symbols and active_symbols.losers %}
+                                {% for symbol in active_symbols.losers %}
+                                <div class="symbol-item negative">
+                                    <div class="symbol-info">
+                                        <div class="symbol-name">{{ symbol.symbol }}</div>
+                                        <div class="symbol-price">${{ "%.6f"|format(symbol.current_price) }}</div>
+                                        <div class="symbol-volume" style="font-size: 10px; color: #999;">Vol: {{ "%.0f"|format(symbol.volume) if symbol.volume else 'N/A' }}</div>
+                                    </div>
+                                    <div class="symbol-change change-negative">
+                                        {{ "%.2f"|format(symbol.price_change_pct) }}%
+                                    </div>
+                                </div>
+                                {% endfor %}
+                            {% else %}
+                            <div style="text-align: center; color: #666; padding: 20px;">Loading...</div>
+                            {% endif %}
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
     
     <script>
-        // Auto-refresh every 30 seconds
+        // Auto-refresh page every 30 seconds
         setTimeout(function() { location.reload(); }, 30000);
+        
+        // Auto-refresh active symbols every 15 seconds
+        setInterval(updateActiveSymbols, 15000);
+        
+        function refreshActiveSymbols() {
+            const container = document.getElementById('symbolsContainer');
+            const lastUpdate = document.getElementById('lastUpdate');
+            
+            container.classList.add('loading');
+            lastUpdate.textContent = 'Refreshing...';
+            
+            fetch('/api/active-symbols/refresh')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        updateSymbolsDisplay(data.data);
+                        lastUpdate.textContent = 'Last: ' + data.data.last_updated_formatted;
+                    } else {
+                        lastUpdate.textContent = 'Refresh failed';
+                    }
+                })
+                .catch(error => {
+                    lastUpdate.textContent = 'Error refreshing';
+                })
+                .finally(() => {
+                    container.classList.remove('loading');
+                });
+        }
+        
+        function updateActiveSymbols() {
+            fetch('/api/active-symbols')
+                .then(response => response.json())
+                .then(data => {
+                    updateSymbolsDisplay(data);
+                    document.getElementById('lastUpdate').textContent = 'Last: ' + data.last_updated_formatted;
+                })
+                .catch(error => {
+                    console.error('Error updating symbols:', error);
+                });
+        }
+        
+        function updateSymbolsDisplay(data) {
+            updateSymbolList('topActiveList', data.top_active, true);
+            updateSymbolList('gainersList', data.gainers, false);
+            updateSymbolList('losersList', data.losers, false);
+        }
+        
+        function updateSymbolList(containerId, symbols, showDirection) {
+            const container = document.getElementById(containerId);
+            if (!container || !symbols) return;
+            
+            if (symbols.length === 0) {
+                container.innerHTML = '<div style="text-align: center; color: #666; padding: 20px;">No data</div>';
+                return;
+            }
+            
+            const html = symbols.map(symbol => {
+                const isPositive = symbol.price_change_pct > 0;
+                const changeClass = isPositive ? 'change-positive' : 'change-negative';
+                const itemClass = isPositive ? 'positive' : 'negative';
+                const changePrefix = showDirection ? (isPositive ? '+' : '') : (isPositive ? '+' : '');
+                
+                return `
+                    <div class="symbol-item ${itemClass}">
+                        <div class="symbol-info">
+                            <div class="symbol-name">${symbol.symbol}</div>
+                            <div class="symbol-price">$${symbol.current_price.toFixed(6)}</div>
+                        </div>
+                        <div class="symbol-change ${changeClass}">
+                            ${changePrefix}${symbol.price_change_pct.toFixed(2)}%
+                        </div>
+                    </div>
+                `;
+            }).join('');
+            
+            container.innerHTML = html;
+        }
     </script>
 </body>
 </html>
         """)
     
-    # Create simplified create_grid.html
-    with open('templates/create_grid.html', 'w') as f:
+    # FIXED: Also add UTF-8 encoding to other template files
+    with open('templates/create_grid.html', 'w', encoding='utf-8') as f:
         f.write("""
 <!DOCTYPE html>
 <html>
 <head>
     <title>Create New Grid</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta charset="UTF-8">
     <style>
         body { font-family: Arial, sans-serif; margin: 0; padding: 20px; }
         h1 { color: #333; }
@@ -435,14 +692,15 @@ def create_templates_directory():
 </html>
         """)
     
-    # Create simplified edit_grid.html
-    with open('templates/edit_grid.html', 'w') as f:
+    # FIXED: Add UTF-8 encoding to edit grid template
+    with open('templates/edit_grid.html', 'w', encoding='utf-8') as f:
         f.write("""
 <!DOCTYPE html>
 <html>
 <head>
     <title>Edit Grid</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta charset="UTF-8">
     <style>
         body { font-family: Arial, sans-serif; margin: 0; padding: 20px; }
         h1 { color: #333; }
@@ -507,7 +765,6 @@ def create_templates_directory():
 </body>
 </html>
         """)
-
 def initialize_app(config_file, log_level):
     """Initialize the application."""
     global grid_manager, logger

@@ -389,3 +389,166 @@ class Exchange:
             if "stop" in str(e).lower() or "unsupported" in str(e).lower():
                 self.logger.warning(f"⚠️ Stop orders may not be supported on this exchange")
             raise
+    def get_top_active_symbols(self, limit: int = 5, timeframe_minutes: int = 30) -> List[Dict]:
+        """
+        Get top most active symbols by percentage change using 3-minute candles over specified timeframe.
+        
+        Args:
+            limit: Number of top symbols to return (default: 5)
+            timeframe_minutes: Minutes to look back for change calculation (default: 30)
+            
+        Returns:
+            List of dictionaries containing symbol and percentage change data
+        """
+        try:
+            # Calculate how many 3-minute candles we need for the timeframe
+            candles_needed = max(int(timeframe_minutes / 3) + 2, 12)  # +2 for safety, minimum 12 candles
+            
+            self.logger.info(f"Fetching top {limit} most active symbols using 3m candles over {timeframe_minutes} minutes")
+            self.logger.info(f"Analyzing {candles_needed} candles ({candles_needed * 3} minutes of data)")
+            
+            # Get all available symbols
+            available_symbols = self.get_available_symbols()
+            
+            if not available_symbols:
+                self.logger.warning("No available symbols found")
+                return []
+            
+            symbol_activities = []
+            processed_count = 0
+            error_count = 0
+            
+            # Process symbols in batches to respect rate limits
+            for symbol in available_symbols:
+                try:
+                    # Get 3-minute OHLCV data with rate limiting
+                    ohlcv_data = self.get_ohlcv(symbol, timeframe='3m', limit=candles_needed)
+                    
+                    if not ohlcv_data or len(ohlcv_data) < candles_needed:
+                        continue
+                    
+                    # Calculate percentage change from 30 minutes ago to current close
+                    # ohlcv format: [timestamp, open, high, low, close, volume]
+                    
+                    # Get price from 30 minutes ago (or as close as possible)
+                    target_candle_index = -(int(timeframe_minutes / 3) + 1)  # 30min ago = 10 candles back
+                    if abs(target_candle_index) > len(ohlcv_data):
+                        target_candle_index = -len(ohlcv_data)  # Use oldest available
+                    
+                    start_price = float(ohlcv_data[target_candle_index][4])  # Close price from 30min ago
+                    current_close = float(ohlcv_data[-1][4])   # Current candle close
+                    current_high = float(ohlcv_data[-1][2])    # Current candle high
+                    current_low = float(ohlcv_data[-1][3])     # Current candle low
+                    
+                    # Calculate total volume over the period
+                    total_volume = sum(float(candle[5]) for candle in ohlcv_data[target_candle_index:])
+                    
+                    if start_price <= 0:
+                        continue
+                    
+                    # Calculate percentage change over the full timeframe
+                    price_change_pct = ((current_close - start_price) / start_price) * 100
+                    
+                    # Calculate recent volatility (last few candles)
+                    recent_candles = ohlcv_data[-3:]  # Last 9 minutes
+                    recent_high = max(float(candle[2]) for candle in recent_candles)
+                    recent_low = min(float(candle[3]) for candle in recent_candles)
+                    volatility_pct = ((recent_high - recent_low) / current_close) * 100 if current_close > 0 else 0
+                    
+                    # Calculate actual timeframe analyzed
+                    actual_minutes = abs(target_candle_index) * 3
+                    
+                    symbol_activities.append({
+                        'symbol': symbol,
+                        'price_change_pct': price_change_pct,
+                        'volatility_pct': volatility_pct,
+                        'current_price': current_close,
+                        'start_price': start_price,
+                        'volume': total_volume,
+                        'timeframe_minutes': actual_minutes,
+                        'abs_change_pct': abs(price_change_pct)  # For sorting by absolute change
+                    })
+                    
+                    processed_count += 1
+                    
+                    # Log progress every 50 symbols
+                    if processed_count % 50 == 0:
+                        self.logger.debug(f"Processed {processed_count} symbols, errors: {error_count}")
+                    
+                except Exception as e:
+                    error_count += 1
+                    self.logger.debug(f"Error processing symbol {symbol}: {e}")
+                    continue
+            
+            self.logger.info(f"Processed {processed_count} symbols successfully, {error_count} errors")
+            
+            if not symbol_activities:
+                self.logger.warning("No symbol data could be processed")
+                return []
+            
+            # Sort by absolute percentage change (most active regardless of direction)
+            symbol_activities.sort(key=lambda x: x['abs_change_pct'], reverse=True)
+            
+            # Get top symbols
+            top_symbols = symbol_activities[:limit]
+            
+            # Log results with timeframe info
+            self.logger.info(f"Top {len(top_symbols)} most active symbols ({timeframe_minutes}m analysis):")
+            for i, symbol_data in enumerate(top_symbols, 1):
+                symbol = symbol_data['symbol']
+                change_pct = symbol_data['price_change_pct']
+                volatility = symbol_data['volatility_pct']
+                current_price = symbol_data['current_price']
+                start_price = symbol_data['start_price']
+                analyzed_minutes = symbol_data['timeframe_minutes']
+                
+                direction = "📈" if change_pct > 0 else "📉"
+                self.logger.info(f"  {i}. {symbol}: {direction} {change_pct:+.2f}% over {analyzed_minutes}m")
+                self.logger.info(f"     ${start_price:.6f} → ${current_price:.6f} (Vol: {volatility:.2f}%)")
+            
+            return top_symbols
+            
+        except Exception as e:
+            self.logger.error(f"Error getting top active symbols: {e}")
+            return []
+
+    def get_top_gainers_losers(self, limit: int = 5, timeframe_minutes: int = 30) -> Dict[str, List[Dict]]:
+        """
+        Get separate lists of top gainers and top losers using 3-minute candles over specified timeframe.
+        
+        Args:
+            limit: Number of top gainers and losers to return each
+            timeframe_minutes: Minutes to look back for change calculation (default: 30)
+            
+        Returns:
+            Dictionary with 'gainers' and 'losers' keys containing lists of symbol data
+        """
+        try:
+            # Get top active symbols with larger sample for filtering
+            active_symbols = self.get_top_active_symbols(limit=limit * 4, timeframe_minutes=timeframe_minutes)
+            
+            if not active_symbols:
+                return {'gainers': [], 'losers': []}
+            
+            # Separate gainers and losers
+            gainers = [s for s in active_symbols if s['price_change_pct'] > 0]
+            losers = [s for s in active_symbols if s['price_change_pct'] < 0]
+            
+            # Sort gainers by highest positive change
+            gainers.sort(key=lambda x: x['price_change_pct'], reverse=True)
+            
+            # Sort losers by highest negative change (most negative)
+            losers.sort(key=lambda x: x['price_change_pct'])
+            
+            result = {
+                'gainers': gainers[:limit],
+                'losers': losers[:limit]
+            }
+            
+            self.logger.info(f"Found {len(result['gainers'])} top gainers and {len(result['losers'])} top losers over {timeframe_minutes}m")
+            
+            return result
+            
+        except Exception as e:
+            self.logger.error(f"Error getting top gainers/losers: {e}")
+            return {'gainers': [], 'losers': []}

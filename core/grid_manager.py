@@ -23,14 +23,22 @@ class GridManager:
         self.grids: Dict[str, GridStrategy] = {}
         
         # Simple limits
-        self.max_concurrent_grids = 5
+        self.max_concurrent_grids = 10
         self.max_total_investment = 10000.0
         
         # Thread for monitoring grids
         self.monitor_thread = None
         self.running = False
+        # ENHANCEMENT: Add active symbols tracking
+        self.active_symbols_data = {
+            'top_active': [],
+            'gainers': [],
+            'losers': [],
+            'last_updated': 0
+        }
+        self.active_symbols_update_interval = 30  # Update every 30 seconds
         
-        # Load existing grids from data store
+            # Load existing grids from data store
         self._load_grids()
         
         # FIXED: Start monitor if any loaded grids are running
@@ -438,8 +446,8 @@ class GridManager:
             self.logger.error(f"❌ Error ensuring monitor running: {e}")
     
     def _monitor_grids(self) -> None:
-        """Monitor grids and update them periodically."""
-        self.logger.info("🔍 ===== GRID MONITOR THREAD STARTED =====")
+        """Enhanced monitor grids and update active symbols periodically."""
+        self.logger.info("🔍 ===== ENHANCED GRID MONITOR THREAD STARTED =====")
         
         cycle_count = 0
         try:
@@ -451,25 +459,27 @@ class GridManager:
                 active_grids = [(grid_id, grid) for grid_id, grid in self.grids.items() if grid.running]
                 
                 # Log monitor activity every 10 cycles (50 seconds)
-                # if cycle_count % 10 == 1:
-                #     self.logger.info(f"🔍 Monitor cycle #{cycle_count}: {len(active_grids)} active grids")
+                if cycle_count % 10 == 1:
+                    self.logger.info(f"🔍 Monitor cycle #{cycle_count}: {len(active_grids)} active grids")
                 
+                # Update grids
                 if active_grids:
                     for grid_id, grid in active_grids:
                         try:
-                            # FIXED: Call update_grid() with logging
-                            # if cycle_count % 10 == 1:
-                            #     self.logger.info(f"🔄 Updating grid {grid_id[:8]}...")
                             grid.update_grid()
-                            
                             # Save updated status
                             self.data_store.save_grid(grid_id, grid.get_status())
-                            
                         except Exception as e:
                             self.logger.error(f"❌ Error updating grid {grid_id[:8]}: {e}")
                 else:
                     if cycle_count % 20 == 1:  # Log less frequently when no active grids
                         self.logger.info(f"🔍 Monitor cycle #{cycle_count}: No active grids")
+                
+                # ENHANCEMENT: Update active symbols data periodically
+                try:
+                    self._update_active_symbols_if_needed()
+                except Exception as e:
+                    self.logger.error(f"❌ Error updating active symbols: {e}")
                 
                 monitor_duration = time.time() - monitor_start
                 
@@ -485,7 +495,7 @@ class GridManager:
             import traceback
             self.logger.error(f"Traceback: {traceback.format_exc()}")
         finally:
-            self.logger.warning("🔍 ===== GRID MONITOR THREAD STOPPED =====")
+            self.logger.warning("🔍 ===== ENHANCED GRID MONITOR THREAD STOPPED =====")
     
     def stop_all_grids(self) -> None:
         """Stop all grid strategies."""
@@ -544,4 +554,76 @@ class GridManager:
             
         except Exception as e:
             self.logger.error(f"Error updating grid config for {grid_id}: {e}")
+            return False
+    def _update_active_symbols_if_needed(self) -> None:
+        """OPTIMIZED: Update active symbols data using single bulk ticker API call instead of 435 individual calls."""
+        try:
+            current_time = time.time()
+            last_update = self.active_symbols_data.get('last_updated', 0)
+            
+            # Only update if enough time has passed
+            if current_time - last_update < self.active_symbols_update_interval:
+                return
+            
+            self.logger.info("📊 Updating active symbols data (24hr bulk ticker - OPTIMIZED)...")
+            
+            # OPTIMIZATION: These now use single API call instead of 435 individual calls
+            top_active = self.exchange.get_top_active_symbols(limit=5)
+            gainers_losers = self.exchange.get_top_gainers_losers(limit=3)
+            
+            # Update stored data
+            self.active_symbols_data = {
+                'top_active': top_active,
+                'gainers': gainers_losers.get('gainers', []),
+                'losers': gainers_losers.get('losers', []),
+                'last_updated': current_time,
+                'timeframe': '24hr'  # Updated to reflect actual data
+            }
+            
+            self.logger.info(f"📊 Active symbols updated (24hr bulk data): {len(top_active)} active, "
+                            f"{len(gainers_losers.get('gainers', []))} gainers, "
+                            f"{len(gainers_losers.get('losers', []))} losers")
+            
+        except Exception as e:
+            self.logger.error(f"❌ Error updating active symbols data: {e}")
+
+    def get_active_symbols_data(self) -> Dict:
+        """Get the current active symbols data with correct timeframe info."""
+        try:
+            # Return a copy to prevent external modification
+            return {
+                'top_active': self.active_symbols_data.get('top_active', []).copy(),
+                'gainers': self.active_symbols_data.get('gainers', []).copy(),
+                'losers': self.active_symbols_data.get('losers', []).copy(),
+                'last_updated': self.active_symbols_data.get('last_updated', 0),
+                'timeframe': self.active_symbols_data.get('timeframe', '24hr'),  # Updated default
+                'last_updated_formatted': time.strftime('%H:%M:%S', 
+                    time.localtime(self.active_symbols_data.get('last_updated', 0)))
+            }
+        except Exception as e:
+            self.logger.error(f"❌ Error getting active symbols data: {e}")
+            return {
+                'top_active': [],
+                'gainers': [],
+                'losers': [],
+                'last_updated': 0,
+                'timeframe': '24hr',
+                'last_updated_formatted': 'Never'
+            }
+
+    def force_update_active_symbols(self) -> bool:
+        """Force immediate update of active symbols data."""
+        try:
+            self.logger.info("🔄 Force updating active symbols...")
+            
+            # Reset last update time to force refresh
+            self.active_symbols_data['last_updated'] = 0
+            
+            # Trigger update
+            self._update_active_symbols_if_needed()
+            
+            return len(self.active_symbols_data.get('top_active', [])) > 0
+            
+        except Exception as e:
+            self.logger.error(f"❌ Error force updating active symbols: {e}")
             return False
