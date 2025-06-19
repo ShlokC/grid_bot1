@@ -8,7 +8,8 @@ import time
 import threading
 from typing import Dict, Any, Optional
 from core.exchange import Exchange
-from core.adaptive_tsi import integrate_adaptive_tsi
+from core.adaptive_tsi import integrate_momentum_tsi
+
 
 class SignalStrategy:
     """
@@ -53,7 +54,7 @@ class SignalStrategy:
         self.update_lock = threading.Lock()
         
         # Integrate TSI system
-        integrate_adaptive_tsi(self)
+        integrate_momentum_tsi(self)
         
         self.logger.info(f"Signal Strategy initialized: {symbol}, Size: ${position_size_usd}, Leverage: {leverage}x")
     
@@ -170,49 +171,63 @@ class SignalStrategy:
             self.logger.error(f"Error checking position and signals: {e}")
     
     def _handle_entry_signals(self, signal: str):
-        """Handle entry signals when no position exists."""
+        """Handle entry signals with simple duplicate prevention."""
         try:
-            if signal in ['buy', 'sell']:
-                # CRITICAL: Double-check no position exists before entry
+            if signal not in ['buy', 'sell']:
+                return
+                
+            # SIMPLE DUPLICATE CHECK: Verify no position exists before every order
+            if self._has_active_position():
+                self.logger.debug(f"Skipping {signal} - position already exists")
+                return
+            
+            # Check recent orders throttle
+            if hasattr(self, '_last_entry_time'):
+                if time.time() - self._last_entry_time < 60:
+                    return
+            
+            # Get current price and calculate amount
+            ticker = self.exchange.get_ticker(self.symbol)
+            current_price = float(ticker['last'])
+            amount = self._calculate_position_amount(current_price)
+            
+            if amount >= self.min_amount:
+                # FINAL POSITION CHECK: Double-check before order placement
                 if self._has_active_position():
-                    self.logger.debug(f"Skipping {signal} signal - position already exists")
+                    self.logger.warning(f"Position detected during order preparation - cancelling {signal}")
                     return
                 
-                # Check recent orders throttle
-                if hasattr(self, '_last_entry_time'):
-                    if time.time() - self._last_entry_time < 60:
-                        return
-                
-                # Get current price and calculate amount
-                ticker = self.exchange.get_ticker(self.symbol)
-                current_price = float(ticker['last'])
-                amount = self._calculate_position_amount(current_price)
-                
-                if amount >= self.min_amount:
-                    # Final position check before order
-                    if self._has_active_position():
-                        self.logger.warning(f"Position detected during order preparation - cancelling {signal}")
-                        return
+                # Place market order
+                order = self.exchange.create_market_order(self.symbol, signal, amount)
+                if order and 'id' in order:
+                    # WAIT FOR EXECUTION: Ensure order is filled before continuing
+                    time.sleep(1)  # Brief wait for execution
                     
-                    # Place market order
-                    order = self.exchange.create_market_order(self.symbol, signal, amount)
-                    if order and 'id' in order:
-                        self._last_entry_time = time.time()
-                        self.total_trades += 1
-                        
-                        # Record the fill
-                        fill_price = float(order.get('average', current_price))
-                        self.filled_orders.append({
-                            'id': order['id'],
-                            'side': signal,
-                            'price': fill_price,
-                            'amount': amount,
-                            'timestamp': time.time(),
-                            'type': 'entry'
-                        })
-                        
-                        self.logger.info(f"✅ Entry: {signal.upper()} {amount:.6f} @ ${fill_price:.6f}")
-                        
+                    # VERIFY EXECUTION: Check if order actually filled
+                    try:
+                        order_status = self.exchange.get_order_status(order['id'], self.symbol)
+                        if order_status.get('status') not in ['filled', 'closed']:
+                            self.logger.warning(f"Order {order['id']} not filled immediately")
+                            return
+                    except Exception as e:
+                        self.logger.warning(f"Could not verify order status: {e}")
+                    
+                    self._last_entry_time = time.time()
+                    self.total_trades += 1
+                    
+                    # Record the fill
+                    fill_price = float(order.get('average', current_price))
+                    self.filled_orders.append({
+                        'id': order['id'],
+                        'side': signal,
+                        'price': fill_price,
+                        'amount': amount,
+                        'timestamp': time.time(),
+                        'type': 'entry'
+                    })
+                    
+                    self.logger.info(f"✅ Entry: {signal.upper()} {amount:.6f} @ ${fill_price:.6f}")
+                    
         except Exception as e:
             self.logger.error(f"Error handling entry signals: {e}")
     
