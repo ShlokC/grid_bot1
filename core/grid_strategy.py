@@ -17,7 +17,7 @@ import pandas as pd
 import pandas_ta as ta
 
 from core.exchange import Exchange
-
+from core.adaptive_tsi import integrate_adaptive_tsi
 
 class GridStrategy:
     """
@@ -99,7 +99,9 @@ class GridStrategy:
         # State management
         self.running = False
         self.last_update_time = 0
-        
+        integrate_adaptive_tsi(self)
+    
+        self.logger.info(f"🧠 Grid strategy enhanced with Adaptive TSI")
         # Threading
         self.update_lock = threading.Lock()
         
