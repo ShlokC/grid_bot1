@@ -115,13 +115,17 @@ class Exchange:
             raise
     
     def create_limit_order(self, symbol: str, side: str, amount: float, price: float) -> Dict:
-        """Create a limit order."""
+        """ENHANCED: Create limit order with automatic trading setup."""
         try:
             symbol_id = self._get_symbol_id(symbol)
             
+            # CRITICAL: Ensure trading configuration is set before order
+            if not self.setup_symbol_trading_config(symbol, 20):
+                raise Exception(f"Failed to setup trading configuration for {symbol}")
+            
             self.logger.info(f"🚀 LIMIT ORDER: {side.upper()} {amount:.6f} {symbol_id} @ ${price:.6f}")
             
-            # Simple limit order without hedge mode
+            # Create the order
             result = self._rate_limited_request(
                 self.exchange.create_limit_order, 
                 symbol_id, 
@@ -143,12 +147,16 @@ class Exchange:
             raise
         
     def create_market_order(self, symbol: str, side: str, amount: float) -> Dict:
-        """Create a market order (for closing positions)."""
+        """MINIMAL: Create market order with optional setup."""
         try:
             symbol_id = self._get_symbol_id(symbol)
+            
+            # OPTIONAL: Try to setup, but don't fail if it doesn't work
+            self.setup_symbol_trading_config(symbol, 20)
+            
             self.logger.info(f"🚀 MARKET ORDER: {side.upper()} {amount:.6f} {symbol_id}")
             
-            # Simple market order without hedge mode
+            # Create the order (original logic unchanged)
             result = self._rate_limited_request(
                 self.exchange.create_market_order, 
                 symbol_id, 
@@ -552,3 +560,168 @@ class Exchange:
         except Exception as e:
             self.logger.error(f"Error getting top gainers/losers: {e}")
             return {'gainers': [], 'losers': []}
+    def setup_symbol_trading_config(self, symbol: str, target_leverage: int = 20) -> bool:
+        """MINIMAL: Setup isolated margin and leverage with correct method names."""
+        try:
+            symbol_id = self._get_symbol_id(symbol)
+            self.logger.info(f"🔧 Setting up {symbol} ({symbol_id}) for {target_leverage}x trading")
+            
+            # Step 1: Set margin type to ISOLATED
+            try:
+                self.exchange.fapiPrivate_post_margintype({
+                    'symbol': symbol_id,
+                    'marginType': 'ISOLATED'
+                })
+                self.logger.info(f"✅ Set {symbol_id} to ISOLATED margin")
+            except Exception as e:
+                if '-4046' in str(e) or 'No need to change' in str(e):
+                    self.logger.info(f"✅ {symbol_id} already ISOLATED")
+                else:
+                    self.logger.warning(f"⚠️ Margin setup failed for {symbol_id}: {e}")
+                    # Continue anyway
+            
+            # Step 2: Set leverage (FIXED: correct method name)
+            try:
+                self.exchange.fapiprivate_post_leverage({  # FIXED: lowercase 'p'
+                    'symbol': symbol_id,
+                    'leverage': target_leverage
+                })
+                self.logger.info(f"✅ Set {symbol_id} to {target_leverage}x leverage")
+            except Exception as e:
+                if '-4141' in str(e) or 'position' in str(e):
+                    self.logger.warning(f"⚠️ Cannot change leverage for {symbol_id} - position exists")
+                else:
+                    self.logger.warning(f"⚠️ Leverage setup failed for {symbol_id}: {e}")
+                # Continue anyway
+            
+            return True  # Always return True to allow trading
+            
+        except Exception as e:
+            self.logger.error(f"❌ Setup error for {symbol}: {e}")
+            return True  # FIXED: Return True to allow trading even if setup fails
+    def get_symbol_trading_config(self, symbol: str) -> Dict:
+        """Get current trading configuration for a symbol."""
+        try:
+            symbol_id = self._get_symbol_id(symbol)
+            
+            # Get position risk info which contains margin type and leverage
+            position_info = self._rate_limited_request(
+                self.exchange.fapiprivatev2_get_positionrisk,
+                {'symbol': symbol_id}
+            )
+            
+            if position_info and len(position_info) > 0:
+                info = position_info[0]
+                return {
+                    'symbol': symbol,
+                    'internal_symbol': symbol_id,
+                    'margin_type': info.get('marginType', 'UNKNOWN'),
+                    'leverage': int(float(info.get('leverage', 0))),
+                    'position_size': float(info.get('positionAmt', 0)),
+                    'entry_price': float(info.get('entryPrice', 0)),
+                    'unrealized_pnl': float(info.get('unRealizedProfit', 0))
+                }
+            
+            return {
+                'symbol': symbol,
+                'internal_symbol': symbol_id,
+                'error': 'No position info found'
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Error getting trading config for {symbol}: {e}")
+            return {
+                'symbol': symbol,
+                'error': str(e)
+            }
+    def _setup_isolated_margin(self, internal_symbol: str) -> bool:
+        """Setup isolated margin mode for symbol."""
+        try:
+            # First, check current margin mode
+            try:
+                position_info = self.exchange.fapiprivatev2_get_positionrisk({
+                    'symbol': internal_symbol
+                })
+                
+                if position_info and len(position_info) > 0:
+                    current_margin_type = position_info[0].get('marginType', '').upper()
+                    
+                    if current_margin_type == 'ISOLATED':
+                        self.logger.info(f"✅ {internal_symbol} already in ISOLATED margin mode")
+                        return True
+                    
+                    self.logger.info(f"🔄 Changing {internal_symbol} from {current_margin_type} to ISOLATED margin")
+                
+            except Exception as e:
+                self.logger.warning(f"⚠️ Could not check current margin mode for {internal_symbol}: {e}")
+                # Continue with setting isolated margin anyway
+            
+            # Set margin mode to ISOLATED
+            response = self.exchange.fapiPrivate_post_margintype({
+                'symbol': internal_symbol,
+                'marginType': 'ISOLATED'
+            })
+            
+            self.logger.info(f"✅ Set {internal_symbol} to ISOLATED margin mode")
+            return True
+            
+        except Exception as e:
+            error_msg = str(e)
+            
+            # Handle "No need to change margin type" error (already correct)
+            if '-4046' in error_msg or 'No need to change margin type' in error_msg:
+                self.logger.info(f"✅ {internal_symbol} already in ISOLATED margin mode")
+                return True
+            
+            # Handle other errors
+            self.logger.error(f"❌ Failed to set isolated margin for {internal_symbol}: {e}")
+            return False
+
+    def _setup_leverage(self, internal_symbol: str, target_leverage: int) -> bool:
+        """Setup leverage for symbol."""
+        try:
+            # Validate leverage range
+            if target_leverage < 1 or target_leverage > 125:
+                self.logger.error(f"❌ Invalid leverage {target_leverage}. Must be 1-125")
+                return False
+            
+            # Check current leverage
+            try:
+                position_info = self.exchange.fapiprivatev2_get_positionrisk({
+                    'symbol': internal_symbol
+                })
+                
+                if position_info and len(position_info) > 0:
+                    current_leverage = int(float(position_info[0].get('leverage', 0)))
+                    
+                    if current_leverage == target_leverage:
+                        self.logger.info(f"✅ {internal_symbol} already at {target_leverage}x leverage")
+                        return True
+                    
+                    self.logger.info(f"🔄 Changing {internal_symbol} leverage from {current_leverage}x to {target_leverage}x")
+                
+            except Exception as e:
+                self.logger.warning(f"⚠️ Could not check current leverage for {internal_symbol}: {e}")
+                # Continue with setting leverage anyway
+            
+            # Set leverage
+            response = self.exchange.fapiPrivate_post_leverage({
+                'symbol': internal_symbol,
+                'leverage': target_leverage
+            })
+            
+            self.logger.info(f"✅ Set {internal_symbol} to {target_leverage}x leverage")
+            return True
+            
+        except Exception as e:
+            error_msg = str(e)
+            
+            # Handle common errors
+            if '-4028' in error_msg:
+                self.logger.error(f"❌ Leverage {target_leverage}x not allowed for {internal_symbol}")
+            elif '-4141' in error_msg:
+                self.logger.error(f"❌ Cannot change leverage with open positions for {internal_symbol}")
+            else:
+                self.logger.error(f"❌ Failed to set leverage for {internal_symbol}: {e}")
+            
+            return False

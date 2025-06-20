@@ -22,9 +22,7 @@ class SignalStrategy:
                  symbol: str,
                  strategy_id: str,
                  position_size_usd: float = 1.0,
-                 leverage: float = 20.0,
-                 take_profit_pct: float = 2.0,
-                 stop_loss_pct: float = 2.0):
+                 leverage: float = 20.0):
         """Initialize signal strategy with fixed parameters."""
         
         self.logger = logging.getLogger(__name__)
@@ -36,8 +34,7 @@ class SignalStrategy:
         # Fixed parameters (simplified)
         self.position_size_usd = position_size_usd
         self.leverage = leverage
-        self.take_profit_pct = take_profit_pct
-        self.stop_loss_pct = stop_loss_pct
+        
         
         # Fetch market info
         self._fetch_market_info()
@@ -97,14 +94,14 @@ class SignalStrategy:
             return self.min_amount
     
     def start_strategy(self) -> bool:
-        """Start the signal-based strategy."""
+        """FIXED: Clean start without order placement"""
         try:
             if self.running:
                 return True
             
             self.logger.info(f"🚀 Starting Signal Strategy: {self.symbol}")
             
-            # Cancel any existing orders
+            # Cancel any existing orders but don't place new ones
             try:
                 cancelled = self.exchange.cancel_all_orders(self.symbol)
                 if cancelled:
@@ -120,22 +117,61 @@ class SignalStrategy:
         except Exception as e:
             self.logger.error(f"Error starting strategy: {e}")
             return False
-    
+    def test_trading_setup(self) -> bool:
+        """Test trading setup for this strategy's symbol."""
+        try:
+            self.logger.info(f"🧪 Testing trading setup for {self.symbol}...")
+            
+            # FIXED: Call setup on exchange instance, not self
+            success = self.exchange.setup_symbol_trading_config(self.symbol, 20)
+            
+            if success:
+                # Get current config to verify
+                config = self.exchange.get_symbol_trading_config(self.symbol)
+                
+                self.logger.info(f"📊 Current config for {self.symbol}:")
+                self.logger.info(f"   Margin Type: {config.get('margin_type', 'UNKNOWN')}")
+                self.logger.info(f"   Leverage: {config.get('leverage', 'UNKNOWN')}x")
+                self.logger.info(f"   Position Size: {config.get('position_size', 0)}")
+                
+                # Verify requirements
+                margin_ok = config.get('margin_type') == 'ISOLATED'
+                leverage_ok = config.get('leverage') == 20
+                
+                if margin_ok and leverage_ok:
+                    self.logger.info(f"✅ {self.symbol} correctly configured for trading")
+                    return True
+                else:
+                    self.logger.error(f"❌ {self.symbol} configuration incorrect:")
+                    if not margin_ok:
+                        self.logger.error(f"   Expected ISOLATED margin, got {config.get('margin_type')}")
+                    if not leverage_ok:
+                        self.logger.error(f"   Expected 20x leverage, got {config.get('leverage')}x")
+                    return False
+            else:
+                self.logger.error(f"❌ Setup failed for {self.symbol}")
+                return False
+                
+        except Exception as e:
+            self.logger.error(f"❌ Error testing trading setup: {e}")
+            return False
     def update_strategy(self):
-        """Main strategy update loop."""
+        """SIMPLIFIED: Pure TSI-based strategy with no SL/TP conflicts."""
         try:
             with self.update_lock:
                 if not self.running:
                     return
                 
-                # Check current position
+                # Reset position closed flag at start of each update
+                self._position_closed_by_signal = False
+                
+                # Check current position and handle TSI signals
                 self._check_position_and_signals()
                 
-                # Update PnL
+                # Update PnL for monitoring only (no exit decisions)
                 self._update_pnl()
                 
-                # Check TP/SL conditions  
-                self._check_tp_sl_conditions()
+                # REMOVED: TP/SL checks - let TSI handle all exits
                 
                 self.last_update_time = time.time()
                 
@@ -143,18 +179,25 @@ class SignalStrategy:
             self.logger.error(f"Error updating strategy: {e}")
     
     def _check_position_and_signals(self):
-        """Check position and handle signals for THIS symbol only."""
+        """FIXED: Check position and handle signals for THIS symbol only."""
         try:
-            # Get positions for this specific symbol
+            # FIXED: Get positions ONLY for this specific symbol with proper filtering
             positions = self.exchange.get_positions(self.symbol)
             current_position = None
             
+            # FIXED: Strict symbol matching and position detection
             for pos in positions:
-                pos_symbol = pos.get('info', {}).get('symbol', '')
-                if pos_symbol == self.symbol:
+                pos_symbol = pos.get('info', {}).get('symbol', '').upper()
+                our_symbol = self.symbol.upper()
+                
+                # Debug logging for position detection
+                self.logger.debug(f"🔍 Checking position: {pos_symbol} vs {our_symbol}")
+                
+                if pos_symbol == our_symbol:
                     size = float(pos.get('contracts', 0))
-                    if abs(size) >= 0.001:
+                    if abs(size) >= 0.001:  # Has meaningful position
                         current_position = pos
+                        self.logger.info(f"📊 Found position for {our_symbol}: {size:.6f}")
                         break
             
             # Get technical signal
@@ -165,26 +208,39 @@ class SignalStrategy:
                 self._handle_position_management(current_position, tech_signal)
             else:
                 # No position - check for entry signal
+                self.logger.debug(f"📊 No position found for {self.symbol}, checking entry signals")
                 self._handle_entry_signals(tech_signal)
                 
         except Exception as e:
             self.logger.error(f"Error checking position and signals: {e}")
-    
+
     def _handle_entry_signals(self, signal: str):
-        """Handle entry signals with simple duplicate prevention."""
+        """FIXED: Enhanced existing method with better duplicate prevention"""
         try:
             if signal not in ['buy', 'sell']:
                 return
                 
-            # SIMPLE DUPLICATE CHECK: Verify no position exists before every order
+            # ENHANCED: More aggressive duplicate checking
             if self._has_active_position():
                 self.logger.debug(f"Skipping {signal} - position already exists")
                 return
             
-            # Check recent orders throttle
+            # FIXED: Reduced throttle time and better tracking
+            current_time = time.time()
             if hasattr(self, '_last_entry_time'):
-                if time.time() - self._last_entry_time < 60:
+                time_since_last = current_time - self._last_entry_time
+                if time_since_last < 10:  # REDUCED: 10 seconds instead of 60
+                    self.logger.debug(f"Entry throttled: {time_since_last:.1f}s < 10s")
                     return
+            
+            # ENHANCED: Check if we have pending orders (not just positions)
+            try:
+                open_orders = self.exchange.get_open_orders(self.symbol)
+                if open_orders:
+                    self.logger.debug(f"Skipping {signal} - {len(open_orders)} open orders exist")
+                    return
+            except Exception as e:
+                self.logger.warning(f"Could not check open orders: {e}")
             
             # Get current price and calculate amount
             ticker = self.exchange.get_ticker(self.symbol)
@@ -192,18 +248,21 @@ class SignalStrategy:
             amount = self._calculate_position_amount(current_price)
             
             if amount >= self.min_amount:
-                # FINAL POSITION CHECK: Double-check before order placement
+                # ENHANCED: Final triple-check before order
                 if self._has_active_position():
                     self.logger.warning(f"Position detected during order preparation - cancelling {signal}")
                     return
                 
+                # ENHANCED: Log the order attempt for debugging
+                self.logger.info(f"🎯 ATTEMPTING ORDER: {signal.upper()} {amount:.6f} @ ${current_price:.6f}")
+                
                 # Place market order
                 order = self.exchange.create_market_order(self.symbol, signal, amount)
                 if order and 'id' in order:
-                    # WAIT FOR EXECUTION: Ensure order is filled before continuing
-                    time.sleep(1)  # Brief wait for execution
+                    # ENHANCED: Immediate settlement wait
+                    time.sleep(2)  # Wait 2 seconds for order to settle
                     
-                    # VERIFY EXECUTION: Check if order actually filled
+                    # Verify execution
                     try:
                         order_status = self.exchange.get_order_status(order['id'], self.symbol)
                         if order_status.get('status') not in ['filled', 'closed']:
@@ -212,7 +271,8 @@ class SignalStrategy:
                     except Exception as e:
                         self.logger.warning(f"Could not verify order status: {e}")
                     
-                    self._last_entry_time = time.time()
+                    # ENHANCED: Update tracking
+                    self._last_entry_time = current_time
                     self.total_trades += 1
                     
                     # Record the fill
@@ -222,21 +282,104 @@ class SignalStrategy:
                         'side': signal,
                         'price': fill_price,
                         'amount': amount,
-                        'timestamp': time.time(),
+                        'timestamp': current_time,
                         'type': 'entry'
                     })
                     
                     self.logger.info(f"✅ Entry: {signal.upper()} {amount:.6f} @ ${fill_price:.6f}")
                     
+                    # ENHANCED: Immediate position verification
+                    time.sleep(1)
+                    if self._has_active_position():
+                        self.logger.info(f"✅ Position confirmed after order")
+                    else:
+                        self.logger.warning(f"⚠️ No position detected after order - potential issue")
+                    
         except Exception as e:
             self.logger.error(f"Error handling entry signals: {e}")
     
+    def _place_single_order(self, signal: str) -> bool:
+        """SINGLE ORDER ENTRY POINT - All orders must go through here"""
+        try:
+            current_time = time.time()
+            
+            # Check cooldown period
+            if current_time - self.last_order_time < self.order_cooldown:
+                remaining = self.order_cooldown - (current_time - self.last_order_time)
+                self.logger.debug(f"⏳ Order cooldown: {remaining:.1f}s remaining")
+                return False
+            
+            # CRITICAL: Check position with delay if we just placed an order
+            if self.last_order_id and current_time - self.last_order_time < self.position_check_delay:
+                self.logger.debug(f"⏳ Waiting for previous order to settle...")
+                return False
+            
+            # Double-check no position exists
+            if self._has_active_position():
+                self.logger.debug(f"📊 Position exists, skipping {signal} order")
+                return False
+            
+            # Get current price and calculate amount
+            ticker = self.exchange.get_ticker(self.symbol)
+            current_price = float(ticker['last'])
+            amount = self._calculate_position_amount(current_price)
+            
+            if amount < self.min_amount:
+                self.logger.warning(f"Amount {amount:.6f} below minimum {self.min_amount}")
+                return False
+            
+            # FINAL position check before order
+            if self._has_active_position():
+                self.logger.warning(f"Position detected during order prep - aborting {signal}")
+                return False
+            
+            self.logger.info(f"🎯 PLACING SINGLE ORDER: {signal.upper()} {amount:.6f} @ ${current_price:.6f}")
+            
+            # Place the order
+            order = self.exchange.create_market_order(self.symbol, signal, amount)
+            
+            if order and 'id' in order:
+                # Update tracking
+                self.last_order_time = current_time
+                self.last_order_id = order['id']
+                self.total_trades += 1
+                
+                # Record the order
+                fill_price = float(order.get('average', current_price))
+                self.filled_orders.append({
+                    'id': order['id'],
+                    'side': signal,
+                    'price': fill_price,
+                    'amount': amount,
+                    'timestamp': current_time,
+                    'type': 'single_entry'
+                })
+                
+                self.logger.info(f"✅ ORDER PLACED: {signal.upper()} {amount:.6f} @ ${fill_price:.6f}, ID: {order['id']}")
+                
+                # Wait for settlement
+                time.sleep(self.position_check_delay)
+                
+                return True
+            else:
+                self.logger.error(f"❌ Order placement failed - invalid response")
+                return False
+                
+        except Exception as e:
+            self.logger.error(f"❌ Error in single order placement: {e}")
+            return False
     def _handle_position_management(self, position: Dict, signal: str):
-        """Handle position management and exit signals."""
+        """FIXED: Enhanced existing method with better exit logic"""
         try:
             position_size = float(position.get('contracts', 0))
+            position_symbol = position.get('info', {}).get('symbol', '').upper()
             
-            # Determine position side from size (not from position.side which can be unreliable)
+            # ENHANCED: Strict symbol matching
+            if position_symbol != self.symbol.upper():
+                self.logger.debug(f"Position symbol mismatch: {position_symbol} != {self.symbol.upper()}")
+                return
+            
+            # Determine position side and close side
             if position_size > 0:
                 position_side = 'long'
                 close_side = 'sell'
@@ -244,23 +387,39 @@ class SignalStrategy:
                 position_side = 'short' 
                 close_side = 'buy'
             else:
-                return  # No position
+                self.logger.debug(f"Zero position size for {self.symbol}")
+                return
             
             close_amount = abs(position_size)
+            
+            self.logger.debug(f"📊 Managing position: {position_side.upper()} {close_amount:.6f}")
             
             # Check for opposing signal (exit condition)
             should_exit = False
             if position_side == 'long' and signal == 'sell':
                 should_exit = True
+                exit_reason = f"LONG position with SELL signal"
             elif position_side == 'short' and signal == 'buy':
                 should_exit = True
+                exit_reason = f"SHORT position with BUY signal"
             
             if should_exit:
-                self.logger.info(f"🚨 Closing {position_side.upper()} position: {close_side.upper()} {close_amount:.6f}")
+                # ENHANCED: Check for recent exit to prevent duplicate exits
+                current_time = time.time()
+                last_exit_time = getattr(self, '_last_exit_time', 0)
+                
+                if current_time - last_exit_time < 5:  # 5 second gap between exits
+                    self.logger.debug(f"Exit throttled: {current_time - last_exit_time:.1f}s < 5s")
+                    return
+                
+                self.logger.warning(f"🚨 Signal-based exit: {exit_reason}")
+                self.logger.warning(f"🚨 Closing {position_side.upper()}: {close_side.upper()} {close_amount:.6f}")
                 
                 try:
                     exit_order = self.exchange.create_market_order(self.symbol, close_side, close_amount)
                     if exit_order and 'id' in exit_order:
+                        # ENHANCED: Update exit tracking
+                        self._last_exit_time = current_time
                         self.total_trades += 1
                         
                         # Record the exit
@@ -270,14 +429,22 @@ class SignalStrategy:
                             'side': close_side,
                             'price': fill_price,
                             'amount': close_amount,
-                            'timestamp': time.time(),
-                            'type': 'exit'
+                            'timestamp': current_time,
+                            'type': 'signal_exit'
                         })
                         
-                        self.logger.info(f"✅ Position closed: {close_side.upper()} {close_amount:.6f} @ ${fill_price:.6f}")
+                        self.logger.warning(f"✅ Position closed: {close_side.upper()} {close_amount:.6f} @ ${fill_price:.6f}")
+                        
+                        # ENHANCED: Mark position as closed to prevent TP/SL from running
+                        self._position_closed_by_signal = True
                         
                 except Exception as e:
                     self.logger.error(f"Error closing position: {e}")
+            else:
+                # Log when signals align with position
+                if ((position_side == 'long' and signal == 'buy') or 
+                    (position_side == 'short' and signal == 'sell')):
+                    self.logger.debug(f"📊 Signal aligned: {position_side.upper()} + {signal.upper()}")
                     
         except Exception as e:
             self.logger.error(f"Error in position management: {e}")
@@ -323,8 +490,13 @@ class SignalStrategy:
             self.logger.error(f"Error updating PnL for {self.symbol}: {e}")
     
     def _check_tp_sl_conditions(self):
-        """Check take profit and stop loss conditions."""
+        """FIXED: Check take profit and stop loss conditions - prevent double exit."""
         try:
+            # FIXED: Skip if position already closed by signal
+            if getattr(self, '_position_closed_by_signal', False):
+                self.logger.debug("Position already closed by signal, skipping TP/SL check")
+                return
+            
             if self.position_size_usd <= 0:
                 return
             
@@ -346,49 +518,38 @@ class SignalStrategy:
             self.logger.error(f"Error checking TP/SL: {e}")
     
     def stop_strategy(self):
-        """Stop the strategy and close positions."""
+        """FIXED: Clean stop without position closing orders"""
         try:
             if not self.running:
                 return
             
             self.running = False
+            self.logger.info(f"🛑 Stopping strategy for {self.symbol}")
             
             # Cancel all orders
             try:
                 cancelled = self.exchange.cancel_all_orders(self.symbol)
                 if cancelled:
-                    self.logger.info(f"Cancelled {len(cancelled)} orders")
+                    self.logger.info(f"Cancelled {len(cancelled)} orders for {self.symbol}")
             except Exception as e:
-                self.logger.error(f"Error cancelling orders: {e}")
+                self.logger.error(f"Error cancelling orders for {self.symbol}: {e}")
             
-            # Close any open positions
-            try:
-                positions = self.exchange.get_positions(self.symbol)
-                for position in positions:
-                    if position.get('info', {}).get('symbol', '') == self.symbol:
-                        size = float(position.get('contracts', 0))
-                        if abs(size) >= 0.001:
-                            close_side = 'sell' if size > 0 else 'buy'
-                            self.exchange.create_market_order(self.symbol, close_side, abs(size))
-                            self.logger.info(f"Closed position: {close_side.upper()} {abs(size):.6f}")
-            except Exception as e:
-                self.logger.error(f"Error closing positions: {e}")
+            # Reset tracking flags
+            if hasattr(self, '_position_closed_by_signal'):
+                self._position_closed_by_signal = False
             
-            self.logger.info("✅ Strategy stopped")
+            self.logger.info(f"✅ Strategy stopped for {self.symbol}")
             
         except Exception as e:
-            self.logger.error(f"Error stopping strategy: {e}")
+            self.logger.error(f"Error stopping strategy for {self.symbol}: {e}")
             self.running = False
     
     def get_status(self) -> Dict[str, Any]:
-        """Get strategy status with position-based running state."""
+        """Get strategy status (removed TP/SL fields)."""
         try:
             with self.update_lock:
                 pnl_percentage = (self.total_pnl / self.position_size_usd * 100) if self.position_size_usd > 0 else 0.0
-                
-                # Check if has active position
                 has_position = self._has_active_position()
-                # Strategy is "running" if it has active position OR is internally running
                 effective_running = has_position or self.running
                 
                 return {
@@ -397,14 +558,14 @@ class SignalStrategy:
                     'display_symbol': self.original_symbol,
                     'position_size_usd': self.position_size_usd,
                     'leverage': self.leverage,
-                    'take_profit_pct': self.take_profit_pct,
-                    'stop_loss_pct': self.stop_loss_pct,
+                    'strategy_type': 'tsi_only',  # Identify as TSI-only
                     'running': effective_running,
                     'has_position': has_position,
                     'trades_count': self.total_trades,
                     'pnl': self.total_pnl,
                     'pnl_percentage': pnl_percentage,
                     'last_update': self.last_update_time,
+                    'exit_method': 'tsi_momentum_only'  # Clear identification
                 }
                 
         except Exception as e:
@@ -417,16 +578,24 @@ class SignalStrategy:
             }
     
     def _has_active_position(self) -> bool:
-        """Check if strategy has active position for THIS symbol only."""
+        """FIXED: Check if strategy has active position for THIS symbol only with strict filtering."""
         try:
             positions = self.exchange.get_positions(self.symbol)
+            
             for pos in positions:
-                # More robust symbol matching
-                pos_symbol = pos.get('info', {}).get('symbol', '')
-                if pos_symbol == self.symbol:
+                pos_symbol = pos.get('info', {}).get('symbol', '').upper()
+                our_symbol = self.symbol.upper()
+                
+                # FIXED: Strict symbol matching
+                if pos_symbol == our_symbol:
                     size = float(pos.get('contracts', 0))
                     if abs(size) >= 0.001:
+                        self.logger.debug(f"📊 Active position found: {our_symbol} = {size:.6f}")
                         return True
+            
+            self.logger.debug(f"📊 No active position for {self.symbol}")
             return False
-        except Exception:
+            
+        except Exception as e:
+            self.logger.error(f"Error checking active position: {e}")
             return False
