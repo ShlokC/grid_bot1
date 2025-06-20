@@ -245,17 +245,19 @@ class SignalStrategy:
             symbol_orders = [o for o in open_orders if o.get('info', {}).get('symbol', '') == self.symbol]
             pending_orders = len(symbol_orders)
             
-            return {
-                'current_price': float(ticker['last']),
-                'tech_signal': tech_signal,
-                'has_position': current_position is not None,
-                'position_size': position_size,
-                'position_side': position_side,
-                'entry_price': entry_price,
-                'pending_orders': pending_orders,
-                'timestamp': time.time()
+            live_data = {
+            'current_price': float(ticker['last']),
+            'tech_signal': tech_signal,
+            'has_position': current_position is not None,
+            'position_size': position_size,
+            'position_side': position_side,
+            'entry_price': entry_price,
+            'pending_orders': pending_orders,
+            'timestamp': time.time()
             }
-            
+            self.logger.info(f"📊 {self.symbol}: ${live_data['current_price']:.6f} | {live_data['tech_signal'].upper()} | {live_data['position_side'] or 'NO_POS'} {abs(live_data['position_size']):.6f} | Pending:{live_data['pending_orders']}")
+    
+            return live_data
         except Exception as e:
             self.logger.error(f"Error getting live trading data: {e}")
             return {'tech_signal': 'none', 'has_position': False, 'pending_orders': 0, 'current_price': 0}
