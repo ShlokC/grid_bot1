@@ -40,9 +40,15 @@ class FastAdaptiveTSISystem:
         
         # Reduced parameter space for faster optimization
         self.param_sets = [
-            (20, 10, 5), (25, 13, 7), (30, 15, 9),  # Fast
-            (35, 18, 11), (20, 8, 6), (25, 10, 8)   # Conservative
-        ]
+        # Fast responsive (good for volatile markets)
+        (15, 8, 4), (18, 9, 5), (20, 10, 5), (22, 11, 6),
+        # Medium responsive (balanced)
+        (25, 13, 7), (28, 14, 8), (30, 15, 9), (32, 16, 10),
+        # Slower (good for trending markets)  
+        (35, 18, 11), (40, 20, 12), (45, 23, 13), (50, 25, 15),
+        # Very fast (scalping)
+        (12, 6, 3), (14, 7, 4), (16, 8, 4), (18, 10, 5)
+    ]
         
         # Load saved parameters or use defaults
         self.current_params, self.fallback_params = self._load_symbol_config()
@@ -52,10 +58,10 @@ class FastAdaptiveTSISystem:
         self.market_volatility = deque(maxlen=30)   # 30 periods for regime detection
         
         # Dynamic optimization triggers
-        self.min_signals_for_optimization = 8      # Reduced from 50
-        self.accuracy_threshold = 45.0             # Trigger if below 45%
+        self.min_signals_for_optimization = 5      # Reduced from 50
+        self.accuracy_threshold = 35.0             # Trigger if below 45%
         self.volatility_change_threshold = 0.3     # 30% volatility change
-        self.max_optimization_time = 0.1           # 100ms max optimization time
+        self.max_optimization_time = 0.2           # 100ms max optimization time
         
         # State tracking
         self.last_optimization = 0
@@ -272,7 +278,7 @@ class FastAdaptiveTSISystem:
             current_time = time.time()
             
             # Don't optimize too frequently (minimum 5 minutes)
-            if current_time - self.last_optimization < 300:
+            if current_time - self.last_optimization < 120:
                 return False
             
             # Check if optimization already running
@@ -403,9 +409,9 @@ class FastAdaptiveTSISystem:
             # Quick signal generation and scoring
             correct_signals = 0
             total_signals = 0
-            
-            # Test only last 20 points for speed
-            test_length = min(20, len(tsi_line) - 3)
+
+            # Test only last 40 points for speed
+            test_length = min(40, len(tsi_line) - 5)
             
             for i in range(test_length):
                 idx = len(tsi_line) - test_length + i
