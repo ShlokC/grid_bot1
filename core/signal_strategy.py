@@ -233,8 +233,8 @@ class SignalStrategy:
             for pos in positions:
                 pos_symbol = pos.get('info', {}).get('symbol', '').upper()
                 if pos_symbol == self.symbol.upper():
-                    position_side = 'long' if pos.get('positionAmt', 0) > 0 else 'short'
-                    size = float(pos.get('positionAmt', 0))
+                    position_side = pos.get('side', '') 
+                    size = float(pos.get('contracts', 0))
                     if abs(size) >= 0.001:
                         current_position = pos
                         position_size = size

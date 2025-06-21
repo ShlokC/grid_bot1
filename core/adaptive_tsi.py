@@ -278,7 +278,7 @@ class FastAdaptiveTSISystem:
                 return 'none'
             
             # Get OHLCV data
-            ohlcv_data = exchange.get_ohlcv(self.symbol, timeframe='5m', limit=60)
+            ohlcv_data = exchange.get_ohlcv(self.symbol, timeframe='3m', limit=60)
             if not ohlcv_data or len(ohlcv_data) < 30:
                 return 'none'
             
