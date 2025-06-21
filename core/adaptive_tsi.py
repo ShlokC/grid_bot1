@@ -37,29 +37,30 @@ class FastAdaptiveTSISystem:
         self.symbol = symbol
         self.config_file = config_file
         
-        # Reduced parameter space for faster optimization
+        # FIXED: Crypto-optimized TSI parameters - much faster and more responsive
         self.param_sets = [
-            # Fast responsive (good for volatile markets)
-            (15, 8, 4), (18, 9, 5), (20, 10, 5), (22, 11, 6),
-            # Medium responsive (balanced)
-            (25, 13, 7), (28, 14, 8), (30, 15, 9), (32, 16, 10),
-            # Slower (good for trending markets)  
-            (35, 18, 11), (40, 20, 12), (45, 23, 13), (50, 25, 15),
-            # Very fast (scalping)
-            (12, 6, 3), (14, 7, 4), (16, 8, 4), (18, 10, 5)
+            # Ultra-fast scalping (for high volatility)
+            (5, 3, 2), (6, 3, 2), (7, 3, 2), (7, 4, 2),
+            # Fast responsive (optimal for crypto day trading)
+            (7, 4, 3), (8, 4, 3), (9, 5, 3), (9, 6, 3),
+            (10, 5, 3), (10, 6, 4), (11, 6, 4), (12, 6, 4),
+            # Medium-fast (for trending crypto markets)
+            (12, 7, 4), (13, 7, 4), (14, 7, 5), (14, 8, 5),
+            # Balanced (still responsive but smoother)
+            (15, 8, 5), (16, 8, 5), (17, 9, 6), (18, 9, 6)
         ]
         
-        # Load saved parameters or use defaults
+        # Load saved parameters or use crypto-optimized defaults
         self.current_params, self.fallback_params = self._load_symbol_config()
         
         # FIXED: Load persistent signal performance data
         self.signal_performance = self._load_signal_history()
         self.market_volatility = deque(maxlen=30)
         
-        # FIXED: Reduced thresholds for more frequent optimization
-        self.min_signals_for_optimization = 3      # Reduced from 5
-        self.accuracy_threshold = 30.0             # Reduced from 35.0
-        self.volatility_change_threshold = 0.3
+        # FIXED: More aggressive optimization thresholds for crypto
+        self.min_signals_for_optimization = 3      # Keep low for quick adaptation
+        self.accuracy_threshold = 35.0             # Slightly higher bar for crypto
+        self.volatility_change_threshold = 0.3     # Keep sensitive to regime changes
         self.max_optimization_time = 0.2
         
         # State tracking
@@ -67,16 +68,16 @@ class FastAdaptiveTSISystem:
         self.optimization_in_progress = False
         self.last_volatility_regime = 0.0
         
-        # Signal control
+        # Signal control - faster for crypto
         self.last_signal = 'none'
         self.last_signal_time = 0
-        self.signal_cooldown = 20
+        self.signal_cooldown = 15  # Reduced from 20 to 15 seconds for crypto
         
-        # FIXED: Load thresholds from config or use defaults
-        self.momentum_threshold = getattr(self.current_params, 'momentum_threshold', 1.0)
-        self.strength_threshold = getattr(self.current_params, 'strength_threshold', 3.0)
+        # FIXED: Crypto-optimized thresholds - more sensitive to quick moves
+        self.momentum_threshold = getattr(self.current_params, 'momentum_threshold', 0.5)  # Reduced from 1.0
+        self.strength_threshold = getattr(self.current_params, 'strength_threshold', 1.5)  # Reduced from 3.0
         
-        self.logger.info(f"⚡ FIXED Adaptive TSI initialized for {symbol} "
+        self.logger.info(f"⚡ CRYPTO-OPTIMIZED Adaptive TSI initialized for {symbol} "
                         f"[{self.current_params.slow}/{self.current_params.fast}/{self.current_params.signal}] "
                         f"[Acc: {self.current_params.accuracy:.1f}%] [Signals: {len(self.signal_performance)}]")
 
@@ -171,31 +172,34 @@ class FastAdaptiveTSISystem:
                 symbol_config = configs.get(self.symbol, {})
                 if symbol_config:
                     current_params = TSIParameterSet(
-                        slow=symbol_config.get('slow', 25),
-                        fast=symbol_config.get('fast', 13),
-                        signal=symbol_config.get('signal', 7),
+                        slow=symbol_config.get('slow', 9),      # FIXED: Crypto default 9 instead of 25
+                        fast=symbol_config.get('fast', 5),      # FIXED: Crypto default 5 instead of 13
+                        signal=symbol_config.get('signal', 3),  # FIXED: Crypto default 3 instead of 7
                         accuracy=symbol_config.get('accuracy', 0.0),
                         total_signals=symbol_config.get('total_signals', 0),
                         winning_signals=symbol_config.get('winning_signals', 0),
                         last_used=symbol_config.get('last_used', 0.0)
                     )
                     
-                    # Add custom thresholds if saved
-                    current_params.momentum_threshold = symbol_config.get('momentum_threshold', 1.0)
-                    current_params.strength_threshold = symbol_config.get('strength_threshold', 3.0)
+                    # Add custom thresholds if saved, with crypto-optimized defaults
+                    current_params.momentum_threshold = symbol_config.get('momentum_threshold', 0.5)  # Crypto default
+                    current_params.strength_threshold = symbol_config.get('strength_threshold', 1.5)  # Crypto default
                     
                     self.logger.info(f"📂 Loaded config for {self.symbol}: "
-                                   f"{current_params.slow}/{current_params.fast}/{current_params.signal} "
-                                   f"(Acc: {current_params.accuracy:.1f}%)")
+                                f"{current_params.slow}/{current_params.fast}/{current_params.signal} "
+                                f"(Acc: {current_params.accuracy:.1f}%)")
                     
                     return current_params, current_params
             
         except Exception as e:
             self.logger.error(f"❌ Error loading config for {self.symbol}: {e}")
         
-        # Return defaults if loading failed
-        default_params = TSIParameterSet(slow=25, fast=13, signal=7)
-        self.logger.info(f"📂 Using default config for {self.symbol}: 25/13/7")
+        # FIXED: Return crypto-optimized defaults instead of traditional market defaults
+        default_params = TSIParameterSet(slow=9, fast=5, signal=3)  # Much faster for crypto
+        default_params.momentum_threshold = 0.5   # More sensitive
+        default_params.strength_threshold = 1.5   # More sensitive
+        
+        self.logger.info(f"📂 Using CRYPTO-OPTIMIZED default config for {self.symbol}: 9/5/3")
         return default_params, default_params
 
     def _save_symbol_config(self, force: bool = False):
@@ -463,36 +467,63 @@ class FastAdaptiveTSISystem:
             return False
 
     def _fast_optimize_parameters(self, closes: list):
-        """FIXED: Fast parameter optimization with immediate saving"""
+        """CRYPTO-OPTIMIZED: Fast parameter optimization with preference for responsive parameters"""
         try:
             start_time = time.time()
             
-            if len(closes) < 40:
+            if len(closes) < 30:  # Reduced from 40 for crypto
                 return
             
             best_params = None
             best_score = -1.0
             current_score = self.current_params.accuracy
             
-            # Test parameter sets
-            for slow, fast, signal_period in self.param_sets[:8]:  # Test only 8 sets for speed
+            # CRYPTO-OPTIMIZED: Prioritize faster parameter sets for crypto markets
+            # Sort parameter sets by speed (prefer smaller slow values)
+            sorted_params = sorted(self.param_sets, key=lambda x: x[0])  # Sort by slow period
+            
+            # Test parameter sets with crypto bias
+            for slow, fast, signal_period in sorted_params[:12]:  # Test more sets but prioritize fast ones
                 try:
                     if time.time() - start_time > self.max_optimization_time:
                         break
                     
-                    score = self._quick_backtest(closes, slow, fast, signal_period)
-                    if score > best_score:
-                        best_score = score
+                    # CRYPTO-OPTIMIZED: Score with responsiveness bonus
+                    base_score = self._quick_backtest(closes, slow, fast, signal_period)
+                    
+                    # CRYPTO BONUS: Add bonus for faster parameters (more responsive)
+                    speed_bonus = 0
+                    if slow <= 10:      # Very fast
+                        speed_bonus = 5.0
+                    elif slow <= 15:    # Fast
+                        speed_bonus = 3.0
+                    elif slow <= 20:    # Medium
+                        speed_bonus = 1.0
+                    # No bonus for slow > 20
+                    
+                    # CRYPTO BONUS: Add bonus for recent volatility adaptation
+                    volatility_bonus = 0
+                    if len(self.market_volatility) >= 10:
+                        recent_vol = np.mean(list(self.market_volatility)[-5:])
+                        if recent_vol > 0.02:  # High volatility market
+                            if slow <= 12:  # Prefer very fast in volatile markets
+                                volatility_bonus = 3.0
+                    
+                    adjusted_score = base_score + speed_bonus + volatility_bonus
+                    
+                    if adjusted_score > best_score:
+                        best_score = adjusted_score
                         best_params = TSIParameterSet(
                             slow=slow, fast=fast, signal=signal_period,
-                            accuracy=score, last_used=time.time()
+                            accuracy=base_score,  # Store base score for accuracy
+                            last_used=time.time()
                         )
-                        
+                            
                 except Exception:
                     continue
             
-            # FIXED: Update parameters if better found (reduced improvement threshold)
-            if best_params and best_score > current_score + 2:  # Only 2% improvement needed
+            # CRYPTO-OPTIMIZED: Lower improvement threshold for faster adaptation
+            if best_params and best_score > current_score + 1:  # Only 1% improvement needed
                 old_params = f"{self.current_params.slow}/{self.current_params.fast}/{self.current_params.signal}"
                 new_params = f"{best_params.slow}/{best_params.fast}/{best_params.signal}"
                 
@@ -502,20 +533,38 @@ class FastAdaptiveTSISystem:
                 # Update parameters but preserve tracking data
                 best_params.total_signals = self.current_params.total_signals
                 best_params.winning_signals = self.current_params.winning_signals
-                self.current_params = best_params
                 
-                # FIXED: Save immediately
+                # CRYPTO-OPTIMIZED: Update thresholds based on parameter speed
+                if best_params.slow <= 10:
+                    # Very fast parameters need more sensitive thresholds
+                    best_params.momentum_threshold = 0.3
+                    best_params.strength_threshold = 1.0
+                elif best_params.slow <= 15:
+                    # Fast parameters
+                    best_params.momentum_threshold = 0.5
+                    best_params.strength_threshold = 1.5
+                else:
+                    # Medium parameters
+                    best_params.momentum_threshold = 0.8
+                    best_params.strength_threshold = 2.0
+                
+                self.current_params = best_params
+                self.momentum_threshold = best_params.momentum_threshold
+                self.strength_threshold = best_params.strength_threshold
+                
+                # Save immediately
                 self._save_symbol_config(force=True)
                 
-                self.logger.info(f"⚡ OPTIMIZED & SAVED: {old_params} → {new_params} "
-                               f"(Score: +{best_score - current_score:.1f}%)")
+                self.logger.info(f"⚡ CRYPTO-OPTIMIZED: {old_params} → {new_params} "
+                            f"(Score: +{best_score - current_score:.1f}%) "
+                            f"[Thresholds: {self.momentum_threshold:.1f}/{self.strength_threshold:.1f}]")
             
             self.last_optimization = time.time()
             optimization_time = (time.time() - start_time) * 1000
-            self.logger.debug(f"⚡ Optimization completed in {optimization_time:.1f}ms")
+            self.logger.debug(f"⚡ Crypto optimization completed in {optimization_time:.1f}ms")
             
         except Exception as e:
-            self.logger.error(f"❌ Error in optimization: {e}")
+            self.logger.error(f"❌ Error in crypto optimization: {e}")
 
     def _fast_update_market_state(self, closes: list):
         """Ultra-fast market state update"""
@@ -558,12 +607,12 @@ class FastAdaptiveTSISystem:
             self.logger.error(f"❌ Error starting background optimization: {e}")
 
     def _quick_backtest(self, closes: list, slow: int, fast: int, signal: int) -> float:
-        """Ultra-fast backtesting"""
+        """CRYPTO-OPTIMIZED: Ultra-fast backtesting with crypto-appropriate scoring"""
         try:
             price_series = pd.Series(closes)
             
             tsi_result = ta.tsi(price_series, slow=slow, fast=fast, signal=signal)
-            if tsi_result is None or len(tsi_result.dropna()) < 15:
+            if tsi_result is None or len(tsi_result.dropna()) < 10:  # Reduced from 15
                 return 0.0
             
             tsi_clean = tsi_result.dropna()
@@ -575,63 +624,119 @@ class FastAdaptiveTSISystem:
             
             correct_signals = 0
             total_signals = 0
+            total_return = 0.0  # Track actual returns for crypto
 
-            test_length = min(40, len(tsi_line) - 5)
+            # CRYPTO-OPTIMIZED: Test more recent data (crypto moves fast)
+            test_length = min(30, len(tsi_line) - 3)  # Reduced from 40, more recent focus
+            
+            # CRYPTO-OPTIMIZED: Dynamic thresholds based on parameter speed
+            if slow <= 10:
+                momentum_thresh = 0.3
+                strength_thresh = 1.0
+            elif slow <= 15:
+                momentum_thresh = 0.5
+                strength_thresh = 1.5
+            else:
+                momentum_thresh = 0.8
+                strength_thresh = 2.0
             
             for i in range(test_length):
                 idx = len(tsi_line) - test_length + i
                 if idx < 2:
                     continue
                 
-                momentum = tsi_line.iloc[idx] - tsi_line.iloc[idx-2]
+                # CRYPTO-OPTIMIZED: Faster momentum calculation
+                lookback = max(1, fast // 4)
+                if idx >= lookback:
+                    momentum = tsi_line.iloc[idx] - tsi_line.iloc[idx-lookback]
+                else:
+                    momentum = tsi_line.iloc[idx] - tsi_line.iloc[idx-1]
+                    
                 current_tsi = tsi_line.iloc[idx]
-                current_signal = tsi_signal_line.iloc[idx]
+                current_signal_val = tsi_signal_line.iloc[idx]
+                separation = abs(current_tsi - current_signal_val)
                 
                 signal_generated = 'none'
-                if momentum > 1.0 and current_tsi > current_signal:
+                
+                # CRYPTO-OPTIMIZED: More aggressive signal conditions
+                if (momentum > momentum_thresh and current_tsi > current_signal_val and
+                    (separation > strength_thresh or current_tsi < -25)):  # Oversold bounce
                     signal_generated = 'buy'
-                elif momentum < -1.0 and current_tsi < current_signal:
+                elif (momentum < -momentum_thresh and current_tsi < current_signal_val and
+                    (separation > strength_thresh or current_tsi > 25)):  # Overbought reversal
+                    signal_generated = 'sell'
+                
+                # CRYPTO-OPTIMIZED: Extreme level signals
+                elif current_tsi < -30 and momentum > momentum_thresh * 0.5:
+                    signal_generated = 'buy'
+                elif current_tsi > 30 and momentum < -momentum_thresh * 0.5:
                     signal_generated = 'sell'
                 
                 if signal_generated != 'none':
                     total_signals += 1
                     
-                    if idx < len(closes) - 3:
-                        price_change = closes[idx + 2] - closes[idx]
-                        if (signal_generated == 'buy' and price_change > 0) or \
-                           (signal_generated == 'sell' and price_change < 0):
+                    # CRYPTO-OPTIMIZED: Shorter evaluation period for crypto (faster moves)
+                    if idx < len(closes) - 2:  # Reduced from 3
+                        price_change = closes[idx + 1] - closes[idx]  # Next candle instead of +2
+                        price_change_pct = (price_change / closes[idx]) * 100
+                        
+                        # CRYPTO-OPTIMIZED: Lower threshold for success (crypto is more volatile)
+                        is_correct = False
+                        if signal_generated == 'buy' and price_change_pct > 0.05:  # 0.05% threshold
+                            is_correct = True
+                            total_return += price_change_pct
+                        elif signal_generated == 'sell' and price_change_pct < -0.05:  # 0.05% threshold
+                            is_correct = True
+                            total_return += abs(price_change_pct)
+                        
+                        if is_correct:
                             correct_signals += 1
             
-            return (correct_signals / total_signals * 100) if total_signals > 0 else 0.0
+            if total_signals == 0:
+                return 0.0
+            
+            # CRYPTO-OPTIMIZED: Scoring combines accuracy and profitability
+            accuracy = (correct_signals / total_signals) * 100
+            avg_return = total_return / total_signals if total_signals > 0 else 0
+            
+            # CRYPTO BONUS: Reward profitable strategies more than just accurate ones
+            profitability_bonus = min(avg_return * 2, 10)  # Max 10% bonus for profitability
+            
+            # CRYPTO BONUS: Reward strategies that generate more signals (active trading)
+            activity_bonus = min(total_signals * 0.5, 5)  # Max 5% bonus for activity
+            
+            final_score = accuracy + profitability_bonus + activity_bonus
+            
+            return min(final_score, 100.0)  # Cap at 100%
             
         except Exception:
             return 0.0
 
     def _generate_fast_signal(self, closes: list) -> str:
-        """Fast signal generation using current parameters"""
+        """CRYPTO-OPTIMIZED: Fast signal generation using current parameters"""
         try:
-            if len(closes) < 30:
+            if len(closes) < 20:  # Reduced from 30 for faster response
                 return 'none'
             
             price_series = pd.Series(closes)
             tsi_result = ta.tsi(price_series, 
-                              slow=self.current_params.slow,
-                              fast=self.current_params.fast,
-                              signal=self.current_params.signal)
+                            slow=self.current_params.slow,
+                            fast=self.current_params.fast,
+                            signal=self.current_params.signal)
             
-            if tsi_result is None or len(tsi_result.dropna()) < 10:
+            if tsi_result is None or len(tsi_result.dropna()) < 8:  # Reduced from 10
                 if self.fallback_params.slow != self.current_params.slow:
                     tsi_result = ta.tsi(price_series,
-                                      slow=self.fallback_params.slow,
-                                      fast=self.fallback_params.fast,
-                                      signal=self.fallback_params.signal)
+                                    slow=self.fallback_params.slow,
+                                    fast=self.fallback_params.fast,
+                                    signal=self.fallback_params.signal)
                     if tsi_result is None:
                         return 'none'
                 else:
                     return 'none'
             
             tsi_clean = tsi_result.dropna()
-            if len(tsi_clean.columns) < 2 or len(tsi_clean) < 5:
+            if len(tsi_clean.columns) < 2 or len(tsi_clean) < 3:  # Reduced from 5
                 return 'none'
             
             tsi_line = tsi_clean.iloc[:, 0]
@@ -640,7 +745,8 @@ class FastAdaptiveTSISystem:
             current_tsi = tsi_line.iloc[-1]
             current_signal = tsi_signal_line.iloc[-1]
             
-            lookback = max(2, self.current_params.fast // 5)
+            # CRYPTO-OPTIMIZED: Faster momentum calculation
+            lookback = max(1, self.current_params.fast // 4)  # Shorter lookback for crypto
             if len(tsi_line) > lookback:
                 momentum = tsi_line.iloc[-1] - tsi_line.iloc[-1-lookback]
             else:
@@ -648,23 +754,49 @@ class FastAdaptiveTSISystem:
             
             separation = abs(current_tsi - current_signal)
             
+            # CRYPTO-OPTIMIZED: Adjusted overbought/oversold levels for crypto volatility
+            OVERBOUGHT_LEVEL = 30.0    # Increased from 25 for crypto
+            OVERSOLD_LEVEL = -30.0     # More extreme levels for crypto
+            
+            # CRYPTO-OPTIMIZED: More sensitive signal conditions
+            strong_momentum = abs(momentum) > self.momentum_threshold
+            sufficient_separation = separation > self.strength_threshold
+            
+            # Primary signals with crypto-optimized logic
             if (momentum > self.momentum_threshold and 
                 current_tsi > current_signal and
-                separation > self.strength_threshold):
+                (sufficient_separation or current_tsi < OVERSOLD_LEVEL)):  # Buy on oversold bounce
                 return 'buy'
             elif (momentum < -self.momentum_threshold and 
-                  current_tsi < current_signal and
-                  separation > self.strength_threshold):
+                current_tsi < current_signal and
+                (sufficient_separation or current_tsi > OVERBOUGHT_LEVEL)):  # Sell on overbought reversal
                 return 'sell'
-            elif current_tsi < -25 and momentum > self.momentum_threshold * 0.7:
-                return 'buy'
-            elif current_tsi > 25 and momentum < -self.momentum_threshold * 0.7:
-                return 'sell'
+            
+            # CRYPTO-OPTIMIZED: Extreme level reversal signals (more aggressive)
+            elif current_tsi < OVERSOLD_LEVEL and momentum > self.momentum_threshold * 0.5:
+                return 'buy'  # Oversold bounce with any positive momentum
+            elif current_tsi > OVERBOUGHT_LEVEL and momentum < -self.momentum_threshold * 0.5:
+                return 'sell'  # Overbought reversal with any negative momentum
+            
+            # CRYPTO-OPTIMIZED: Crossover signals (more sensitive)
+            if len(tsi_line) >= 2:
+                prev_tsi = tsi_line.iloc[-2]
+                prev_signal = tsi_signal_line.iloc[-2]
+                
+                # Bullish crossover
+                if (current_tsi > current_signal and prev_tsi <= prev_signal and
+                    momentum > 0 and abs(current_tsi) > 5):  # Minimum TSI level for significance
+                    return 'buy'
+                
+                # Bearish crossover  
+                elif (current_tsi < current_signal and prev_tsi >= prev_signal and
+                    momentum < 0 and abs(current_tsi) > 5):  # Minimum TSI level for significance
+                    return 'sell'
             
             return 'none'
             
         except Exception as e:
-            self.logger.error(f"❌ Error in signal generation: {e}")
+            self.logger.error(f"❌ Error in crypto signal generation: {e}")
             return 'none'
 
     def get_system_status(self) -> Dict:
