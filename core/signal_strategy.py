@@ -8,7 +8,7 @@ import time
 import threading
 from typing import Dict, Any, Optional
 from core.exchange import Exchange
-from core.adaptive_tsi import integrate_momentum_tsi
+from core.adaptive_crypto_signals import integrate_adaptive_crypto_signals
 
 
 class SignalStrategy:
@@ -55,7 +55,7 @@ class SignalStrategy:
         
         self.logger.info(f"✅ Centralized order management initialized for {symbol}")
         # Integrate TSI system
-        integrate_momentum_tsi(self)
+        integrate_adaptive_crypto_signals(self)
         
         self.logger.info(f"Signal Strategy initialized: {symbol}, Size: ${position_size_usd}, Leverage: {leverage}x")
     
@@ -324,7 +324,7 @@ class SignalStrategy:
             return {'action': 'none', 'side': '', 'reason': f'Error: {e}'}
 
     def _execute_single_order(self, decision: Dict, live_data: Dict):
-        """FIXED: Single order execution point - eliminates all duplicates."""
+        """FIXED: Single order execution point with proper TP/SL price calculation."""
         try:
             action = decision['action']
             side = decision['side'] 
@@ -369,11 +369,101 @@ class SignalStrategy:
                 
                 self.logger.info(f"✅ {action.upper()} EXECUTED: {side.upper()} {amount:.6f} @ ${fill_price:.6f}")
                 self.logger.info(f"✅ Order ID: {order['id']}")
+                
+                # Place TP/SL orders for entry positions only
+                if action == 'entry':
+                    import time
+                    time.sleep(1)  # Small delay to ensure position is established
+                    
+                    # FIXED: Calculate price changes with higher precision
+                    # For $0.5 profit/loss: price_change = $0.5 / amount
+                    price_change_needed = 0.5 / amount
+                    
+                    # FIXED: Use more decimal places for precision - don't round too aggressively
+                    precision = max(self.price_precision, 6)  # At least 6 decimal places
+                    
+                    if side == 'buy':
+                        # For BUY entry: TP above entry (sell higher), SL below entry (sell lower)
+                        tp_price = fill_price + price_change_needed
+                        sl_price = fill_price - price_change_needed
+                        tp_side = 'sell'
+                        sl_side = 'sell'
+                    else:  # sell
+                        # For SELL entry: TP below entry (buy lower), SL above entry (buy higher)  
+                        tp_price = fill_price - price_change_needed
+                        sl_price = fill_price + price_change_needed
+                        tp_side = 'buy'
+                        sl_side = 'buy'
+                    
+                    # FIXED: Round with higher precision
+                    tp_price = round(tp_price, precision)
+                    sl_price = round(sl_price, precision)
+                    
+                    # Validate prices are meaningful (at least 0.1% difference)
+                    min_price_diff = fill_price * 0.001  # 0.1% minimum
+                    if abs(tp_price - fill_price) < min_price_diff or abs(sl_price - fill_price) < min_price_diff:
+                        self.logger.warning(f"⚠️ TP/SL prices too close to entry. Required: ${price_change_needed:.8f}, "
+                                        f"TP: ${tp_price:.8f}, SL: ${sl_price:.8f}")
+                        return
+                    
+                    # Validate TP/SL direction makes sense
+                    if side == 'buy' and (tp_price <= fill_price or sl_price >= fill_price):
+                        self.logger.error(f"❌ Invalid BUY TP/SL: TP=${tp_price:.8f} should be > ${fill_price:.8f}, "
+                                        f"SL=${sl_price:.8f} should be < ${fill_price:.8f}")
+                        return
+                    elif side == 'sell' and (tp_price >= fill_price or sl_price <= fill_price):
+                        self.logger.error(f"❌ Invalid SELL TP/SL: TP=${tp_price:.8f} should be < ${fill_price:.8f}, "
+                                        f"SL=${sl_price:.8f} should be > ${fill_price:.8f}")
+                        return
+                    
+                    # Calculate percentages for logging
+                    tp_pct = abs((tp_price - fill_price) / fill_price) * 100
+                    sl_pct = abs((sl_price - fill_price) / fill_price) * 100
+                    
+                    self.logger.info(f"📊 Position: {amount:.6f} @ ${fill_price:.8f}")
+                    self.logger.info(f"📊 TP: ${tp_price:.8f} ({tp_pct:.4f}%), SL: ${sl_price:.8f} ({sl_pct:.4f}%)")
+                    
+                    # Place Take Profit order
+                    try:
+                        tp_order = self.exchange.create_take_profit_market_order(
+                            self.symbol, tp_side, amount, tp_price
+                        )
+                        if tp_order and 'id' in tp_order:
+                            self.logger.info(f"🎯 TAKE PROFIT: {tp_side.upper()} {amount:.6f} @ ${tp_price:.8f} (+${0.5})")
+                            self.logger.info(f"🎯 TP Order ID: {tp_order['id']}")
+                    except Exception as e:
+                        self.logger.error(f"❌ Failed to place take profit order: {e}")
+                    
+                    # Place Stop Loss order  
+                    try:
+                        sl_order = self.exchange.create_stop_order(
+                            self.symbol, sl_side, amount, sl_price, order_type='stop_market'
+                        )
+                        if sl_order and 'id' in sl_order:
+                            self.logger.info(f"🛡️ STOP LOSS: {sl_side.upper()} {amount:.6f} @ ${sl_price:.8f} (-${0.5})")
+                            self.logger.info(f"🛡️ SL Order ID: {sl_order['id']}")
+                    except Exception as e:
+                        self.logger.error(f"❌ Failed to place stop loss order: {e}")
             else:
                 self.logger.error(f"❌ Order execution failed")
                 
         except Exception as e:
             self.logger.error(f"Error executing order: {e}")
+    def _round_price(self, price: float) -> float:
+        """Round price to appropriate precision"""
+        if price <= 0:
+            return 0.0
+        
+        precision = self.price_precision
+        return float(f"{price:.{precision}f}")
+    
+    def _round_amount(self, amount: float) -> float:
+        """Round amount to appropriate precision"""
+        if amount <= 0:
+            return 0.0
+        
+        precision = self.amount_precision
+        return float(f"{amount:.{precision}f}")
     # def _check_position_and_signals(self):
     #     """FIXED: Single position fetch to prevent race condition duplicates."""
     #     try:

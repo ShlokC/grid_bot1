@@ -356,16 +356,15 @@ class Exchange:
             }
             
             if order_type == 'stop_market':
-                # Stop-market order (no limit price, executes at market when triggered)
+                # FIXED: Correct CCXT create_order arguments
                 result = self._rate_limited_request(
                     self.exchange.create_order,
                     symbol_id,
-                    'stop_market',
+                    'STOP_MARKET',  # Use uppercase for Binance
                     side,
                     amount,
                     None,  # No limit price for stop-market
-                    None,  # No price parameter
-                    params
+                    params  # Only pass params, not extra None
                 )
             elif order_type == 'stop_limit':
                 # Stop-limit order (has both stop price and limit price)
@@ -373,11 +372,10 @@ class Exchange:
                 result = self._rate_limited_request(
                     self.exchange.create_order,
                     symbol_id,
-                    'stop_limit',
+                    'STOP',
                     side,
                     amount,
                     limit_price,
-                    None,
                     params
                 )
             else:
