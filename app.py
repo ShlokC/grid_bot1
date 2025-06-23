@@ -60,7 +60,7 @@ def setup_logging(log_level: str = 'INFO'):
     # Configure root logger
     root_logger = logging.getLogger()
     root_logger.setLevel(level)
-    
+    logging.getLogger("core.adaptive_crypto_signals").setLevel(logging.DEBUG)  # Set specific logger to DEBUG for detailed output
     # Remove existing handlers to avoid duplicates
     for handler in root_logger.handlers[:]:
         root_logger.removeHandler(handler)
@@ -594,4 +594,9 @@ def main():
             logger.info("TSI Signal Trading Bot stopped")  # Updated log message
 
 if __name__ == "__main__":
+    logging.basicConfig(
+        level=logging.DEBUG,  # Set root logger to DEBUG to catch everything
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
     sys.exit(main())

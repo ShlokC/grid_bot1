@@ -263,65 +263,113 @@ class SignalStrategy:
             return {'tech_signal': 'none', 'has_position': False, 'pending_orders': 0, 'current_price': 0}
 
     def _make_order_decision(self, live_data: Dict) -> Dict:
-        """FIXED: Single decision engine to prevent conflicting orders."""
+        """MODIFIED: Single decision engine to consider adaptive exit signals."""
         try:
-            signal = live_data['tech_signal']
+            entry_signal = live_data['tech_signal'] # This is the entry signal ('buy', 'sell', 'none')
             has_position = live_data['has_position']
             position_side = live_data.get('position_side')
+            position_entry_price = live_data.get('entry_price') # Needed for PnL in exit eval
+            current_price = live_data.get('current_price') # Needed for PnL in exit eval
             pending_orders = live_data['pending_orders']
             current_time = live_data['timestamp']
             
-            # Default: no action
             decision = {'action': 'none', 'side': '', 'reason': ''}
             
-            # RULE 1: No action if invalid signal
-            if signal not in ['buy', 'sell']:
-                decision['reason'] = f'Invalid signal: {signal}'
-                return decision
-            
-            # RULE 2: No action if orders pending
+            # RULE 1 & 2 (No action if orders pending or throttled - applies to entries mostly)
             if pending_orders > 0:
                 decision['reason'] = f'{pending_orders} orders already pending'
                 return decision
             
-            # RULE 3: Throttling check
-            if hasattr(self, '_last_order_time'):
+            if hasattr(self, '_last_order_time'): # Throttling for any new order
                 time_since_last = current_time - self._last_order_time
-                if time_since_last < 10:  # 10 second minimum gap
-                    decision['reason'] = f'Throttled: {time_since_last:.1f}s < 10s'
+                if time_since_last < 10:  # 10 second minimum gap for ANY new order
+                    decision['reason'] = f'Throttled: {time_since_last:.1f}s < 10s since last order'
                     return decision
             
-            # RULE 4: Position management (exits)
+            # RULE 3: Position management (exits) - ENHANCED
             if has_position:
-                should_exit = False
+                self.logger.debug(f"[{self.symbol}] Position active ({position_side} @ ${position_entry_price}). Checking exit conditions.")
+                adaptive_exit_decision = {'should_exit': False, 'exit_reason': '', 'exit_urgency': 'none'}
                 
-                if position_side == 'long' and signal == 'sell':
-                    should_exit = True
-                    decision['reason'] = 'Exit LONG on SELL signal'
-                elif position_side == 'short' and signal == 'buy':
-                    should_exit = True
-                    decision['reason'] = 'Exit SHORT on BUY signal'
+                # Check for exit reasons from AdaptiveCryptoSignals
+                if hasattr(self, '_crypto_signal_system') and \
+                   hasattr(self._crypto_signal_system, 'evaluate_exit_conditions'):
+                    
+                    # Pass necessary data to evaluate_exit_conditions
+                    # We might need to ensure 'position_entry_time' is set on adaptive_signals instance
+                    # when a position is entered if it uses it.
+                    # For now, assuming it mainly uses current indicators and PnL.
+                    if position_entry_price is not None and current_price is not None:
+                         # Set position_entry_time on the adaptive system if it uses it.
+                         # This needs to be set when an entry order is filled.
+                         # For simplicity here, we'll assume AdaptiveCryptoSignals can work without it or it's managed elsewhere.
+                        if hasattr(self._crypto_signal_system, 'position_entry_time') and \
+                           not self._crypto_signal_system.position_entry_time: # If not set or 0
+                            # This is a bit of a hack here; ideally, this is set upon entry.
+                            # For now, let's assume if it's 0, it means it's a new check or first time.
+                            # A better way is to ensure SignalStrategy sets this on self._crypto_signal_system.position_entry_time
+                            # when an entry order is filled.
+                            pass # We'll let evaluate_exit_conditions handle its PnL calcs.
+
+                        adaptive_exit_decision = self._crypto_signal_system.evaluate_exit_conditions(
+                            position_side=position_side,
+                            entry_price=position_entry_price,
+                            current_price=current_price
+                        )
+                        self.logger.debug(f"[{self.symbol}] Adaptive Exit Eval: {adaptive_exit_decision}")
+                    else:
+                        self.logger.warning(f"[{self.symbol}] Cannot evaluate adaptive exit: missing entry_price or current_price.")
+
+                should_exit_adaptively = adaptive_exit_decision.get('should_exit', False)
+                exit_reason_adaptive = adaptive_exit_decision.get('exit_reason', '')
+
+                # Also consider the basic "opposite entry signal" exit
+                should_exit_on_opposite_entry_signal = False
+                exit_reason_opposite = ''
+                if entry_signal != 'none': # Only consider if there's an active entry signal
+                    if position_side == 'long' and entry_signal == 'sell':
+                        should_exit_on_opposite_entry_signal = True
+                        exit_reason_opposite = 'Exit LONG on new SELL entry signal'
+                    elif position_side == 'short' and entry_signal == 'buy':
+                        should_exit_on_opposite_entry_signal = True
+                        exit_reason_opposite = 'Exit SHORT on new BUY entry signal'
                 
-                if should_exit:
+                if should_exit_adaptively:
+                    self.logger.info(f"[{self.symbol}] Decision to EXIT based on Adaptive Signal: {exit_reason_adaptive}")
                     decision['action'] = 'exit'
                     decision['side'] = 'sell' if position_side == 'long' else 'buy'
+                    decision['reason'] = exit_reason_adaptive
+                    return decision
+                elif should_exit_on_opposite_entry_signal:
+                    self.logger.info(f"[{self.symbol}] Decision to EXIT based on Opposite Entry Signal: {exit_reason_opposite}")
+                    decision['action'] = 'exit'
+                    decision['side'] = 'sell' if position_side == 'long' else 'buy'
+                    decision['reason'] = exit_reason_opposite
                     return decision
                 else:
-                    decision['reason'] = f'No exit needed: {position_side.upper()} + {signal.upper()} signal'
-                    return decision
+                    decision['reason'] = f'No exit condition met. Position: {position_side}, Entry Signal: {entry_signal}, Adaptive Exit: No'
+                    return decision # No exit, continue holding
             
-            # RULE 5: Entry management (new positions)
+            # RULE 4: Entry management (new positions)
             if not has_position:
+                if entry_signal not in ['buy', 'sell']: # Check if the entry signal is valid
+                    decision['reason'] = f'Invalid or no entry signal: {entry_signal}'
+                    return decision # No action
+
                 decision['action'] = 'entry'
-                decision['side'] = signal
-                decision['reason'] = f'New {signal.upper()} entry'
+                decision['side'] = entry_signal
+                decision['reason'] = f'New {entry_signal.upper()} entry signal'
+                # Set position_entry_time on adaptive system upon successful entry in _execute_single_order
+                if hasattr(self, '_crypto_signal_system'):
+                    self._crypto_signal_system.position_entry_time = 0 # Reset, to be set on fill
                 return decision
             
-            return decision
+            return decision # Should not be reached if logic is complete
             
         except Exception as e:
-            self.logger.error(f"Error making order decision: {e}")
+            self.logger.error(f"Error making order decision: {e}", exc_info=True)
             return {'action': 'none', 'side': '', 'reason': f'Error: {e}'}
+
 
     def _execute_single_order(self, decision: Dict, live_data: Dict):
         """FIXED: Single order execution point with proper TP/SL price calculation."""
@@ -332,123 +380,96 @@ class SignalStrategy:
             current_price = live_data['current_price']
             
             if action not in ['entry', 'exit'] or side not in ['buy', 'sell']:
+                # self.logger.debug(f"[{self.symbol}] No order execution: Action '{action}', Side '{side}'")
                 return
             
             # Calculate amount
             if action == 'entry':
                 amount = self._calculate_position_amount(current_price)
             else:  # exit
-                amount = abs(live_data['position_size'])
-            
+                amount = abs(live_data['position_size']) # Ensure position_size is correctly populated
+                if amount == 0: # Safety check if live_data didn't get position size
+                    self.logger.warning(f"[{self.symbol}] Attempting to exit with zero position size. Aborting exit.")
+                    return
+
+
             if amount < self.min_amount:
-                self.logger.warning(f"Amount {amount:.6f} below minimum {self.min_amount}")
+                self.logger.warning(f"[{self.symbol}] Amount {amount:.6f} below minimum {self.min_amount}. Order not placed for {action} {side}.")
                 return
             
-            # Log the decision
-            self.logger.info(f"🎯 ORDER DECISION: {action.upper()} {side.upper()} {amount:.6f} @ ${current_price:.6f}")
-            self.logger.info(f"🎯 Reason: {reason}")
+            self.logger.info(f"[{self.symbol}] 🎯 ORDER DECISION TO EXECUTE: {action.upper()} {side.upper()} {amount:.6f} @ ${current_price:.6f}")
+            self.logger.info(f"[{self.symbol}] 🎯 Reason: {reason}")
             
-            # SINGLE ORDER EXECUTION POINT
             order = self.exchange.create_market_order(self.symbol, side, amount)
             
             if order and 'id' in order:
-                # Update tracking
-                self._last_order_time = live_data['timestamp']
+                self._last_order_time = live_data['timestamp'] # Update last order time
                 self.total_trades += 1
                 
-                # Record the order
                 fill_price = float(order.get('average', current_price))
                 self.filled_orders.append({
-                    'id': order['id'],
-                    'side': side,
-                    'price': fill_price,
-                    'amount': amount,
-                    'timestamp': live_data['timestamp'],
-                    'type': action
+                    'id': order['id'], 'side': side, 'price': fill_price,
+                    'amount': amount, 'timestamp': live_data['timestamp'], 'type': action
                 })
                 
-                self.logger.info(f"✅ {action.upper()} EXECUTED: {side.upper()} {amount:.6f} @ ${fill_price:.6f}")
-                self.logger.info(f"✅ Order ID: {order['id']}")
+                self.logger.info(f"[{self.symbol}] ✅ {action.upper()} EXECUTED: {side.upper()} {amount:.6f} @ ${fill_price:.6f}. Order ID: {order['id']}")
+
+                # If an entry was made, set the position_entry_time on the adaptive signal system
+                if action == 'entry' and hasattr(self, '_crypto_signal_system'):
+                    self._crypto_signal_system.position_entry_time = live_data['timestamp']
+                    self.logger.debug(f"[{self.symbol}] Set position_entry_time on adaptive system to: {live_data['timestamp']}")
+                elif action == 'exit' and hasattr(self, '_crypto_signal_system'):
+                     self._crypto_signal_system.position_entry_time = 0 # Reset on exit
+                     self.logger.debug(f"[{self.symbol}] Reset position_entry_time on adaptive system after exit.")
+
                 
                 # Place TP/SL orders for entry positions only
                 if action == 'entry':
-                    import time
-                    time.sleep(1)  # Small delay to ensure position is established
-                    
-                    # FIXED: Calculate price changes with higher precision
-                    # For $0.5 profit/loss: price_change = $0.5 / amount
-                    price_change_needed = 0.5 / amount
-                    
-                    # FIXED: Use more decimal places for precision - don't round too aggressively
-                    precision = max(self.price_precision, 6)  # At least 6 decimal places
+                    # ... (TP/SL placement logic remains the same) ...
+                    # Note: Ensure this TP/SL logic doesn't conflict with exits from AdaptiveCryptoSignals
+                    # One approach is to make the AdaptiveCryptoSignals exits advisory and let these TP/SL be hard stops.
+                    # Or, the strategy only places TP/SL if the adaptive system doesn't have its own "urgent" exit.
+                    # For now, keeping as is, but this interaction needs consideration.
+                    time.sleep(1) 
+                    price_change_needed = 0.5 / amount # Target $0.5 PnL
+                    precision = max(self.price_precision, 6)
                     
                     if side == 'buy':
-                        # For BUY entry: TP above entry (sell higher), SL below entry (sell lower)
-                        tp_price = fill_price + price_change_needed
-                        sl_price = fill_price - price_change_needed
-                        tp_side = 'sell'
-                        sl_side = 'sell'
-                    else:  # sell
-                        # For SELL entry: TP below entry (buy lower), SL above entry (buy higher)  
-                        tp_price = fill_price - price_change_needed
-                        sl_price = fill_price + price_change_needed
-                        tp_side = 'buy'
-                        sl_side = 'buy'
-                    
-                    # FIXED: Round with higher precision
-                    tp_price = round(tp_price, precision)
-                    sl_price = round(sl_price, precision)
-                    
-                    # Validate prices are meaningful (at least 0.1% difference)
-                    min_price_diff = fill_price * 0.001  # 0.1% minimum
+                        tp_price = round(fill_price + price_change_needed, precision)
+                        sl_price = round(fill_price - price_change_needed, precision)
+                        tp_side, sl_side = 'sell', 'sell'
+                    else: # sell
+                        tp_price = round(fill_price - price_change_needed, precision)
+                        sl_price = round(fill_price + price_change_needed, precision)
+                        tp_side, sl_side = 'buy', 'buy'
+
+                    min_price_diff = fill_price * 0.001 
                     if abs(tp_price - fill_price) < min_price_diff or abs(sl_price - fill_price) < min_price_diff:
-                        self.logger.warning(f"⚠️ TP/SL prices too close to entry. Required: ${price_change_needed:.8f}, "
-                                        f"TP: ${tp_price:.8f}, SL: ${sl_price:.8f}")
+                        self.logger.warning(f"[{self.symbol}] ⚠️ TP/SL prices too close. TP: ${tp_price:.8f}, SL: ${sl_price:.8f}")
                         return
                     
-                    # Validate TP/SL direction makes sense
-                    if side == 'buy' and (tp_price <= fill_price or sl_price >= fill_price):
-                        self.logger.error(f"❌ Invalid BUY TP/SL: TP=${tp_price:.8f} should be > ${fill_price:.8f}, "
-                                        f"SL=${sl_price:.8f} should be < ${fill_price:.8f}")
+                    # Validate TP/SL direction (simplified)
+                    if (side == 'buy' and (tp_price <= fill_price or sl_price >= fill_price)) or \
+                       (side == 'sell' and (tp_price >= fill_price or sl_price <= fill_price)):
+                        self.logger.error(f"[{self.symbol}] ❌ Invalid TP/SL direction. Entry: ${fill_price}, TP: ${tp_price}, SL: ${sl_price}")
                         return
-                    elif side == 'sell' and (tp_price >= fill_price or sl_price <= fill_price):
-                        self.logger.error(f"❌ Invalid SELL TP/SL: TP=${tp_price:.8f} should be < ${fill_price:.8f}, "
-                                        f"SL=${sl_price:.8f} should be > ${fill_price:.8f}")
-                        return
+                        
+                    self.logger.info(f"[{self.symbol}] 📊 Setting TP/SL. Position: {amount:.6f} @ ${fill_price:.8f}. TP: ${tp_price:.8f}, SL: ${sl_price:.8f}")
                     
-                    # Calculate percentages for logging
-                    tp_pct = abs((tp_price - fill_price) / fill_price) * 100
-                    sl_pct = abs((sl_price - fill_price) / fill_price) * 100
-                    
-                    self.logger.info(f"📊 Position: {amount:.6f} @ ${fill_price:.8f}")
-                    self.logger.info(f"📊 TP: ${tp_price:.8f} ({tp_pct:.4f}%), SL: ${sl_price:.8f} ({sl_pct:.4f}%)")
-                    
-                    # Place Take Profit order
                     try:
-                        tp_order = self.exchange.create_take_profit_market_order(
-                            self.symbol, tp_side, amount, tp_price
-                        )
-                        if tp_order and 'id' in tp_order:
-                            self.logger.info(f"🎯 TAKE PROFIT: {tp_side.upper()} {amount:.6f} @ ${tp_price:.8f} (+${0.5})")
-                            self.logger.info(f"🎯 TP Order ID: {tp_order['id']}")
-                    except Exception as e:
-                        self.logger.error(f"❌ Failed to place take profit order: {e}")
+                        tp_order = self.exchange.create_take_profit_market_order(self.symbol, tp_side, amount, tp_price)
+                        if tp_order and 'id' in tp_order: self.logger.info(f"[{self.symbol}] 🎯 TAKE PROFIT placed: {tp_order['id']}")
+                    except Exception as e: self.logger.error(f"[{self.symbol}] ❌ Failed TP order: {e}")
                     
-                    # Place Stop Loss order  
                     try:
-                        sl_order = self.exchange.create_stop_order(
-                            self.symbol, sl_side, amount, sl_price, order_type='stop_market'
-                        )
-                        if sl_order and 'id' in sl_order:
-                            self.logger.info(f"🛡️ STOP LOSS: {sl_side.upper()} {amount:.6f} @ ${sl_price:.8f} (-${0.5})")
-                            self.logger.info(f"🛡️ SL Order ID: {sl_order['id']}")
-                    except Exception as e:
-                        self.logger.error(f"❌ Failed to place stop loss order: {e}")
+                        sl_order = self.exchange.create_stop_order(self.symbol, sl_side, amount, sl_price, order_type='stop_market')
+                        if sl_order and 'id' in sl_order: self.logger.info(f"[{self.symbol}] 🛡️ STOP LOSS placed: {sl_order['id']}")
+                    except Exception as e: self.logger.error(f"[{self.symbol}] ❌ Failed SL order: {e}")
             else:
-                self.logger.error(f"❌ Order execution failed")
+                self.logger.error(f"[{self.symbol}] ❌ Order execution failed or no valid ID returned.")
                 
         except Exception as e:
-            self.logger.error(f"Error executing order: {e}")
+            self.logger.error(f"[{self.symbol}] Error executing order: {e}", exc_info=True)
     def _round_price(self, price: float) -> float:
         """Round price to appropriate precision"""
         if price <= 0:
