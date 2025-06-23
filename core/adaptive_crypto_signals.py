@@ -63,8 +63,8 @@ class AdaptiveCryptoSignals:
         self.min_signals_for_optimization = 5 
         self.optimization_interval = 300
         
-        self.qqe_long_entry_max_zone = 65.0
-        self.qqe_short_entry_min_zone = 35.0
+        self.qqe_long_entry_max_zone = 80.0   # Increased from 65.0
+        self.qqe_short_entry_min_zone = 20.0  # Decreased from 35.0
 
         self.last_indicators: Dict[str, Optional[Dict]] = {'qqe': None, 'supertrend': None}
 
@@ -115,86 +115,181 @@ class AdaptiveCryptoSignals:
             return 'none'
 
     def _generate_composite_signal(self, df: pd.DataFrame) -> str:
-        """Generate signal: QQE primary, Supertrend secondary. ADDED EXTENSIVE info LOGGING."""
+        """
+        FIXED RESPONSIVE SIGNAL GENERATION with proper debugging and logic verification.
+        """
         try:
-            self.logger.info(f"[{self.symbol}] --- Generating Composite Signal ---")
+            self.logger.info(f"[{self.symbol}] --- Responsive Signal Analysis ---")
             qqe_result = self._calculate_qqe(df)
             supertrend_result = self._calculate_supertrend(df)
 
-            if qqe_result is None:
-                self.logger.info(f"[{self.symbol}] QQE calculation failed or returned None. No signal.")
-                self.last_indicators['qqe'] = None
-                self.last_indicators['supertrend'] = supertrend_result # ST might still be valid
-                return 'none'
-            if supertrend_result is None:
-                self.logger.info(f"[{self.symbol}] Supertrend calculation failed or returned None. No signal.")
-                self.last_indicators['qqe'] = qqe_result # QQE might still be valid
-                self.last_indicators['supertrend'] = None
+            if qqe_result is None or supertrend_result is None:
+                self.logger.info(f"[{self.symbol}] Missing indicators: QQE={qqe_result is not None}, ST={supertrend_result is not None}")
                 return 'none'
             
             self.last_indicators['qqe'] = qqe_result
             self.last_indicators['supertrend'] = supertrend_result
-
             self.current_trend = supertrend_result['direction']
-            self._update_volatility_level(df) 
+            self._update_volatility_level(df)
             
-            self.logger.info(
-                f"[{self.symbol}] Indicators Data: "
-                f"QQE Val:{qqe_result['qqe_value']:.2f} (BullX:{qqe_result['is_bullish_cross']}, BearX:{qqe_result['is_bearish_cross']}, BullMom:{qqe_result['is_bullish_sustained_momentum']}, BearMom:{qqe_result['is_bearish_sustained_momentum']}), "
-                f"STrend: {self.current_trend} (Changed:{supertrend_result['changed']})"
-            )
-            
-            signal = 'none'
             current_qqe_value = qqe_result['qqe_value']
-            is_primary_qqe_long = qqe_result['is_bullish_cross'] or qqe_result['is_bullish_sustained_momentum']
-            is_primary_qqe_short = qqe_result['is_bearish_cross'] or qqe_result['is_bearish_sustained_momentum']
+            
+            # ENHANCED DEBUGGING: Show all the flags clearly
+            self.logger.info(
+                f"[{self.symbol}] DETAILED Analysis:"
+            )
+            self.logger.info(
+                f"  QQE: Value={current_qqe_value:.2f}, Strength=[{qqe_result['signal_strength']}]"
+            )
+            self.logger.info(
+                f"  QQE Flags: Imm_Bull={qqe_result['immediate_bullish']}, Imm_Bear={qqe_result['immediate_bearish']}"
+            )
+            self.logger.info(
+                f"  QQE Flags: Fast_Bull={qqe_result['fast_bullish']}, Fast_Bear={qqe_result['fast_bearish']}"
+            )
+            self.logger.info(
+                f"  QQE Flags: Conf_Bull={qqe_result['confirmed_bullish']}, Conf_Bear={qqe_result['confirmed_bearish']}"
+            )
+            self.logger.info(
+                f"  ST: Direction={supertrend_result['direction']}, Strength=[{supertrend_result['trend_strength']}]"
+            )
+            self.logger.info(
+                f"  ST Flags: Imm_Up={supertrend_result['immediate_up']}, Imm_Down={supertrend_result['immediate_down']}"
+            )
+            self.logger.info(
+                f"  ST Flags: Fast_Up={supertrend_result['fast_up']}, Fast_Down={supertrend_result['fast_down']}"
+            )
+            self.logger.info(
+                f"  ST Flags: Conf_Up={supertrend_result['confirmed_up']}, Conf_Down={supertrend_result['confirmed_down']}"
+            )
 
-            self.logger.info(f"[{self.symbol}] Primary QQE Long: {is_primary_qqe_long} (Cross: {qqe_result['is_bullish_cross']}, SustainMom: {qqe_result['is_bullish_sustained_momentum']})")
-            self.logger.info(f"[{self.symbol}] Primary QQE Short: {is_primary_qqe_short} (Cross: {qqe_result['is_bearish_cross']}, SustainMom: {qqe_result['is_bearish_sustained_momentum']})")
-
+            # Check signal stability
             time_since_last = time.time() - self.last_signal_time
-            allow_opposite = True # Default to true if last_signal is 'none'
-            if self.last_signal != 'none':
-                allow_opposite = time_since_last >= self.signal_stability_period
-            
-            self.logger.info(f"[{self.symbol}] Last Signal: {self.last_signal}, Time Since: {time_since_last:.1f}s, Allow Opposite: {allow_opposite}, Stability Period: {self.signal_stability_period}s")
+            allow_opposite = self.last_signal == 'none' or time_since_last >= self.signal_stability_period
 
+            signal = 'none'
+            signal_tier = 'none'
+            signal_reason = 'none'
 
-            if is_primary_qqe_long:
-                self.logger.info(f"[{self.symbol}] Eval LONG: STrend dir: {supertrend_result['direction']}, QQE val: {current_qqe_value:.2f} vs max_zone: {self.qqe_long_entry_max_zone}")
-                if supertrend_result['direction'] == 'up':
-                    if current_qqe_value < self.qqe_long_entry_max_zone:
-                        if not allow_opposite and self.last_signal == 'sell':
-                            self.logger.info(f"[{self.symbol}] Skipping QQE Long: Stability period after SELL ({time_since_last:.1f}s)")
-                        else:
-                            signal = 'buy'
-                            self.logger.info(f"[{self.symbol}] 🟢 QQE Primary BUY SIGNAL: QQE Bullish, STrend UP, QQE Zone OK ({current_qqe_value:.2f} < {self.qqe_long_entry_max_zone})")
-                    else: 
-                        self.logger.info(f"[{self.symbol}] No Long Signal: QQE too high ({current_qqe_value:.2f} >= {self.qqe_long_entry_max_zone})")
-                else: 
-                    self.logger.info(f"[{self.symbol}] No Long Signal: Supertrend not UP (is {supertrend_result['direction']})")
+            # FIXED LOGIC: Clear conditions with explicit checks
             
-            elif is_primary_qqe_short:
-                self.logger.info(f"[{self.symbol}] Eval SHORT: STrend dir: {supertrend_result['direction']}, QQE val: {current_qqe_value:.2f} vs min_zone: {self.qqe_short_entry_min_zone}")
-                if supertrend_result['direction'] == 'down':
-                    if current_qqe_value > self.qqe_short_entry_min_zone:
-                        if not allow_opposite and self.last_signal == 'buy':
-                            self.logger.info(f"[{self.symbol}] Skipping QQE Short: Stability period after BUY ({time_since_last:.1f}s)")
-                        else:
-                            signal = 'sell'
-                            self.logger.info(f"[{self.symbol}] 🔴 QQE Primary SELL SIGNAL: QQE Bearish, STrend DOWN, QQE Zone OK ({current_qqe_value:.2f} > {self.qqe_short_entry_min_zone})")
-                    else: 
-                        self.logger.info(f"[{self.symbol}] No Short Signal: QQE too low ({current_qqe_value:.2f} <= {self.qqe_short_entry_min_zone})")
-                else: 
-                    self.logger.info(f"[{self.symbol}] No Short Signal: Supertrend not DOWN (is {supertrend_result['direction']})")
-            else:
-                self.logger.info(f"[{self.symbol}] No primary QQE signal (neither long nor short conditions met).")
-            
+            # TIER 1: FAST SIGNALS (3-6 minutes delay max)
+            if qqe_result['fast_bullish'] and supertrend_result['fast_up']:
+                if current_qqe_value < self.qqe_long_entry_max_zone:
+                    if allow_opposite or self.last_signal != 'sell':
+                        signal = 'buy'
+                        signal_tier = 'fast'
+                        signal_reason = f"QQE fast bullish ({qqe_result['fast_bullish']}) + ST fast up ({supertrend_result['fast_up']})"
+                        self.logger.info(f"[{self.symbol}] 🟢 FAST BUY: {signal_reason}")
+                    else:
+                        self.logger.info(f"[{self.symbol}] FAST BUY blocked: Signal stability period")
+                else:
+                    self.logger.info(f"[{self.symbol}] FAST BUY blocked: QQE too high ({current_qqe_value:.2f} >= {self.qqe_long_entry_max_zone})")
+
+            elif qqe_result['fast_bearish'] and supertrend_result['fast_down']:
+                if current_qqe_value > self.qqe_short_entry_min_zone:
+                    if allow_opposite or self.last_signal != 'buy':
+                        signal = 'sell'
+                        signal_tier = 'fast'
+                        signal_reason = f"QQE fast bearish ({qqe_result['fast_bearish']}) + ST fast down ({supertrend_result['fast_down']})"
+                        self.logger.info(f"[{self.symbol}] 🔴 FAST SELL: {signal_reason}")
+                    else:
+                        self.logger.info(f"[{self.symbol}] FAST SELL blocked: Signal stability period")
+                else:
+                    self.logger.info(f"[{self.symbol}] FAST SELL blocked: QQE too low ({current_qqe_value:.2f} <= {self.qqe_short_entry_min_zone})")
+
+            # TIER 2: CONFIRMED SIGNALS (only if no fast signal)
             if signal == 'none':
-                self.logger.info(f"[{self.symbol}] --- Composite Signal END: NONE ---")
+                # FIXED: Confirmed BUY - QQE confirmed BULLISH + ST confirmed UP
+                if qqe_result['confirmed_bullish'] and supertrend_result['confirmed_up']:
+                    if current_qqe_value < self.qqe_long_entry_max_zone:
+                        if allow_opposite or self.last_signal != 'sell':
+                            signal = 'buy'
+                            signal_tier = 'confirmed'
+                            signal_reason = f"QQE confirmed bullish ({qqe_result['confirmed_bullish']}) + ST confirmed up ({supertrend_result['confirmed_up']})"
+                            self.logger.info(f"[{self.symbol}] 🟢 CONFIRMED BUY: {signal_reason}")
+                        else:
+                            self.logger.info(f"[{self.symbol}] CONFIRMED BUY blocked: Signal stability period")
+                    else:
+                        self.logger.info(f"[{self.symbol}] CONFIRMED BUY blocked: QQE too high ({current_qqe_value:.2f} >= {self.qqe_long_entry_max_zone})")
+
+                # FIXED: Confirmed SELL - QQE confirmed BEARISH + ST confirmed DOWN
+                elif qqe_result['confirmed_bearish'] and supertrend_result['confirmed_down']:
+                    if current_qqe_value > self.qqe_short_entry_min_zone:
+                        if allow_opposite or self.last_signal != 'buy':
+                            signal = 'sell'
+                            signal_tier = 'confirmed'
+                            signal_reason = f"QQE confirmed bearish ({qqe_result['confirmed_bearish']}) + ST confirmed down ({supertrend_result['confirmed_down']})"
+                            self.logger.info(f"[{self.symbol}] 🔴 CONFIRMED SELL: {signal_reason}")
+                        else:
+                            self.logger.info(f"[{self.symbol}] CONFIRMED SELL blocked: Signal stability period")
+                    else:
+                        self.logger.info(f"[{self.symbol}] CONFIRMED SELL blocked: QQE too low ({current_qqe_value:.2f} <= {self.qqe_short_entry_min_zone})")
+
+            # TIER 3: IMMEDIATE SIGNALS (only if very strong alignment and high volatility)
+            if signal == 'none' and self.volatility_level == 'high':
+                if (qqe_result['immediate_bullish'] and supertrend_result['immediate_up'] and 
+                    qqe_result['qqe_direction'] > 0.5):
+                    if current_qqe_value < self.qqe_long_entry_max_zone:
+                        if allow_opposite or self.last_signal != 'sell':
+                            signal = 'buy'
+                            signal_tier = 'immediate'
+                            signal_reason = f"High volatility breakout: QQE immediate bullish + strong momentum"
+                            self.logger.info(f"[{self.symbol}] 🟢 IMMEDIATE BUY: {signal_reason}")
+
+                elif (qqe_result['immediate_bearish'] and supertrend_result['immediate_down'] and 
+                      qqe_result['qqe_direction'] < -0.5):
+                    if current_qqe_value > self.qqe_short_entry_min_zone:
+                        if allow_opposite or self.last_signal != 'buy':
+                            signal = 'sell'
+                            signal_tier = 'immediate'
+                            signal_reason = f"High volatility breakdown: QQE immediate bearish + strong momentum"
+                            self.logger.info(f"[{self.symbol}] 🔴 IMMEDIATE SELL: {signal_reason}")
+
+            # ENHANCED NO SIGNAL LOGGING
+            if signal == 'none':
+                # Check what's preventing signals
+                blockers = []
+                
+                # Check QQE conditions
+                if not any([qqe_result['fast_bullish'], qqe_result['fast_bearish'], 
+                          qqe_result['confirmed_bullish'], qqe_result['confirmed_bearish']]):
+                    blockers.append("No QQE bullish/bearish signals")
+                
+                # Check ST conditions  
+                if not any([supertrend_result['fast_up'], supertrend_result['fast_down'],
+                          supertrend_result['confirmed_up'], supertrend_result['confirmed_down']]):
+                    blockers.append("No ST up/down confirmation")
+                
+                # Check misalignment
+                if ((qqe_result['confirmed_bullish'] or qqe_result['fast_bullish']) and 
+                    not (supertrend_result['confirmed_up'] or supertrend_result['fast_up'])):
+                    blockers.append(f"QQE bullish but ST not up (ST dir: {supertrend_result['direction']})")
+                
+                if ((qqe_result['confirmed_bearish'] or qqe_result['fast_bearish']) and 
+                    not (supertrend_result['confirmed_down'] or supertrend_result['fast_down'])):
+                    blockers.append(f"QQE bearish but ST not down (ST dir: {supertrend_result['direction']})")
+                
+                # Check zone restrictions
+                if (qqe_result['confirmed_bullish'] or qqe_result['fast_bullish']) and current_qqe_value >= self.qqe_long_entry_max_zone:
+                    blockers.append(f"QQE too high for long ({current_qqe_value:.2f} >= {self.qqe_long_entry_max_zone})")
+                
+                if (qqe_result['confirmed_bearish'] or qqe_result['fast_bearish']) and current_qqe_value <= self.qqe_short_entry_min_zone:
+                    blockers.append(f"QQE too low for short ({current_qqe_value:.2f} <= {self.qqe_short_entry_min_zone})")
+                
+                if not allow_opposite:
+                    blockers.append(f"Signal stability period active ({time_since_last:.1f}s < {self.signal_stability_period}s)")
+                
+                self.logger.info(f"[{self.symbol}] ❌ No signal generated. Blockers: {'; '.join(blockers) if blockers else 'Unknown'}")
+                
+            else:
+                self.logger.info(f"[{self.symbol}] ✅ SIGNAL GENERATED: {signal.upper()} ({signal_tier} tier)")
+                self.logger.info(f"[{self.symbol}] ✅ REASON: {signal_reason}")
+
             return signal
+            
         except Exception as e:
-            self.logger.error(f"[{self.symbol}] ❌ Error in _generate_composite_signal: {e}", exc_info=True)
+            self.logger.error(f"[{self.symbol}] ❌ Error in responsive signal generation: {e}", exc_info=True)
             return 'none'
 
     def evaluate_exit_conditions(self, position_side: str, entry_price: float, current_price: float) -> Dict:
@@ -249,9 +344,8 @@ class AdaptiveCryptoSignals:
 
     def _calculate_qqe(self, df: pd.DataFrame) -> Optional[Dict]:
         """
-        Calculate QQE. Dynamically finds QQE and RSIMA columns.
-        Uses qqe_factor from self.params.
-        Corrected factor string formatting for column names.
+        RESPONSIVE QQE: Fast response with quality filters.
+        Designed for crypto speed while avoiding whipsaws.
         """
         try:
             qqe_df = ta.qqe(df['close'], 
@@ -260,113 +354,214 @@ class AdaptiveCryptoSignals:
                             factor=self.params.qqe_factor)
             
             if qqe_df is None or qqe_df.empty:
-                self.logger.debug(f"[{self.symbol}] QQE calc: initial DataFrame from ta.qqe is None or empty.")
                 return None
 
-            # --- CORRECTED COLUMN NAME CONSTRUCTION ---
-            # pandas-ta usually just stringifies the float for the name
+            # Column identification (same as before)
             factor_str_for_name = str(self.params.qqe_factor) 
-            
             base_col_name = f"QQE_{self.params.qqe_length}_{self.params.qqe_smooth}_{factor_str_for_name}"
             
             qqe_line_col_name = base_col_name
             qqe_signal_col_name = f"{base_col_name}_RSIMA"
-            # --- END CORRECTION ---
-
-            # self.logger.debug(f"[{self.symbol}] Attempting to find QQE columns: '{qqe_line_col_name}', '{qqe_signal_col_name}'")
-            # self.logger.debug(f"[{self.symbol}] Available QQE columns from ta.qqe: {qqe_df.columns.tolist()}")
-
 
             if qqe_line_col_name not in qqe_df.columns:
-                self.logger.warning(f"[{self.symbol}] Exact QQE line column '{qqe_line_col_name}' not found. Available: {qqe_df.columns.tolist()}. Falling back to positional index 0.")
-                if len(qqe_df.columns) > 0: qqe_line_col_name = qqe_df.columns[0]
+                if len(qqe_df.columns) > 0: 
+                    qqe_line_col_name = qqe_df.columns[0]
                 else: 
-                    self.logger.error(f"[{self.symbol}] QQE calc: No columns available in qqe_df after attempting to find line column.")
                     return None
             
             if qqe_signal_col_name not in qqe_df.columns:
-                self.logger.warning(f"[{self.symbol}] Exact QQE RSIMA column '{qqe_signal_col_name}' not found. Available: {qqe_df.columns.tolist()}. Falling back to positional index 1.")
-                if len(qqe_df.columns) > 1: qqe_signal_col_name = qqe_df.columns[1]
+                if len(qqe_df.columns) > 1: 
+                    qqe_signal_col_name = qqe_df.columns[1]
                 else: 
-                    self.logger.error(f"[{self.symbol}] QQE calc: Not enough columns available in qqe_df for RSIMA after attempting to find signal column.")
                     return None
 
-            qqe_line_series_raw = qqe_df[qqe_line_col_name]
-            qqe_signal_series_raw = qqe_df[qqe_signal_col_name]
+            qqe_line_series = qqe_df[qqe_line_col_name]
+            qqe_signal_series = qqe_df[qqe_signal_col_name]
 
-            if len(qqe_line_series_raw) < 3 or len(qqe_signal_series_raw) < 3: 
-                self.logger.debug(f"[{self.symbol}] QQE calc: Not enough raw data points. QQE line len: {len(qqe_line_series_raw)}, Sig line len: {len(qqe_signal_series_raw)}")
+            if len(qqe_line_series) < 3:  # Reduced from 5 to 3
                 return None
             
-            cv_raw, pv_raw = qqe_line_series_raw.iloc[-1], qqe_line_series_raw.iloc[-2]
-            cs_raw, ps_raw = qqe_signal_series_raw.iloc[-1], qqe_signal_series_raw.iloc[-2]
+            # Current values
+            cv = float(qqe_line_series.iloc[-1])  # Current yellow line
+            cs = float(qqe_signal_series.iloc[-1])  # Current signal line
+            pv = float(qqe_line_series.iloc[-2])  # Previous yellow line
+            ps = float(qqe_signal_series.iloc[-2])  # Previous signal line
             
-            if pd.isna(cv_raw) or pd.isna(pv_raw) or pd.isna(cs_raw) or pd.isna(ps_raw):
-                self.logger.debug(f"[{self.symbol}] QQE calc: NaN found in latest required values. cv:{cv_raw}, pv:{pv_raw}, cs:{cs_raw}, ps:{ps_raw}")
+            if pd.isna(cv) or pd.isna(cs) or pd.isna(pv) or pd.isna(ps):
                 return None
 
-            cv, pv = float(cv_raw), float(pv_raw)
-            cs, ps = float(cs_raw), float(ps_raw)
+            # RESPONSIVE LOGIC: Multiple signal tiers for different speed/quality tradeoffs
+            
+            # Tier 1: IMMEDIATE - Position-based (current period only)
+            immediate_bullish = cv > cs  # Yellow above signal line NOW
+            immediate_bearish = cv < cs  # Yellow below signal line NOW
+            
+            # Tier 2: FAST - Position + momentum (1 period confirmation)
+            qqe_direction = cv - pv  # Recent direction
+            fast_bullish = immediate_bullish and qqe_direction > 0  # Above + rising
+            fast_bearish = immediate_bearish and qqe_direction < 0  # Below + falling
+            
+            # Tier 3: CONFIRMED - Sustained position (2 periods, not 3)
+            if len(qqe_line_series) >= 3:
+                prev2_qqe = float(qqe_line_series.iloc[-3])
+                prev2_signal = float(qqe_signal_series.iloc[-3])
+                
+                above_count = sum([cv > cs, pv > ps, prev2_qqe > prev2_signal])
+                below_count = sum([cv < cs, pv < ps, prev2_qqe < prev2_signal])
+                
+                confirmed_bullish = above_count >= 2  # 2 of last 3 periods
+                confirmed_bearish = below_count >= 2  # 2 of last 3 periods
+            else:
+                confirmed_bullish = immediate_bullish
+                confirmed_bearish = immediate_bearish
 
-            bull_x = (pv <= ps) and (cv > cs)
-            bear_x = (pv >= ps) and (cv < cs)
-            bull_mom = (cv > cs) and (cv > pv) 
-            bear_mom = (cv < cs) and (cv < pv)
+            # Signal strength classification
+            if confirmed_bullish and fast_bullish:
+                signal_strength = 'confirmed_strong'
+            elif confirmed_bearish and fast_bearish:
+                signal_strength = 'confirmed_strong'
+            elif confirmed_bullish:
+                signal_strength = 'confirmed'
+            elif confirmed_bearish:
+                signal_strength = 'confirmed'
+            elif fast_bullish:
+                signal_strength = 'fast'
+            elif fast_bearish:
+                signal_strength = 'fast'
+            elif immediate_bullish or immediate_bearish:
+                signal_strength = 'immediate'
+            else:
+                signal_strength = 'neutral'
 
-            s_dir = 'bull_mom' if cv > cs and cv > pv else 'bear_mom' if cv < cs and cv < pv else \
-                      'bull_flat' if cv > cs else 'bear_flat' if cv < cs else 'neutral'
+            self.logger.debug(f"[{self.symbol}] QQE Responsive: Yellow={cv:.2f}, Signal={cs:.2f}, "
+                            f"Immediate: Bull={immediate_bullish}, Bear={immediate_bearish}, "
+                            f"Fast: Bull={fast_bullish}, Bear={fast_bearish}, "
+                            f"Confirmed: Bull={confirmed_bullish}, Bear={confirmed_bearish}, "
+                            f"Strength={signal_strength}")
+
             return {
-                'qqe_value': cv, 'qqe_signal_line_value': cs, 'prev_qqe_value': pv,
-                'is_bullish_cross': bull_x, 'is_bearish_cross': bear_x,
-                'is_bullish_sustained_momentum': bull_mom, 'is_bearish_sustained_momentum': bear_mom,
-                'simple_direction': s_dir
+                'qqe_value': cv,
+                'qqe_signal_line_value': cs,
+                'qqe_direction': qqe_direction,
+                
+                # Immediate tier (0 periods delay)
+                'immediate_bullish': immediate_bullish,
+                'immediate_bearish': immediate_bearish,
+                
+                # Fast tier (1 period, 3 minutes delay)
+                'fast_bullish': fast_bullish,
+                'fast_bearish': fast_bearish,
+                
+                # Confirmed tier (2 periods, 6 minutes delay max)
+                'confirmed_bullish': confirmed_bullish,
+                'confirmed_bearish': confirmed_bearish,
+                
+                'signal_strength': signal_strength
             }
-        except IndexError: 
-            self.logger.debug(f"[{self.symbol}] QQE calc: IndexError during iloc access, series likely too short after initial check.")
-            return None
+            
         except Exception as e:
-            self.logger.error(f"[{self.symbol}] QQE calculation error: {e}", exc_info=True)
+            self.logger.error(f"[{self.symbol}] QQE responsive calculation error: {e}", exc_info=True)
             return None
 
     def _calculate_supertrend(self, df: pd.DataFrame) -> Optional[Dict]:
+        """
+        RESPONSIVE SUPERTREND: Faster confirmation for crypto speed.
+        """
         try:
             st_df = ta.supertrend(high=df['high'], low=df['low'], close=df['close'], 
                                length=self.params.supertrend_period, 
                                multiplier=self.params.supertrend_multiplier)
+            
             if st_df is None or st_df.empty:
-                self.logger.info(f"[{self.symbol}] Supertrend calc: initial DataFrame from ta.supertrend is None or empty.")
                 return None
 
+            # Find direction column
             dir_col_name = f"SUPERTd_{self.params.supertrend_period}_{self.params.supertrend_multiplier}"
             if dir_col_name not in st_df.columns:
                 dir_col_name = next((col for col in st_df.columns if 'SUPERTd' in col), None)
-                if dir_col_name: self.logger.warning(f"[{self.symbol}] Exact ST dir col not found, using matched: '{dir_col_name}'")
-                else: self.logger.warning(f"[{self.symbol}] ST dir col not found. Avail: {st_df.columns.tolist()}"); return None
+                if not dir_col_name:
+                    return None
             
-            # Get the raw direction series
-            st_directions_raw = st_df[dir_col_name]
+            st_directions = st_df[dir_col_name]
 
-            if len(st_directions_raw) < 2:
-                self.logger.info(f"[{self.symbol}] Supertrend calc: Not enough raw direction data points. Len: {len(st_directions_raw)}")
+            if len(st_directions) < 3:  # Reduced from 5 to 3
                 return None
 
-            # Access the last 2 values
-            curr_d_raw, prev_d_raw = st_directions_raw.iloc[-1], st_directions_raw.iloc[-2]
-
-            # Check if these specific values are NaN
-            if pd.isna(curr_d_raw) or pd.isna(prev_d_raw):
-                self.logger.info(f"[{self.symbol}] Supertrend calc: NaN found in latest required values. current_dir:{curr_d_raw}, prev_dir:{prev_d_raw}")
-                return None
+            # Current and recent directions
+            current_dir = int(st_directions.iloc[-1])
+            prev_dir = int(st_directions.iloc[-2])
             
-            curr_d, prev_d = int(curr_d_raw), int(prev_d_raw)
-            changed = curr_d != prev_d
-            direction = 'up' if curr_d == 1 else 'down'
-            return {'direction': direction, 'changed': changed, 'value': curr_d}
-        except IndexError:
-            self.logger.info(f"[{self.symbol}] Supertrend calc: IndexError during iloc access, series likely too short.")
-            return None
+            # RESPONSIVE LOGIC: Faster confirmation for crypto
+            
+            # Immediate: Current direction only
+            immediate_up = current_dir == 1
+            immediate_down = current_dir == -1
+            
+            # Fast: Current + no recent flip (1 period stability)
+            fast_up = immediate_up and prev_dir == 1  # 2 consecutive up periods
+            fast_down = immediate_down and prev_dir == -1  # 2 consecutive down periods
+            
+            # Confirmed: 3 periods max (reduced from 4)
+            if len(st_directions) >= 3:
+                prev2_dir = int(st_directions.iloc[-3])
+                recent_dirs = [current_dir, prev_dir, prev2_dir]
+                
+                up_count = sum(1 for d in recent_dirs if d == 1)
+                down_count = sum(1 for d in recent_dirs if d == -1)
+                
+                confirmed_up = up_count >= 2  # 2 of last 3 periods
+                confirmed_down = down_count >= 2  # 2 of last 3 periods
+            else:
+                confirmed_up = fast_up
+                confirmed_down = fast_down
+
+            # Just changed detection
+            just_changed = current_dir != prev_dir
+            
+            direction = 'up' if current_dir == 1 else 'down'
+            
+            # Trend strength classification
+            if confirmed_up and fast_up:
+                trend_strength = 'confirmed_strong'
+            elif confirmed_down and fast_down:
+                trend_strength = 'confirmed_strong'
+            elif confirmed_up:
+                trend_strength = 'confirmed'
+            elif confirmed_down:
+                trend_strength = 'confirmed'
+            elif fast_up or fast_down:
+                trend_strength = 'fast'
+            else:
+                trend_strength = 'immediate'
+
+            self.logger.debug(f"[{self.symbol}] Supertrend Responsive: Dir={direction}, "
+                            f"Immediate: Up={immediate_up}, Down={immediate_down}, "
+                            f"Fast: Up={fast_up}, Down={fast_down}, "
+                            f"Confirmed: Up={confirmed_up}, Down={confirmed_down}, "
+                            f"Strength={trend_strength}, Changed={just_changed}")
+
+            return {
+                'direction': direction,
+                'current_value': current_dir,
+                'just_changed': just_changed,
+                
+                # Immediate tier
+                'immediate_up': immediate_up,
+                'immediate_down': immediate_down,
+                
+                # Fast tier (3 minutes delay)
+                'fast_up': fast_up,
+                'fast_down': fast_down,
+                
+                # Confirmed tier (6 minutes delay max)
+                'confirmed_up': confirmed_up,
+                'confirmed_down': confirmed_down,
+                
+                'trend_strength': trend_strength
+            }
+            
         except Exception as e:
-            self.logger.error(f"[{self.symbol}] Supertrend calculation error: {e}", exc_info=True)
+            self.logger.error(f"[{self.symbol}] Supertrend responsive calculation error: {e}", exc_info=True)
             return None
 
     def _update_volatility_level(self, df: pd.DataFrame): 
