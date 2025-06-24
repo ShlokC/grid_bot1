@@ -7,6 +7,9 @@ ENTRY SIGNALS ONLY - Relies on external SL/TP orders, but provides QQE/ST based 
 import logging
 import time
 import os
+import csv
+import datetime
+from typing import List
 import numpy as _np
 _np.NaN = _np.nan
 import numpy as np
@@ -31,11 +34,11 @@ logging.getLogger(__name__).setLevel(logging.DEBUG)
 @dataclass
 class SignalParameters:
     """Parameters for QQE & Supertrend signals"""
-    qqe_length: int = 14
-    qqe_smooth: int = 5
-    qqe_factor: float = 4.236
-    supertrend_period: int = 10 
-    supertrend_multiplier: float = 3.0
+    qqe_length: int = 12        # Balanced - not too fast, not too slow
+    qqe_smooth: int = 5         # Standard smoothing to avoid whipsaws
+    qqe_factor: float = 4.236   # Keep original for stability
+    supertrend_period: int = 10 # Standard period for trend confidence
+    supertrend_multiplier: float = 2.8  # Slightly tighter than 3.0 but not too close
     
     accuracy: float = 0.0
     total_signals: int = 0
@@ -61,7 +64,7 @@ class AdaptiveCryptoSignals:
         # Signal control
         self.last_signal = 'none'
         self.last_signal_time = 0
-        self.signal_cooldown = 15
+        self.signal_cooldown = 10
         
         # Market state
         self.current_trend = 'neutral'
@@ -74,8 +77,8 @@ class AdaptiveCryptoSignals:
         self.historical_data_periods = 500  # Use more historical data
         
         # ENHANCED: Dynamic entry zones based on market volatility
-        self.qqe_long_entry_max_zone = 75.0
-        self.qqe_short_entry_min_zone = 25.0
+        self.qqe_long_entry_max_zone = 90.0
+        self.qqe_short_entry_min_zone = 10.0
         
         # Cache for historical data to avoid repeated API calls
         self._historical_data_cache = None
@@ -89,6 +92,50 @@ class AdaptiveCryptoSignals:
                         f"ST({self.params.supertrend_period},{self.params.supertrend_multiplier})")
         self.logger.info(f"   Optimization score: {self.params.optimization_score:.2f}, "
                         f"Live accuracy: {self.params.accuracy:.1f}%")
+    def export_close_to_csv(self, ohlcv_data, filename: str = None) -> bool:
+        """
+        Export close prices with timestamps to CSV format.
+        
+        Args:
+            ohlcv_data: OHLCV data from exchange.get_ohlcv() 
+            filename: Output CSV filename (optional)
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        try:
+            if not ohlcv_data:
+                self.logger.warning("No OHLCV data provided for export")
+                return False
+            
+            if filename is None:
+                filename = f"{self.symbol}_close_prices.csv"
+            
+            import csv
+            import datetime
+            
+            with open(filename, 'w', newline='', encoding='utf-8') as csvfile:
+                writer = csv.writer(csvfile)
+                
+                # Write header
+                writer.writerow(['timestamp', 'close'])
+                
+                # Write data rows
+                for candle in ohlcv_data:
+                    timestamp_ms = candle[0]  # Timestamp in milliseconds
+                    close_price = float(candle[4])  # Close price
+                    
+                    # Convert timestamp from milliseconds to readable format
+                    timestamp_readable = datetime.datetime.fromtimestamp(timestamp_ms / 1000).strftime('%Y-%m-%d %H:%M:%S')
+                    
+                    writer.writerow([timestamp_readable, close_price])
+            
+            self.logger.info(f"Successfully exported {len(ohlcv_data)} records to {filename}")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Error exporting to CSV: {e}")
+            return False
     def get_technical_direction(self, exchange) -> str:
         """Keep existing - no changes"""
         try:
@@ -99,6 +146,8 @@ class AdaptiveCryptoSignals:
                 return 'none'
             
             ohlcv_data = exchange.get_ohlcv(self.symbol, timeframe='1m', limit=1400) 
+            # filename = f"{self.symbol}_close_prices.csv"
+            # self.export_close_to_csv(ohlcv_data, filename)
             if not ohlcv_data or len(ohlcv_data) < 50: 
                 return 'none'
             
@@ -144,11 +193,11 @@ class AdaptiveCryptoSignals:
                 volatility_pct = (recent_atr / current_price) * 100
                 
                 # ENHANCED: Adjust entry zones based on volatility
-                if volatility_pct > 3.0:  # High volatility
+                if volatility_pct > 5.0:  # High volatility
                     self.volatility_level = 'high'
                     self.qqe_long_entry_max_zone = 85.0  # Wider zones
                     self.qqe_short_entry_min_zone = 15.0
-                elif volatility_pct < 1.0:  # Low volatility
+                elif volatility_pct < 2.0:  # Low volatility
                     self.volatility_level = 'low'
                     self.qqe_long_entry_max_zone = 65.0  # Tighter zones
                     self.qqe_short_entry_min_zone = 35.0
@@ -629,13 +678,13 @@ class AdaptiveCryptoSignals:
             
             self.logger.info(f"[{self.symbol}] Exit eval for {position_side.upper()}: QQE={'bull' if qqe_bullish else 'bear'}, ST={st_direction}")
             
-            if position_side == 'long' and (qqe_bearish or st_down):
+            if position_side == 'long' and (qqe_bearish and st_down):
                 result.update({
                     'should_exit': True,
                     'exit_reason': f"LONG exit: QQE bearish + ST down (PnL: {pnl_pct:.2f}%)",
                     'exit_urgency': 'normal'
                 })
-            elif position_side == 'short' and (qqe_bullish or st_up):
+            elif position_side == 'short' and (qqe_bullish and st_up):
                 result.update({
                     'should_exit': True,
                     'exit_reason': f"SHORT exit: QQE bullish + ST up (PnL: {pnl_pct:.2f}%)",
@@ -879,10 +928,10 @@ class AdaptiveCryptoSignals:
     def _manual_grid_search(self, df: pd.DataFrame) -> tuple:
         """FALLBACK: Keep original manual grid search exactly the same"""
         param_ranges = {
-            'qqe_length': [10, 14, 20], 
-            'qqe_smooth': [3, 5, 7],
-            'supertrend_period': [7, 10, 14], 
-            'supertrend_multiplier': [2.0, 3.0]
+            'qqe_length': [6, 8, 10, 12],              # Ultra-fast range
+            'qqe_smooth': [2, 3, 4, 5],                # Maximum responsiveness
+            'supertrend_period': [5, 7, 8, 10],        # Faster than standard
+            'supertrend_multiplier': [2.0, 2.2, 2.5, 2.8]  # Tighter for memes
         }
         
         best_params = None
