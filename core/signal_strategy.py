@@ -263,111 +263,50 @@ class SignalStrategy:
             return {'tech_signal': 'none', 'has_position': False, 'pending_orders': 0, 'current_price': 0}
 
     def _make_order_decision(self, live_data: Dict) -> Dict:
-        """MODIFIED: Single decision engine to consider adaptive exit signals."""
+        """FIXED: Always check exit when position exists, regardless of pending orders."""
         try:
-            entry_signal = live_data['tech_signal'] # This is the entry signal ('buy', 'sell', 'none')
+            entry_signal = live_data['tech_signal']
             has_position = live_data['has_position']
             position_side = live_data.get('position_side')
-            position_entry_price = live_data.get('entry_price') # Needed for PnL in exit eval
-            current_price = live_data.get('current_price') # Needed for PnL in exit eval
+            position_entry_price = live_data.get('entry_price')
+            current_price = live_data.get('current_price')
             pending_orders = live_data['pending_orders']
-            current_time = live_data['timestamp']
             
             decision = {'action': 'none', 'side': '', 'reason': ''}
             
-            # RULE 1 & 2 (No action if orders pending or throttled - applies to entries mostly)
+            # FIXED: ALWAYS check exit FIRST when position exists - regardless of pending orders!
+            if has_position and hasattr(self, '_crypto_signal_system'):
+                exit_decision = self._crypto_signal_system.evaluate_exit_conditions(
+                    position_side=position_side,
+                    entry_price=position_entry_price,
+                    current_price=current_price
+                )
+                
+                if exit_decision.get('should_exit', False):
+                    decision.update({
+                        'action': 'exit',
+                        'side': 'sell' if position_side == 'long' else 'buy',
+                        'reason': exit_decision.get('exit_reason', 'Exit signal')
+                    })
+                    return decision
+            
+            # SIMPLE CHECK: No NEW orders if already pending (only applies to entries)
             if pending_orders > 0:
-                decision['reason'] = f'{pending_orders} orders already pending'
+                decision['reason'] = f'{pending_orders} orders pending'
                 return decision
             
-            if hasattr(self, '_last_order_time'): # Throttling for any new order
-                time_since_last = current_time - self._last_order_time
-                if time_since_last < 10:  # 10 second minimum gap for ANY new order
-                    decision['reason'] = f'Throttled: {time_since_last:.1f}s < 10s since last order'
-                    return decision
+            # SIMPLE ENTRY CHECK: No position, check entry
+            if not has_position and entry_signal in ['buy', 'sell']:
+                decision.update({
+                    'action': 'entry',
+                    'side': entry_signal,
+                    'reason': f'{entry_signal.upper()} signal'
+                })
             
-            # RULE 3: Position management (exits) - ENHANCED
-            if has_position:
-                self.logger.debug(f"[{self.symbol}] Position active ({position_side} @ ${position_entry_price}). Checking exit conditions.")
-                adaptive_exit_decision = {'should_exit': False, 'exit_reason': '', 'exit_urgency': 'none'}
-                
-                # Check for exit reasons from AdaptiveCryptoSignals
-                if hasattr(self, '_crypto_signal_system') and \
-                   hasattr(self._crypto_signal_system, 'evaluate_exit_conditions'):
-                    
-                    # Pass necessary data to evaluate_exit_conditions
-                    # We might need to ensure 'position_entry_time' is set on adaptive_signals instance
-                    # when a position is entered if it uses it.
-                    # For now, assuming it mainly uses current indicators and PnL.
-                    if position_entry_price is not None and current_price is not None:
-                         # Set position_entry_time on the adaptive system if it uses it.
-                         # This needs to be set when an entry order is filled.
-                         # For simplicity here, we'll assume AdaptiveCryptoSignals can work without it or it's managed elsewhere.
-                        if hasattr(self._crypto_signal_system, 'position_entry_time') and \
-                           not self._crypto_signal_system.position_entry_time: # If not set or 0
-                            # This is a bit of a hack here; ideally, this is set upon entry.
-                            # For now, let's assume if it's 0, it means it's a new check or first time.
-                            # A better way is to ensure SignalStrategy sets this on self._crypto_signal_system.position_entry_time
-                            # when an entry order is filled.
-                            pass # We'll let evaluate_exit_conditions handle its PnL calcs.
-
-                        adaptive_exit_decision = self._crypto_signal_system.evaluate_exit_conditions(
-                            position_side=position_side,
-                            entry_price=position_entry_price,
-                            current_price=current_price
-                        )
-                        self.logger.debug(f"[{self.symbol}] Adaptive Exit Eval: {adaptive_exit_decision}")
-                    else:
-                        self.logger.warning(f"[{self.symbol}] Cannot evaluate adaptive exit: missing entry_price or current_price.")
-
-                should_exit_adaptively = adaptive_exit_decision.get('should_exit', False)
-                exit_reason_adaptive = adaptive_exit_decision.get('exit_reason', '')
-
-                # Also consider the basic "opposite entry signal" exit
-                should_exit_on_opposite_entry_signal = False
-                exit_reason_opposite = ''
-                if entry_signal != 'none': # Only consider if there's an active entry signal
-                    if position_side == 'long' and entry_signal == 'sell':
-                        should_exit_on_opposite_entry_signal = True
-                        exit_reason_opposite = 'Exit LONG on new SELL entry signal'
-                    elif position_side == 'short' and entry_signal == 'buy':
-                        should_exit_on_opposite_entry_signal = True
-                        exit_reason_opposite = 'Exit SHORT on new BUY entry signal'
-                
-                if should_exit_adaptively:
-                    self.logger.info(f"[{self.symbol}] Decision to EXIT based on Adaptive Signal: {exit_reason_adaptive}")
-                    decision['action'] = 'exit'
-                    decision['side'] = 'sell' if position_side == 'long' else 'buy'
-                    decision['reason'] = exit_reason_adaptive
-                    return decision
-                elif should_exit_on_opposite_entry_signal:
-                    self.logger.info(f"[{self.symbol}] Decision to EXIT based on Opposite Entry Signal: {exit_reason_opposite}")
-                    decision['action'] = 'exit'
-                    decision['side'] = 'sell' if position_side == 'long' else 'buy'
-                    decision['reason'] = exit_reason_opposite
-                    return decision
-                else:
-                    decision['reason'] = f'No exit condition met. Position: {position_side}, Entry Signal: {entry_signal}, Adaptive Exit: No'
-                    return decision # No exit, continue holding
-            
-            # RULE 4: Entry management (new positions)
-            if not has_position:
-                if entry_signal not in ['buy', 'sell']: # Check if the entry signal is valid
-                    decision['reason'] = f'Invalid or no entry signal: {entry_signal}'
-                    return decision # No action
-
-                decision['action'] = 'entry'
-                decision['side'] = entry_signal
-                decision['reason'] = f'New {entry_signal.upper()} entry signal'
-                # Set position_entry_time on adaptive system upon successful entry in _execute_single_order
-                if hasattr(self, '_crypto_signal_system'):
-                    self._crypto_signal_system.position_entry_time = 0 # Reset, to be set on fill
-                return decision
-            
-            return decision # Should not be reached if logic is complete
+            return decision
             
         except Exception as e:
-            self.logger.error(f"Error making order decision: {e}", exc_info=True)
+            self.logger.error(f"Error in simplified decision: {e}")
             return {'action': 'none', 'side': '', 'reason': f'Error: {e}'}
 
 

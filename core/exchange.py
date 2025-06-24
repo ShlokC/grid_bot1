@@ -179,7 +179,7 @@ class Exchange:
             
         except Exception as e:
             self.logger.error(f"❌ MARKET ORDER ERROR: {e}")
-            raise
+            return {}
 
     # Add this method to the Exchange class
     def create_take_profit_market_order(self, symbol: str, side: str, amount: float, stop_price: float) -> Dict:
@@ -323,7 +323,7 @@ class Exchange:
             
         except Exception as e:
             self.logger.error(f"Error fetching market info for {symbol}: {e}")
-            raise
+            return {}
     
     def get_available_symbols(self) -> List[str]:
         """Get list of all available trading symbols (IDs only)."""
