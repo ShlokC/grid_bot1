@@ -619,8 +619,8 @@ class AdaptiveCryptoSignals:
             qqe_signal = qqe_result['qqe_signal_line_value']
             st_direction = supertrend_result['direction']
             
-            qqe_bullish = qqe_value < qqe_signal  # QQE line above signal line
-            qqe_bearish = qqe_value > qqe_signal  # QQE line below signal line
+            qqe_bullish = qqe_signal > qqe_value  # 65.65 > 58.58 = True → BULLISH ✅
+            qqe_bearish = qqe_signal < qqe_value  # Signal below QQE = BEARISH
             st_up = st_direction == 'up'
             st_down = st_direction == 'down'
             
@@ -671,8 +671,8 @@ class AdaptiveCryptoSignals:
             qqe_signal = qqe_data['qqe_signal_line_value']
             st_direction = st_data['direction']
             
-            qqe_bullish = qqe_value < qqe_signal  # QQE line above signal line
-            qqe_bearish = qqe_value > qqe_signal  # QQE line below signal line
+            qqe_bullish = qqe_signal > qqe_value  # Signal line above QQE = bullish
+            qqe_bearish = qqe_signal < qqe_value  # Signal line below QQE = bearish
             st_up = st_direction == 'up'
             st_down = st_direction == 'down'
             
@@ -684,7 +684,7 @@ class AdaptiveCryptoSignals:
                     'exit_reason': f"LONG exit: QQE bearish + ST down (PnL: {pnl_pct:.2f}%)",
                     'exit_urgency': 'normal'
                 })
-            elif position_side == 'short' and (qqe_bullish and st_up):
+            elif position_side == 'short' and (qqe_bullish or st_up):
                 result.update({
                     'should_exit': True,
                     'exit_reason': f"SHORT exit: QQE bullish + ST up (PnL: {pnl_pct:.2f}%)",
