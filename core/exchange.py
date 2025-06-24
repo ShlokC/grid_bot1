@@ -78,7 +78,7 @@ class Exchange:
             
         return symbol
     
-    def get_ohlcv(self, symbol: str, timeframe: str = '3m', limit: int = 100) -> List[List]:
+    def get_ohlcv(self, symbol: str, timeframe: str = '1m', limit: int = 100) -> List[List]:
         """Get OHLCV historical data with rate limiting."""
         try:
             symbol_id = self._get_symbol_id(symbol)
@@ -424,7 +424,7 @@ class Exchange:
             
             for symbol in available_symbols:
                 try:
-                    ohlcv_data = self.get_ohlcv(symbol, timeframe='3m', limit=candles_needed)
+                    ohlcv_data = self.get_ohlcv(symbol, timeframe='1m', limit=candles_needed)
                     
                     if not ohlcv_data or len(ohlcv_data) < 15:
                         continue

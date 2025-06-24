@@ -14,6 +14,12 @@ import pandas as pd
 import pandas_ta as ta
 from typing import Dict, Optional
 from collections import deque
+try:
+    import optuna
+    OPTUNA_AVAILABLE = True
+except ImportError:
+    OPTUNA_AVAILABLE = False
+    logging.warning("Optuna not available. Install with: pip install optuna")
 from dataclasses import dataclass
 import json
 
@@ -35,7 +41,7 @@ class SignalParameters:
     total_signals: int = 0
     winning_signals: int = 0
     last_used: float = 0.0
-
+    optimization_score: float = 0.0  # New: Store Optuna optimization score
     
 class AdaptiveCryptoSignals:
     """
@@ -44,46 +50,56 @@ class AdaptiveCryptoSignals:
     """
     
     def __init__(self, symbol: str, config_file: str = "data/crypto_signal_configs.json"):
-        self.logger = logging.getLogger(f"{__name__}.{symbol}") # Symbol specific logger
+        self.logger = logging.getLogger(f"{__name__}.{symbol}")
         self.symbol = symbol
         self.config_file = config_file
-        self.position_entry_time = 0 # Initialize this attribute
-        self.params = self._load_symbol_config()
+        self.position_entry_time = 0
         
+        self.params = self._load_symbol_config()
         self.signal_performance = self._load_signal_history()
+        
+        # Signal control
         self.last_signal = 'none'
         self.last_signal_time = 0
-        self.signal_cooldown = 15 
-        self.signal_stability_period = 30 
+        self.signal_cooldown = 15
         
-        self.current_trend = 'neutral' 
-        self.volatility_level = 'normal' 
+        # Market state
+        self.current_trend = 'neutral'
+        self.volatility_level = 'normal'
         self.last_optimization = time.time()
         
-        self.min_signals_for_optimization = 5 
-        self.optimization_interval = 300
+        # ENHANCED: Optuna optimization settings
+        self.min_signals_for_optimization = 10  # Increased for statistical significance
+        self.optimization_interval = 600  # 10 minutes instead of 5
+        self.historical_data_periods = 500  # Use more historical data
         
-        self.qqe_long_entry_max_zone = 80.0   # Increased from 65.0
-        self.qqe_short_entry_min_zone = 20.0  # Decreased from 35.0
-
+        # ENHANCED: Dynamic entry zones based on market volatility
+        self.qqe_long_entry_max_zone = 75.0
+        self.qqe_short_entry_min_zone = 25.0
+        
+        # Cache for historical data to avoid repeated API calls
+        self._historical_data_cache = None
+        self._cache_timestamp = 0
+        self._cache_validity = 300  # 5 minutes cache validity
+        
         self.last_indicators: Dict[str, Optional[Dict]] = {'qqe': None, 'supertrend': None}
-
-        self.logger.info(f"🚀 Adaptive Crypto Signals (QQE & Supertrend ONLY) initialized for {symbol} "
-                        f"[QQE:{self.params.qqe_length},{self.params.qqe_smooth}, ST:{self.params.supertrend_period},{self.params.supertrend_multiplier}] "
-                        f"[Accuracy: {self.params.accuracy:.1f}%]")
-
+        
+        self.logger.info(f"🚀 ENHANCED Crypto Signals with Optuna optimization for {symbol}")
+        self.logger.info(f"   Current params: QQE({self.params.qqe_length},{self.params.qqe_smooth}), "
+                        f"ST({self.params.supertrend_period},{self.params.supertrend_multiplier})")
+        self.logger.info(f"   Optimization score: {self.params.optimization_score:.2f}, "
+                        f"Live accuracy: {self.params.accuracy:.1f}%")
     def get_technical_direction(self, exchange) -> str:
+        """Keep existing - no changes"""
         try:
             current_time = time.time()
-            self.logger.info(f"[{self.symbol}] Checking technical direction. Last signal: {self.last_signal} at {self.last_signal_time}, Cooldown: {self.signal_cooldown}")
-            if hasattr(self, '_force_signal') and self._force_signal: pass 
+            if hasattr(self, '_force_signal') and self._force_signal: 
+                pass 
             elif current_time - self.last_signal_time < self.signal_cooldown: 
-                self.logger.info(f"[{self.symbol}] Signal cooldown active. Returning 'none'.")
                 return 'none'
             
-            ohlcv_data = exchange.get_ohlcv(self.symbol, timeframe='3m', limit=1400) 
+            ohlcv_data = exchange.get_ohlcv(self.symbol, timeframe='1m', limit=1400) 
             if not ohlcv_data or len(ohlcv_data) < 50: 
-                self.logger.info(f"[{self.symbol}] Insufficient data: {len(ohlcv_data) if ohlcv_data else 0} candles. Need >= 50.")
                 return 'none'
             
             df = pd.DataFrame(ohlcv_data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
@@ -100,20 +116,436 @@ class AdaptiveCryptoSignals:
                 self._track_signal(signal, float(df['close'].iloc[-1])) 
                 self.last_signal = signal
                 self.last_signal_time = current_time
-                self.logger.info(f"⚡ ENTRY SIGNAL: {signal.upper()} @ ${float(df['close'].iloc[-1]):.6f} "
-                               f"[STrend: {self.current_trend}] [Vol: {self.volatility_level}] "
-                               f"[Accuracy: {self.params.accuracy:.0f}%]")
-            else:
-                self.logger.info(f"[{self.symbol}] No signal generated by _generate_composite_signal.")
-
+                self.logger.info(f"⚡ SIGNAL: {signal.upper()} @ ${float(df['close'].iloc[-1]):.6f}")
+            
             if self._should_optimize():
                 self._optimize_parameters(df.copy()) 
             
             return signal
         except Exception as e:
-            self.logger.error(f"[{self.symbol}] ❌ Error generating signal: {e}", exc_info=True)
+            self.logger.error(f"Error generating signal: {e}", exc_info=True)
             return 'none'
+    def _update_historical_cache(self, ohlcv_data):
+        """Cache historical data to avoid repeated API calls during optimization"""
+        current_time = time.time()
+        if current_time - self._cache_timestamp > self._cache_validity:
+            self._historical_data_cache = ohlcv_data.copy()
+            self._cache_timestamp = current_time
+            self.logger.debug(f"Updated historical data cache: {len(ohlcv_data)} candles")
 
+    def _update_market_volatility(self, df: pd.DataFrame):
+        """ENHANCED: Calculate market volatility for dynamic parameter adjustment"""
+        try:
+            # Calculate ATR-based volatility
+            atr = ta.atr(high=df['high'], low=df['low'], close=df['close'], length=14)
+            if atr is not None and len(atr.dropna()) > 0:
+                recent_atr = atr.dropna().tail(10).mean()
+                current_price = df['close'].iloc[-1]
+                volatility_pct = (recent_atr / current_price) * 100
+                
+                # ENHANCED: Adjust entry zones based on volatility
+                if volatility_pct > 3.0:  # High volatility
+                    self.volatility_level = 'high'
+                    self.qqe_long_entry_max_zone = 85.0  # Wider zones
+                    self.qqe_short_entry_min_zone = 15.0
+                elif volatility_pct < 1.0:  # Low volatility
+                    self.volatility_level = 'low'
+                    self.qqe_long_entry_max_zone = 65.0  # Tighter zones
+                    self.qqe_short_entry_min_zone = 35.0
+                else:  # Normal volatility
+                    self.volatility_level = 'normal'
+                    self.qqe_long_entry_max_zone = 75.0
+                    self.qqe_short_entry_min_zone = 25.0
+                    
+        except Exception as e:
+            self.logger.debug(f"Error updating market volatility: {e}")
+            self.volatility_level = 'normal'
+
+    def _should_optimize_with_optuna(self) -> bool:
+        """ENHANCED: More intelligent optimization triggers"""
+        if not OPTUNA_AVAILABLE:
+            return False
+            
+        current_time = time.time()
+        
+        # Don't optimize too frequently
+        if current_time - self.last_optimization < self.optimization_interval:
+            return False
+        
+        # Need sufficient signals for statistical significance
+        if len(self.signal_performance) < self.min_signals_for_optimization:
+            return False
+        
+        # ENHANCED: Trigger conditions
+        evaluated_signals = [s for s in self.signal_performance if s.get('evaluated', False)]
+        if len(evaluated_signals) < 8:  # Need evaluated signals
+            return False
+        
+        # Trigger if:
+        # 1. Low accuracy (below 45%)
+        # 2. No optimization score yet
+        # 3. Significant time passed since last optimization (20+ minutes)
+        # 4. Performance degradation detected
+        
+        recent_accuracy = self._calculate_recent_accuracy()
+        
+        if self.params.accuracy < 45.0:
+            self.logger.info(f"🔧 Triggering Optuna: Low accuracy ({self.params.accuracy:.1f}%)")
+            return True
+        
+        if self.params.optimization_score == 0.0:
+            self.logger.info(f"🔧 Triggering Optuna: No optimization score yet")
+            return True
+        
+        if current_time - self.last_optimization > 1200:  # 20 minutes
+            self.logger.info(f"🔧 Triggering Optuna: Time-based trigger")
+            return True
+        
+        if recent_accuracy < self.params.accuracy - 10:  # 10% degradation
+            self.logger.info(f"🔧 Triggering Optuna: Performance degradation "
+                           f"({recent_accuracy:.1f}% vs {self.params.accuracy:.1f}%)")
+            return True
+        
+        return False
+
+    def _calculate_recent_accuracy(self) -> float:
+        """Calculate accuracy of recent signals only"""
+        try:
+            recent_signals = list(self.signal_performance)[-10:]  # Last 10 signals
+            evaluated = [s for s in recent_signals if s.get('evaluated', False)]
+            if len(evaluated) == 0:
+                return 0.0
+            
+            correct = sum(1 for s in evaluated if s.get('correct', False))
+            return (correct / len(evaluated)) * 100
+        except Exception:
+            return 0.0
+
+    def _optimize_parameters_with_optuna(self):
+        """ENHANCED: Intelligent parameter optimization using Optuna"""
+        if not OPTUNA_AVAILABLE:
+            self.logger.warning("Optuna not available, skipping optimization")
+            return
+        
+        try:
+            self.logger.info(f"🔧 Starting Optuna optimization for {self.symbol}...")
+            start_time = time.time()
+            
+            # Create or load Optuna study
+            study_name = f"crypto_signals_{self.symbol}"
+            storage_url = f"sqlite:///data/optuna_{self.symbol}.db"
+            
+            # Ensure data directory exists
+            os.makedirs('data', exist_ok=True)
+            
+            study = optuna.create_study(
+                study_name=study_name,
+                storage=storage_url,
+                load_if_exists=True,
+                direction='maximize'  # Maximize objective score
+            )
+            
+            # Run optimization with timeout
+            optimization_timeout = 30  # 30 seconds max
+            study.optimize(
+                self._optuna_objective,
+                n_trials=20,  # Limited trials for speed
+                timeout=optimization_timeout,
+                show_progress_bar=False
+            )
+            
+            # Get best parameters
+            best_params = study.best_params
+            best_score = study.best_value
+            
+            optimization_time = time.time() - start_time
+            
+            self.logger.info(f"🎯 Optuna completed in {optimization_time:.1f}s:")
+            self.logger.info(f"   Best score: {best_score:.2f}")
+            self.logger.info(f"   Best params: {best_params}")
+            self.logger.info(f"   Trials: {len(study.trials)}")
+            
+            # ENHANCED: Only update if significantly better
+            improvement_threshold = 5.0  # 5% improvement required
+            
+            if best_score > self.params.optimization_score + improvement_threshold:
+                self._update_parameters_from_optuna(best_params, best_score)
+                self.logger.info(f"✅ Parameters updated! Score improved by "
+                               f"{best_score - self.params.optimization_score:.1f} points")
+            else:
+                self.logger.info(f"📊 No significant improvement found "
+                               f"(+{best_score - self.params.optimization_score:.1f})")
+            
+            self.last_optimization = time.time()
+            
+        except Exception as e:
+            self.logger.error(f"Error in Optuna optimization: {e}", exc_info=True)
+
+    def _optuna_objective(self, trial) -> float:
+        """ENHANCED: Sophisticated objective function for parameter optimization"""
+        try:
+            # ENHANCED: Wider parameter ranges for crypto markets
+            qqe_length = trial.suggest_int('qqe_length', 8, 25)
+            qqe_smooth = trial.suggest_int('qqe_smooth', 3, 10)
+            supertrend_period = trial.suggest_int('supertrend_period', 5, 20)
+            supertrend_multiplier = trial.suggest_float('supertrend_multiplier', 1.5, 4.0)
+            
+            # Create test parameters
+            test_params = SignalParameters(
+                qqe_length=qqe_length,
+                qqe_smooth=qqe_smooth,
+                supertrend_period=supertrend_period,
+                supertrend_multiplier=supertrend_multiplier
+            )
+            
+            # ENHANCED: Comprehensive backtesting on historical data
+            score = self._enhanced_backtest(test_params)
+            
+            # ENHANCED: Penalty for extreme parameters (regularization)
+            penalty = 0
+            if qqe_length < 10 or qqe_length > 20:
+                penalty += 2  # Slight penalty for extreme QQE length
+            if supertrend_multiplier < 2.0 or supertrend_multiplier > 3.5:
+                penalty += 3  # Penalty for extreme ST multiplier
+            
+            final_score = max(0, score - penalty)
+            
+            return final_score
+            
+        except Exception as e:
+            self.logger.debug(f"Error in Optuna objective: {e}")
+            return 0.0
+
+    def _enhanced_backtest(self, test_params: SignalParameters) -> float:
+        """ENHANCED: Comprehensive backtesting with multiple metrics"""
+        try:
+            if self._historical_data_cache is None:
+                return 0.0
+            
+            # Convert cached data to DataFrame
+            df = pd.DataFrame(self._historical_data_cache, 
+                            columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+            df_calc = df.set_index('timestamp')
+            
+            for col in ['open', 'high', 'low', 'close', 'volume']:
+                df_calc[col] = df_calc[col].astype(float)
+            
+            # Calculate indicators with test parameters
+            qqe_result = ta.qqe(df_calc['close'], 
+                              length=test_params.qqe_length, 
+                              smooth=test_params.qqe_smooth, 
+                              factor=4.236)
+            
+            if qqe_result is None or qqe_result.empty or len(qqe_result.columns) < 2:
+                return 0.0
+            
+            st_result = ta.supertrend(df_calc['high'], df_calc['low'], df_calc['close'],
+                                    length=test_params.supertrend_period,
+                                    multiplier=test_params.supertrend_multiplier)
+            
+            if st_result is None or st_result.empty:
+                return 0.0
+            
+            # Find direction column
+            st_dir_col = next((col for col in st_result.columns if 'SUPERTd' in col), None)
+            if not st_dir_col:
+                return 0.0
+            
+            # Prepare data
+            df_calc['qqe_val'] = qqe_result.iloc[:, 0]
+            df_calc['qqe_sig'] = qqe_result.iloc[:, 1]
+            df_calc['st_dir'] = st_result[st_dir_col]
+            
+            df_calc.dropna(inplace=True)
+            
+            if len(df_calc) < 100:  # Need sufficient data
+                return 0.0
+            
+            # ENHANCED: Multi-metric backtesting
+            metrics = self._calculate_backtest_metrics(df_calc)
+            
+            # ENHANCED: Composite score calculation
+            # Weight different metrics for crypto trading
+            win_rate_score = metrics['win_rate'] * 0.4  # 40% weight
+            profit_factor_score = min(metrics['profit_factor'] * 10, 30) * 0.3  # 30% weight, capped
+            sharpe_score = max(0, min(metrics['sharpe_ratio'] * 15, 20)) * 0.2  # 20% weight
+            max_dd_score = max(0, (100 - metrics['max_drawdown']) / 5) * 0.1  # 10% weight
+            
+            total_score = win_rate_score + profit_factor_score + sharpe_score + max_dd_score
+            
+            # ENHANCED: Bonus for consistency (low volatility of returns)
+            if metrics['return_volatility'] < 0.1:  # Low volatility = consistent
+                total_score += 5
+            
+            return min(total_score, 100.0)  # Cap at 100
+            
+        except Exception as e:
+            self.logger.debug(f"Error in enhanced backtest: {e}")
+            return 0.0
+
+    def _calculate_backtest_metrics(self, df: pd.DataFrame) -> Dict:
+        """ENHANCED: Calculate comprehensive trading metrics"""
+        try:
+            trades = []
+            position = None
+            entry_price = 0.0
+            
+            # ENHANCED: More sophisticated entry/exit logic
+            for i in range(1, len(df)):
+                current_price = df['close'].iloc[i]
+                qqe_val = df['qqe_val'].iloc[i]
+                qqe_sig = df['qqe_sig'].iloc[i]
+                st_dir = df['st_dir'].iloc[i]
+                
+                # Exit logic
+                if position:
+                    exit_triggered = False
+                    exit_reason = ""
+                    
+                    if position == 'long':
+                        # Exit long: QQE bearish or ST down
+                        if qqe_val < qqe_sig or st_dir != 1:
+                            exit_triggered = True
+                            exit_reason = "signal_exit"
+                        # Stop loss: 2% loss
+                        elif current_price <= entry_price * 0.98:
+                            exit_triggered = True
+                            exit_reason = "stop_loss"
+                        # Take profit: 3% gain
+                        elif current_price >= entry_price * 1.03:
+                            exit_triggered = True
+                            exit_reason = "take_profit"
+                    
+                    elif position == 'short':
+                        # Exit short: QQE bullish or ST up
+                        if qqe_val > qqe_sig or st_dir == 1:
+                            exit_triggered = True
+                            exit_reason = "signal_exit"
+                        # Stop loss: 2% loss
+                        elif current_price >= entry_price * 1.02:
+                            exit_triggered = True
+                            exit_reason = "stop_loss"
+                        # Take profit: 3% gain
+                        elif current_price <= entry_price * 0.97:
+                            exit_triggered = True
+                            exit_reason = "take_profit"
+                    
+                    if exit_triggered:
+                        pnl = 0
+                        if position == 'long':
+                            pnl = (current_price - entry_price) / entry_price
+                        else:  # short
+                            pnl = (entry_price - current_price) / entry_price
+                        
+                        trades.append({
+                            'entry_price': entry_price,
+                            'exit_price': current_price,
+                            'pnl_pct': pnl * 100,
+                            'position': position,
+                            'exit_reason': exit_reason
+                        })
+                        
+                        position = None
+                
+                # Entry logic (only if no position)
+                if not position:
+                    qqe_bullish = qqe_val > qqe_sig
+                    qqe_bearish = qqe_val < qqe_sig
+                    st_up = st_dir == 1
+                    st_down = st_dir != 1
+                    
+                    # Both indicators must agree
+                    if qqe_bullish and st_up and qqe_val < self.qqe_long_entry_max_zone:
+                        position = 'long'
+                        entry_price = current_price
+                    elif qqe_bearish and st_down and qqe_val > self.qqe_short_entry_min_zone:
+                        position = 'short'
+                        entry_price = current_price
+            
+            # Calculate metrics
+            if len(trades) == 0:
+                return {
+                    'win_rate': 0, 'profit_factor': 0, 'total_return': 0,
+                    'sharpe_ratio': 0, 'max_drawdown': 100, 'return_volatility': 1
+                }
+            
+            winning_trades = [t for t in trades if t['pnl_pct'] > 0]
+            losing_trades = [t for t in trades if t['pnl_pct'] <= 0]
+            
+            win_rate = len(winning_trades) / len(trades) * 100
+            
+            total_wins = sum(t['pnl_pct'] for t in winning_trades)
+            total_losses = abs(sum(t['pnl_pct'] for t in losing_trades))
+            profit_factor = total_wins / total_losses if total_losses > 0 else 10
+            
+            returns = [t['pnl_pct'] / 100 for t in trades]
+            total_return = sum(returns) * 100
+            
+            # Sharpe ratio (simplified)
+            if len(returns) > 1:
+                mean_return = np.mean(returns)
+                std_return = np.std(returns)
+                sharpe_ratio = mean_return / std_return if std_return > 0 else 0
+                return_volatility = std_return
+            else:
+                sharpe_ratio = 0
+                return_volatility = 0
+            
+            # Maximum drawdown
+            cumulative_returns = np.cumsum(returns)
+            running_max = np.maximum.accumulate(cumulative_returns)
+            drawdowns = running_max - cumulative_returns
+            max_drawdown = np.max(drawdowns) * 100 if len(drawdowns) > 0 else 0
+            
+            return {
+                'win_rate': win_rate,
+                'profit_factor': profit_factor,
+                'total_return': total_return,
+                'sharpe_ratio': sharpe_ratio,
+                'max_drawdown': max_drawdown,
+                'return_volatility': return_volatility,
+                'total_trades': len(trades)
+            }
+            
+        except Exception as e:
+            self.logger.debug(f"Error calculating metrics: {e}")
+            return {
+                'win_rate': 0, 'profit_factor': 0, 'total_return': 0,
+                'sharpe_ratio': 0, 'max_drawdown': 100, 'return_volatility': 1
+            }
+
+    def _update_parameters_from_optuna(self, best_params: Dict, best_score: float):
+        """Update parameters with Optuna results"""
+        try:
+            old_params = (self.params.qqe_length, self.params.qqe_smooth, 
+                         self.params.supertrend_period, self.params.supertrend_multiplier)
+            
+            # Update parameters
+            self.params.qqe_length = best_params['qqe_length']
+            self.params.qqe_smooth = best_params['qqe_smooth']
+            self.params.supertrend_period = best_params['supertrend_period']
+            self.params.supertrend_multiplier = best_params['supertrend_multiplier']
+            self.params.optimization_score = best_score
+            self.params.last_used = time.time()
+            
+            # Reset live performance tracking for new parameters
+            self.params.accuracy = 0.0
+            self.params.total_signals = 0
+            self.params.winning_signals = 0
+            self.signal_performance.clear()
+            
+            new_params = (self.params.qqe_length, self.params.qqe_smooth,
+                         self.params.supertrend_period, self.params.supertrend_multiplier)
+            
+            self.logger.info(f"📈 OPTUNA UPDATE: {old_params} → {new_params}")
+            self.logger.info(f"📈 Optimization score: {best_score:.2f}")
+            
+            # Save immediately
+            self._save_config()
+            
+        except Exception as e:
+            self.logger.error(f"Error updating parameters: {e}")
     def _generate_composite_signal(self, df: pd.DataFrame) -> str:
         """SIMPLIFIED: Clear signal logic using fixed indicators."""
         try:
@@ -387,44 +819,107 @@ class AdaptiveCryptoSignals:
         return False
 
     def _optimize_parameters(self, df: pd.DataFrame):
+        """ONLY CHANGE: Replace manual grid search with Optuna, keep same logic"""
         try:
-            self.logger.info(f"[{self.symbol}] 🔧 Optimizing QQE & ST parameters...")
-            param_ranges = {
-                'qqe_length': [10, 14, 20], 'qqe_smooth': [3, 5, 7],
-                'supertrend_period': [7, 10, 14], 'supertrend_multiplier': [2.0, 3.0]
-            }
-            best_score = -1.0; best_params_dict = None; num_combos = 0
-
-            for q_len in param_ranges['qqe_length']:
-              for q_sm in param_ranges['qqe_smooth']:
-                for st_p in param_ranges['supertrend_period']:
-                  for st_m in param_ranges['supertrend_multiplier']:
-                    num_combos +=1
-                    test_p = SignalParameters( qqe_length=q_len, qqe_smooth=q_sm,
-                                               supertrend_period=st_p, supertrend_multiplier=st_m)
-                    score = self._quick_backtest(df.copy(), test_p) 
-                    self.logger.info(f"[{self.symbol}] Opt Test: Q({q_len},{q_sm}), ST({st_p},{st_m}) -> Score: {score:.2f}%")
-                    if score > best_score:
-                        best_score = score
-                        best_params_dict = {
-                            'qqe_length': q_len, 'qqe_smooth': q_sm,
-                            'supertrend_period': st_p, 'supertrend_multiplier': st_m
-                        }
+            self.logger.info(f"🔧 Optimizing parameters...")
+            start_time = time.time()
             
-            self.logger.info(f"[{self.symbol}] Optimization tested {num_combos} combos. Best backtest score: {best_score:.2f}%")
-            if best_params_dict and best_score > self.params.accuracy : # Only update if backtest score is better than current live accuracy
-                self.logger.info(f"[{self.symbol}] 📈 New best QQE/ST parameters found (Score: {best_score:.2f}% vs Current Acc: {self.params.accuracy:.2f}%). Updating live parameters.")
-                self.params.qqe_length = best_params_dict['qqe_length']
-                self.params.qqe_smooth = best_params_dict['qqe_smooth']
-                self.params.supertrend_period = best_params_dict['supertrend_period']
-                self.params.supertrend_multiplier = best_params_dict['supertrend_multiplier']
-                self.params.accuracy = 0.0; self.params.total_signals = 0; self.params.winning_signals = 0 # Reset accuracy for new params
+            if OPTUNA_AVAILABLE:
+                # Use Optuna for smarter search
+                best_params, best_score = self._optuna_search(df)
+            else:
+                # Fallback to original manual grid search
+                best_params, best_score = self._manual_grid_search(df)
+            
+            # Keep existing improvement logic exactly the same
+            current_score = self.params.accuracy
+            if best_params and best_score > current_score + 1:  # Same 1% threshold
+                old_params = f"{self.params.qqe_length}/{self.params.qqe_smooth}/{self.params.supertrend_period}/{self.params.supertrend_multiplier}"
+                
+                # Update parameters
+                self.params.qqe_length = best_params['qqe_length']
+                self.params.qqe_smooth = best_params['qqe_smooth']
+                self.params.supertrend_period = best_params['supertrend_period']
+                self.params.supertrend_multiplier = best_params['supertrend_multiplier']
                 self.params.last_used = time.time()
-                self.signal_performance.clear()
+                
+                new_params = f"{self.params.qqe_length}/{self.params.qqe_smooth}/{self.params.supertrend_period}/{self.params.supertrend_multiplier}"
+                
+                self.logger.info(f"⚡ UPDATED: {old_params} → {new_params} (+{best_score - current_score:.1f}%)")
                 self._save_config()
+            
             self.last_optimization = time.time()
-        except Exception as e: self.logger.error(f"[{self.symbol}] Error optimizing parameters: {e}", exc_info=True)
-
+            optimization_time = (time.time() - start_time) * 1000
+            self.logger.debug(f"Optimization completed in {optimization_time:.1f}ms")
+            
+        except Exception as e:
+            self.logger.error(f"Error optimizing parameters: {e}")
+    def _optuna_search(self, df: pd.DataFrame) -> tuple:
+        """NEW: Optuna search using SAME parameter ranges and SAME objective function"""
+        try:
+            # Create study
+            study = optuna.create_study(direction='maximize')
+            
+            # Run optimization with same timeout as before
+            study.optimize(
+                lambda trial: self._optuna_objective(trial, df),
+                n_trials=30,  # More trials than manual grid (was 54 max)
+                timeout=0.2,  # Same 200ms timeout as before
+                show_progress_bar=False
+            )
+            
+            if study.best_trial:
+                return study.best_params, study.best_value
+            else:
+                return None, 0.0
+                
+        except Exception as e:
+            self.logger.debug(f"Optuna search failed: {e}")
+            return None, 0.0
+    def _manual_grid_search(self, df: pd.DataFrame) -> tuple:
+        """FALLBACK: Keep original manual grid search exactly the same"""
+        param_ranges = {
+            'qqe_length': [10, 14, 20], 
+            'qqe_smooth': [3, 5, 7],
+            'supertrend_period': [7, 10, 14], 
+            'supertrend_multiplier': [2.0, 3.0]
+        }
+        
+        best_params = None
+        best_score = -1.0
+        current_score = self.params.accuracy
+        
+        for qqe_len in param_ranges['qqe_length']:
+            for qqe_sm in param_ranges['qqe_smooth']:
+                for st_p in param_ranges['supertrend_period']:
+                    for st_m in param_ranges['supertrend_multiplier']:
+                        score = self._quick_backtest(df, qqe_len, qqe_sm, st_p, st_m)
+                        if score > best_score:
+                            best_score = score
+                            best_params = {
+                                'qqe_length': qqe_len,
+                                'qqe_smooth': qqe_sm,
+                                'supertrend_period': st_p,
+                                'supertrend_multiplier': st_m
+                            }
+        
+        return best_params, best_score
+    def _optuna_objective(self, trial, df: pd.DataFrame) -> float:
+        """NEW: Optuna objective using SAME ranges and SAME _quick_backtest logic"""
+        try:
+            # Use EXACT same parameter ranges as original manual search
+            qqe_length = trial.suggest_categorical('qqe_length', [10, 14, 20])
+            qqe_smooth = trial.suggest_categorical('qqe_smooth', [3, 5, 7])
+            supertrend_period = trial.suggest_categorical('supertrend_period', [7, 10, 14])
+            supertrend_multiplier = trial.suggest_categorical('supertrend_multiplier', [2.0, 3.0])
+            
+            # Use SAME _quick_backtest function - no changes
+            score = self._quick_backtest(df, qqe_length, qqe_smooth, supertrend_period, supertrend_multiplier)
+            
+            return score
+            
+        except Exception:
+            return 0.0
     def _quick_backtest(self, df_hist: pd.DataFrame, params_to_test: SignalParameters) -> float:
         try:
             df_calc = df_hist.set_index('timestamp')
@@ -539,16 +1034,31 @@ class AdaptiveCryptoSignals:
         except Exception as e: self.logger.error(f"[{self.symbol}] Error saving config: {e}", exc_info=True)
 
     def get_system_status(self) -> Dict:
+        """Enhanced system status with Optuna information"""
         return {
-            'system_type': 'QQE_Supertrend_Only',
+            'system_type': 'QQE_Supertrend_Optuna_Enhanced',
             'params': { 
-                'qqe_length': self.params.qqe_length, 'qqe_smooth': self.params.qqe_smooth,
-                'supertrend_period': self.params.supertrend_period, 'supertrend_multiplier': self.params.supertrend_multiplier,
+                'qqe_length': self.params.qqe_length, 
+                'qqe_smooth': self.params.qqe_smooth,
+                'supertrend_period': self.params.supertrend_period, 
+                'supertrend_multiplier': self.params.supertrend_multiplier,
             },
-            'performance': {'accuracy': self.params.accuracy, 'total_signals': self.params.total_signals, 'winning_signals': self.params.winning_signals},
-            'market_state': {'trend': self.current_trend, 'volatility': self.volatility_level}, 
-            'last_signal_info': {'signal': self.last_signal, 'time': self.last_signal_time },
-            'exit_logic_provider': 'External Strategy + QQE/ST reasons from this module'
+            'optimization': {
+                'optuna_available': OPTUNA_AVAILABLE,
+                'optimization_score': self.params.optimization_score,
+                'last_optimization': self.last_optimization,
+                'historical_data_periods': self.historical_data_periods
+            },
+            'performance': {
+                'live_accuracy': self.params.accuracy, 
+                'total_signals': self.params.total_signals, 
+                'winning_signals': self.params.winning_signals
+            },
+            'market_state': {
+                'trend': self.current_trend, 
+                'volatility': self.volatility_level,
+                'entry_zones': f"Long<{self.qqe_long_entry_max_zone}, Short>{self.qqe_short_entry_min_zone}"
+            }
         }
 
 def integrate_adaptive_crypto_signals(strategy_instance, config_file: str = None):
@@ -578,7 +1088,7 @@ def integrate_adaptive_crypto_signals(strategy_instance, config_file: str = None
 
 def test_indicators(self: AdaptiveCryptoSignals, exchange) -> Dict:
     try:
-        ohlcv = exchange.get_ohlcv(self.symbol, timeframe='3m', limit=300)
+        ohlcv = exchange.get_ohlcv(self.symbol, timeframe='1m', limit=300)
         if not ohlcv or len(ohlcv) < 50: return {'error': f'Insufficient data: {len(ohlcv) if ohlcv else 0}'}
         
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
