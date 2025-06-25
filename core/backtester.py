@@ -228,7 +228,7 @@ class IntegratedBacktester:
             if len(df) < 50:
                 return {"error": "Insufficient data after adding indicators"}
             
-            self.logger.info(f"🚀 Starting backtest for {symbol} with {len(df)} candles")
+            self.logger.info(f" Starting backtest for {symbol} with {len(df)} candles")
             
             # Backtest variables
             position = None
@@ -476,7 +476,7 @@ class IntegratedBacktester:
             trades_file = f"{output_dir}/{symbol}_{strategy_name}_trades_{timestamp}.csv"
             pd.DataFrame(trades_data).to_csv(trades_file, index=False)
             
-            self.logger.info(f"📁 Trades exported: {trades_file}")
+            self.logger.info(f" Trades exported: {trades_file}")
             return trades_file
         
         return None
