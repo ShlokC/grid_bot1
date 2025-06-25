@@ -34,17 +34,38 @@ logging.getLogger(__name__).setLevel(logging.DEBUG)
 @dataclass
 class SignalParameters:
     """Parameters for QQE & Supertrend signals"""
-    qqe_length: int = 12        # Balanced - not too fast, not too slow
-    qqe_smooth: int = 5         # Standard smoothing to avoid whipsaws
-    qqe_factor: float = 4.236   # Keep original for stability
-    supertrend_period: int = 10 # Standard period for trend confidence
-    supertrend_multiplier: float = 2.8  # Slightly tighter than 3.0 but not too close
     
+    # Strategy identification
+    strategy_type: str = 'tsi_vwap'
+    
+    # QQE parameters
+    qqe_length: int = 12
+    qqe_smooth: int = 5
+    qqe_factor: float = 4.236
+    
+    # Supertrend parameters  
+    supertrend_period: int = 10
+    supertrend_multiplier: float = 2.8
+    
+    # RSI parameters
+    rsi_length: int = 14
+    
+    # MACD parameters
+    macd_fast: int = 12
+    macd_slow: int = 26
+    macd_signal: int = 9
+    
+    # TSI parameters
+    tsi_fast: int = 8
+    tsi_slow: int = 15
+    tsi_signal: int = 6
+    
+    # Performance tracking
     accuracy: float = 0.0
     total_signals: int = 0
     winning_signals: int = 0
     last_used: float = 0.0
-    optimization_score: float = 0.0  # New: Store Optuna optimization score
+    optimization_score: float = 0.0
     
 class AdaptiveCryptoSignals:
     """
@@ -52,11 +73,15 @@ class AdaptiveCryptoSignals:
     Fisher Transform and VWAP components have been removed for simplification.
     """
     
-    def __init__(self, symbol: str, config_file: str = "data/crypto_signal_configs.json"):
+    def __init__(self, symbol: str, config_file: str = "data/crypto_signal_configs.json", strategy_type: str = 'tsi_vwap'):
         self.logger = logging.getLogger(f"{__name__}.{symbol}")
         self.symbol = symbol
         self.config_file = config_file
+        self.strategy_type = strategy_type  # Store strategy type
         self.position_entry_time = 0
+        
+        # Initialize strategy-specific parameters
+        self._init_strategy_params()
         
         self.params = self._load_symbol_config()
         self.signal_performance = self._load_signal_history()
@@ -71,27 +96,53 @@ class AdaptiveCryptoSignals:
         self.volatility_level = 'normal'
         self.last_optimization = time.time()
         
-        # ENHANCED: Optuna optimization settings
-        self.min_signals_for_optimization = 10  # Increased for statistical significance
-        self.optimization_interval = 600  # 10 minutes instead of 5
-        self.historical_data_periods = 500  # Use more historical data
+        # Optimization settings
+        self.min_signals_for_optimization = 10
+        self.optimization_interval = 600
+        self.historical_data_periods = 500
         
-        # ENHANCED: Dynamic entry zones based on market volatility
+        # Dynamic entry zones
         self.qqe_long_entry_max_zone = 90.0
         self.qqe_short_entry_min_zone = 10.0
         
-        # Cache for historical data to avoid repeated API calls
+        # Cache for historical data
         self._historical_data_cache = None
         self._cache_timestamp = 0
-        self._cache_validity = 300  # 5 minutes cache validity
+        self._cache_validity = 300
         
-        self.last_indicators: Dict[str, Optional[Dict]] = {'qqe': None, 'supertrend': None}
+        self.last_indicators: Dict[str, Optional[Dict]] = {'qqe': None, 'supertrend': None, 'rsi': None, 'macd': None, 'tsi': None, 'vwap': None}
         
-        self.logger.info(f"🚀 ENHANCED Crypto Signals with Optuna optimization for {symbol}")
-        self.logger.info(f"   Current params: QQE({self.params.qqe_length},{self.params.qqe_smooth}), "
-                        f"ST({self.params.supertrend_period},{self.params.supertrend_multiplier})")
-        self.logger.info(f"   Optimization score: {self.params.optimization_score:.2f}, "
-                        f"Live accuracy: {self.params.accuracy:.1f}%")
+        self.logger.info(f"🚀 ENHANCED Crypto Signals with {strategy_type} for {symbol}")
+        self.logger.info(f"   Live accuracy: {self.params.accuracy:.1f}%")
+    def _init_strategy_params(self):
+        """Initialize strategy-specific parameters"""
+        self.strategy_configs = {
+            'qqe_supertrend_fixed': {
+                'indicators': ['qqe', 'supertrend'],
+                'qqe_length': 12, 'qqe_smooth': 5, 'qqe_factor': 4.236,
+                'supertrend_period': 10, 'supertrend_multiplier': 2.8
+            },
+            'qqe_supertrend_fast': {
+                'indicators': ['qqe', 'supertrend'], 
+                'qqe_length': 8, 'qqe_smooth': 3, 'qqe_factor': 4.236,
+                'supertrend_period': 6, 'supertrend_multiplier': 2.2
+            },
+            'rsi_macd': {
+                'indicators': ['rsi', 'macd'],
+                'rsi_length': 14, 'macd_fast': 12, 'macd_slow': 26, 'macd_signal': 9
+            },
+            'tsi_vwap': {
+                'indicators': ['tsi', 'vwap'],
+                'tsi_fast': 8, 'tsi_slow': 15, 'tsi_signal': 6
+            }
+        }
+        
+        # Set current strategy config
+        if self.strategy_type in self.strategy_configs:
+            self.current_config = self.strategy_configs[self.strategy_type]
+        else:
+            self.logger.warning(f"Unknown strategy type {self.strategy_type}, using default")
+            self.current_config = self.strategy_configs['qqe_supertrend_fixed']
     def export_close_to_csv(self, ohlcv_data, filename: str = None) -> bool:
         """
         Export close prices with timestamps to CSV format.
@@ -596,64 +647,158 @@ class AdaptiveCryptoSignals:
         except Exception as e:
             self.logger.error(f"Error updating parameters: {e}")
     def _generate_composite_signal(self, df: pd.DataFrame) -> str:
-        """SIMPLIFIED: Clear signal logic using fixed indicators."""
+        """Generate signal based on selected strategy type."""
         try:
-            self.logger.info(f"[{self.symbol}] --- Generating Signal ---")
+            self.logger.info(f"[{self.symbol}] --- Generating {self.strategy_type} Signal ---")
             
-            qqe_result = self._calculate_qqe(df)
-            supertrend_result = self._calculate_supertrend(df)
-
-            if not qqe_result or not supertrend_result:
-                missing = []
-                if not qqe_result: missing.append("QQE")
-                if not supertrend_result: missing.append("Supertrend")
-                self.logger.info(f"[{self.symbol}] Missing indicators: {', '.join(missing)}")
+            # Calculate indicators based on strategy type
+            indicators = self._calculate_indicators(df)
+            if not indicators:
+                self.logger.info(f"[{self.symbol}] Failed to calculate indicators for {self.strategy_type}")
                 return 'none'
             
-            # Store for exit evaluation
-            self.last_indicators['qqe'] = qqe_result
-            self.last_indicators['supertrend'] = supertrend_result
+            # Generate signal based on strategy type
+            signal = self._generate_strategy_signal(indicators, df)
             
-            # SIMPLE LOGIC: Both indicators must agree
-            qqe_value = qqe_result['qqe_value']
-            qqe_signal = qqe_result['qqe_signal_line_value']
-            st_direction = supertrend_result['direction']
-            
-            qqe_bullish = qqe_signal > qqe_value  # 65.65 > 58.58 = True → BULLISH ✅
-            qqe_bearish = qqe_signal < qqe_value  # Signal below QQE = BEARISH
-            st_up = st_direction == 'up'
-            st_down = st_direction == 'down'
-            
-            self.logger.info(f"[{self.symbol}] QQE: {qqe_value:.2f} vs Signal: {qqe_signal:.2f} → {'BULLISH' if qqe_bullish else 'BEARISH'}")
-            self.logger.info(f"[{self.symbol}] Supertrend: {st_direction.upper()}")
-            
-            # ENTRY SIGNALS: Both must agree
-            if qqe_bullish and st_up:
-                self.logger.info(f"[{self.symbol}] 🟢 BUY SIGNAL: QQE bullish + ST up")
-                return 'buy'
-            elif qqe_bearish and st_down:
-                self.logger.info(f"[{self.symbol}] 🔴 SELL SIGNAL: QQE bearish + ST down")
-                return 'sell'
+            if signal != 'none':
+                self.logger.info(f"[{self.symbol}] 🟢 {signal.upper()} SIGNAL from {self.strategy_type}")
             else:
-                self.logger.info(f"[{self.symbol}] ❌ NO SIGNAL: Indicators disagree (QQE: {'bull' if qqe_bullish else 'bear'}, ST: {st_direction})")
-                return 'none'
+                self.logger.info(f"[{self.symbol}] ❌ NO SIGNAL from {self.strategy_type}")
+            
+            return signal
                 
         except Exception as e:
             self.logger.error(f"[{self.symbol}] Signal generation error: {e}", exc_info=True)
             return 'none'
+    def _generate_strategy_signal(self, indicators: Dict, df: pd.DataFrame) -> str:
+        """Generate signal based on strategy-specific logic."""
+        try:
+            if self.strategy_type in ['qqe_supertrend_fixed', 'qqe_supertrend_fast']:
+                return self._qqe_supertrend_signal(indicators)
+            elif self.strategy_type == 'rsi_macd':
+                return self._rsi_macd_signal(indicators)
+            elif self.strategy_type == 'tsi_vwap':
+                return self._tsi_vwap_signal(indicators)
+            else:
+                self.logger.warning(f"Unknown strategy type: {self.strategy_type}")
+                return 'none'
+                
+        except Exception as e:
+            self.logger.error(f"[{self.symbol}] Error generating strategy signal: {e}")
+            return 'none'
+    def _qqe_supertrend_signal(self, indicators: Dict) -> str:
+        """QQE + Supertrend signal logic"""
+        if not all(key in indicators for key in ['qqe_value', 'qqe_signal', 'st_direction']):
+            return 'none'
+        
+        qqe_bullish = indicators['qqe_signal'] > indicators['qqe_value']
+        st_bullish = indicators['st_direction'] == 1
+        
+        if qqe_bullish and st_bullish:
+            return 'buy'
+        elif not qqe_bullish and not st_bullish:
+            return 'sell'
+        else:
+            return 'none'
 
+    def _rsi_macd_signal(self, indicators: Dict) -> str:
+        """RSI + MACD signal logic"""
+        if not all(key in indicators for key in ['rsi', 'macd_line', 'macd_signal']):
+            return 'none'
+        
+        rsi = indicators['rsi']
+        macd_bullish = indicators['macd_line'] > indicators['macd_signal']
+        
+        if rsi < 35 and macd_bullish:
+            return 'buy'
+        elif rsi > 65 and not macd_bullish:
+            return 'sell'
+        else:
+            return 'none'
+
+    def _tsi_vwap_signal(self, indicators: Dict) -> str:
+        """TSI + VWAP signal logic"""
+        if not all(key in indicators for key in ['tsi_line', 'vwap', 'price']):
+            return 'none'
+        
+        tsi_signal = indicators.get('tsi_signal', 0)
+        tsi_bullish = indicators['tsi_line'] > tsi_signal
+        price_above_vwap = indicators['price'] > indicators['vwap']
+        
+        if tsi_bullish and price_above_vwap:
+            return 'buy'
+        elif not tsi_bullish and not price_above_vwap:
+            return 'sell'
+        else:
+            return 'none'
+    def _calculate_indicators(self, df: pd.DataFrame) -> Optional[Dict]:
+        """Calculate indicators based on strategy type and store for exit evaluation."""
+        try:
+            indicators = {}
+            config = self.current_config
+            
+            if 'qqe' in config['indicators']:
+                qqe_result = ta.qqe(df['close'], 
+                                length=config['qqe_length'], 
+                                smooth=config['qqe_smooth'], 
+                                factor=config['qqe_factor'])
+                if qqe_result is not None and not qqe_result.empty and len(qqe_result.columns) >= 2:
+                    indicators['qqe_value'] = float(qqe_result.iloc[-1, 0])
+                    indicators['qqe_signal'] = float(qqe_result.iloc[-1, 1])
+            
+            if 'supertrend' in config['indicators']:
+                st_result = ta.supertrend(df['high'], df['low'], df['close'],
+                                        length=config['supertrend_period'],
+                                        multiplier=config['supertrend_multiplier'])
+                if st_result is not None and not st_result.empty:
+                    dir_col = next((col for col in st_result.columns if 'SUPERTd' in col), None)
+                    if dir_col:
+                        indicators['st_direction'] = int(st_result[dir_col].iloc[-1])
+            
+            if 'rsi' in config['indicators']:
+                rsi_result = ta.rsi(df['close'], length=config['rsi_length'])
+                if rsi_result is not None:
+                    indicators['rsi'] = float(rsi_result.iloc[-1])
+            
+            if 'macd' in config['indicators']:
+                macd_result = ta.macd(df['close'], 
+                                    fast=config['macd_fast'], 
+                                    slow=config['macd_slow'], 
+                                    signal=config['macd_signal'])
+                if macd_result is not None and not macd_result.empty and len(macd_result.columns) >= 3:
+                    indicators['macd_line'] = float(macd_result.iloc[-1, 0])
+                    indicators['macd_histogram'] = float(macd_result.iloc[-1, 1])
+                    indicators['macd_signal'] = float(macd_result.iloc[-1, 2])
+            
+            if 'tsi' in config['indicators']:
+                tsi_result = ta.tsi(df['close'], 
+                                fast=config['tsi_fast'], 
+                                slow=config['tsi_slow'], 
+                                signal=config['tsi_signal'])
+                if tsi_result is not None and not tsi_result.empty:
+                    indicators['tsi_line'] = float(tsi_result.iloc[-1, 0])
+                    if len(tsi_result.columns) > 1:
+                        indicators['tsi_signal'] = float(tsi_result.iloc[-1, 1])
+            
+            if 'vwap' in config['indicators']:
+                vwap_result = ta.vwap(df['high'], df['low'], df['close'], df['volume'])
+                if vwap_result is not None:
+                    indicators['vwap'] = float(vwap_result.iloc[-1])
+                    indicators['price'] = float(df['close'].iloc[-1])
+            
+            # IMPORTANT: Store indicators for exit evaluation
+            self._last_calculated_indicators = indicators.copy()
+            
+            return indicators if indicators else None
+            
+        except Exception as e:
+            self.logger.error(f"[{self.symbol}] Error calculating indicators: {e}")
+            return None
     def evaluate_exit_conditions(self, position_side: str, entry_price: float, current_price: float) -> Dict:
-        """SIMPLIFIED: Clear exit logic using fixed indicators."""
+        """Evaluate exit conditions based on strategy type."""
         try:
             result = {'should_exit': False, 'exit_reason': '', 'exit_urgency': 'none'}
             
-            qqe_data = self.last_indicators.get('qqe')
-            st_data = self.last_indicators.get('supertrend')
-            
-            if not qqe_data or not st_data:
-                self.logger.warning(f"[{self.symbol}] Exit eval: Missing indicator data")
-                return result
-
             # Calculate PnL
             pnl_pct = ((current_price - entry_price) / entry_price) * 100 if position_side == 'long' else ((entry_price - current_price) / entry_price) * 100
             
@@ -666,41 +811,162 @@ class AdaptiveCryptoSignals:
                 })
                 return result
 
-            # SIMPLE EXIT: Both indicators against position
-            qqe_value = qqe_data['qqe_value']
-            qqe_signal = qqe_data['qqe_signal_line_value']
-            st_direction = st_data['direction']
-            
-            qqe_bullish = qqe_signal > qqe_value  # Signal line above QQE = bullish
-            qqe_bearish = qqe_signal < qqe_value  # Signal line below QQE = bearish
-            st_up = st_direction == 'up'
-            st_down = st_direction == 'down'
-            
-            self.logger.info(f"[{self.symbol}] Exit eval for {position_side.upper()}: QQE={'bull' if qqe_bullish else 'bear'}, ST={st_direction}")
-            
-            if position_side == 'long' and (qqe_bearish and st_down):
-                result.update({
-                    'should_exit': True,
-                    'exit_reason': f"LONG exit: QQE bearish + ST down (PnL: {pnl_pct:.2f}%)",
-                    'exit_urgency': 'normal'
-                })
-            elif position_side == 'short' and (qqe_bullish or st_up):
-                result.update({
-                    'should_exit': True,
-                    'exit_reason': f"SHORT exit: QQE bullish + ST up (PnL: {pnl_pct:.2f}%)",
-                    'exit_urgency': 'normal'
-                })
-            
-            if result['should_exit']:
-                self.logger.info(f"[{self.symbol}] ✅ EXIT TRIGGERED: {result['exit_reason']}")
-            else:
-                self.logger.info(f"[{self.symbol}] ❌ NO EXIT: Indicators not both against position")
+            # Strategy-specific exit logic
+            if self.strategy_type in ['qqe_supertrend_fixed', 'qqe_supertrend_fast']:
+                return self._evaluate_qqe_supertrend_exit(position_side, pnl_pct)
+            elif self.strategy_type == 'rsi_macd':
+                return self._evaluate_rsi_macd_exit(position_side, pnl_pct)
+            elif self.strategy_type == 'tsi_vwap':
+                return self._evaluate_tsi_vwap_exit(position_side, pnl_pct)
             
             return result
             
         except Exception as e:
-            self.logger.error(f"[{self.symbol}] Exit evaluation error: {e}", exc_info=True)
+            self.logger.error(f"[{self.symbol}] Exit evaluation error: {e}")
             return {'should_exit': False, 'exit_reason': 'Error', 'exit_urgency': 'none'}
+
+    def _evaluate_qqe_supertrend_exit(self, position_side: str, pnl_pct: float) -> Dict:
+        """QQE + Supertrend exit logic"""
+        result = {'should_exit': False, 'exit_reason': '', 'exit_urgency': 'none'}
+        
+        qqe_data = self.last_indicators.get('qqe')
+        st_data = self.last_indicators.get('supertrend')
+        
+        if not qqe_data or not st_data:
+            return result
+
+        qqe_bullish = qqe_data.get('qqe_signal_line_value', 0) > qqe_data.get('qqe_value', 0)
+        st_up = st_data.get('direction') == 'up'
+        
+        if position_side == 'long' and (not qqe_bullish and not st_up):
+            result.update({
+                'should_exit': True,
+                'exit_reason': f"LONG exit: QQE bearish + ST down (PnL: {pnl_pct:.2f}%)",
+                'exit_urgency': 'normal'
+            })
+        elif position_side == 'short' and (qqe_bullish and st_up):
+            result.update({
+                'should_exit': True,
+                'exit_reason': f"SHORT exit: QQE bullish + ST up (PnL: {pnl_pct:.2f}%)",
+                'exit_urgency': 'normal'
+            })
+        
+        return result
+
+    def _evaluate_rsi_macd_exit(self, position_side: str, pnl_pct: float) -> Dict:
+        """RSI + MACD exit logic - proper implementation"""
+        result = {'should_exit': False, 'exit_reason': '', 'exit_urgency': 'none'}
+        
+        # Get last calculated indicators
+        last_indicators = getattr(self, '_last_calculated_indicators', {})
+        
+        if not all(key in last_indicators for key in ['rsi', 'macd_line', 'macd_signal']):
+            return result
+
+        rsi = last_indicators['rsi']
+        macd_line = last_indicators['macd_line'] 
+        macd_signal = last_indicators['macd_signal']
+        macd_bearish = macd_line < macd_signal
+        macd_bullish = macd_line > macd_signal
+        
+        # Exit logic for RSI + MACD strategy
+        if position_side == 'long':
+            # Exit long when RSI overbought (>70) AND MACD turns bearish
+            if rsi > 70 and macd_bearish:
+                result.update({
+                    'should_exit': True,
+                    'exit_reason': f"LONG exit: RSI overbought ({rsi:.1f}) + MACD bearish (PnL: {pnl_pct:.2f}%)",
+                    'exit_urgency': 'normal'
+                })
+            # Emergency exit if RSI extremely overbought
+            elif rsi > 80:
+                result.update({
+                    'should_exit': True,
+                    'exit_reason': f"LONG exit: RSI extremely overbought ({rsi:.1f}) (PnL: {pnl_pct:.2f}%)",
+                    'exit_urgency': 'high'
+                })
+        
+        elif position_side == 'short':
+            # Exit short when RSI oversold (<30) AND MACD turns bullish  
+            if rsi < 30 and macd_bullish:
+                result.update({
+                    'should_exit': True,
+                    'exit_reason': f"SHORT exit: RSI oversold ({rsi:.1f}) + MACD bullish (PnL: {pnl_pct:.2f}%)",
+                    'exit_urgency': 'normal'
+                })
+            # Emergency exit if RSI extremely oversold
+            elif rsi < 20:
+                result.update({
+                    'should_exit': True,
+                    'exit_reason': f"SHORT exit: RSI extremely oversold ({rsi:.1f}) (PnL: {pnl_pct:.2f}%)",
+                    'exit_urgency': 'high'
+                })
+        
+        if result['should_exit']:
+            self.logger.info(f"[{self.symbol}] ✅ RSI+MACD EXIT: {result['exit_reason']}")
+        
+        return result
+
+    def _evaluate_tsi_vwap_exit(self, position_side: str, pnl_pct: float) -> Dict:
+        """TSI + VWAP exit logic - proper implementation"""  
+        result = {'should_exit': False, 'exit_reason': '', 'exit_urgency': 'none'}
+        
+        # Get last calculated indicators
+        last_indicators = getattr(self, '_last_calculated_indicators', {})
+        
+        if not all(key in last_indicators for key in ['tsi_line', 'vwap', 'price']):
+            return result
+
+        tsi_line = last_indicators['tsi_line']
+        tsi_signal = last_indicators.get('tsi_signal', 0)
+        price = last_indicators['price']
+        vwap = last_indicators['vwap']
+        
+        tsi_bearish = tsi_line < tsi_signal
+        tsi_bullish = tsi_line > tsi_signal
+        price_below_vwap = price < vwap
+        price_above_vwap = price > vwap
+        
+        # Calculate price distance from VWAP as percentage
+        vwap_distance_pct = abs((price - vwap) / vwap) * 100
+        
+        # Exit logic for TSI + VWAP strategy
+        if position_side == 'long':
+            # Exit long when TSI turns bearish AND price drops below VWAP
+            if tsi_bearish and price_below_vwap:
+                result.update({
+                    'should_exit': True,
+                    'exit_reason': f"LONG exit: TSI bearish + price below VWAP (PnL: {pnl_pct:.2f}%)",
+                    'exit_urgency': 'normal'
+                })
+            # Emergency exit if price significantly below VWAP (>1% deviation)
+            elif price_below_vwap and vwap_distance_pct > 1.0:
+                result.update({
+                    'should_exit': True,
+                    'exit_reason': f"LONG exit: Price {vwap_distance_pct:.2f}% below VWAP (PnL: {pnl_pct:.2f}%)",
+                    'exit_urgency': 'high'
+                })
+        
+        elif position_side == 'short':
+            # Exit short when TSI turns bullish AND price rises above VWAP
+            if tsi_bullish and price_above_vwap:
+                result.update({
+                    'should_exit': True,
+                    'exit_reason': f"SHORT exit: TSI bullish + price above VWAP (PnL: {pnl_pct:.2f}%)",
+                    'exit_urgency': 'normal'
+                })
+            # Emergency exit if price significantly above VWAP (>1% deviation)
+            elif price_above_vwap and vwap_distance_pct > 1.0:
+                result.update({
+                    'should_exit': True,
+                    'exit_reason': f"SHORT exit: Price {vwap_distance_pct:.2f}% above VWAP (PnL: {pnl_pct:.2f}%)",
+                    'exit_urgency': 'high'
+                })
+        
+        if result['should_exit']:
+            self.logger.info(f"[{self.symbol}] ✅ TSI+VWAP EXIT: {result['exit_reason']}")
+        
+        return result
 
     def _calculate_qqe(self, df: pd.DataFrame) -> Optional[Dict]:
         """FIXED: Robust QQE calculation with proper column handling."""
@@ -1029,20 +1295,53 @@ class AdaptiveCryptoSignals:
     def _load_symbol_config(self) -> SignalParameters:
         try:
             if os.path.exists(self.config_file):
-                with open(self.config_file, 'r') as f: configs = json.load(f)
+                with open(self.config_file, 'r') as f: 
+                    configs = json.load(f)
                 if self.symbol in configs:
                     cfg = configs[self.symbol]
-                    return SignalParameters(
-                        qqe_length=cfg.get('qqe_length', SignalParameters.qqe_length),
-                        qqe_smooth=cfg.get('qqe_smooth', SignalParameters.qqe_smooth),
-                        qqe_factor=cfg.get('qqe_factor', SignalParameters.qqe_factor), # Safely get qqe_factor
-                        supertrend_period=cfg.get('supertrend_period', SignalParameters.supertrend_period),
-                        supertrend_multiplier=cfg.get('supertrend_multiplier', SignalParameters.supertrend_multiplier),
-                        accuracy=cfg.get('accuracy', 0.0), total_signals=cfg.get('total_signals',0), 
-                        winning_signals=cfg.get('winning_signals',0), last_used=cfg.get('last_used', 0.0)
+                    
+                    # Load strategy-specific config or create new one
+                    strategy_key = f"{self.strategy_type}_config"
+                    if strategy_key in cfg:
+                        strategy_cfg = cfg[strategy_key]
+                    else:
+                        # Migrate old config or create new
+                        strategy_cfg = cfg
+                    
+                    params = SignalParameters(
+                        strategy_type=self.strategy_type,
+                        # Load all possible parameters with defaults from current config
+                        qqe_length=strategy_cfg.get('qqe_length', self.current_config.get('qqe_length', 12)),
+                        qqe_smooth=strategy_cfg.get('qqe_smooth', self.current_config.get('qqe_smooth', 5)),
+                        qqe_factor=strategy_cfg.get('qqe_factor', self.current_config.get('qqe_factor', 4.236)),
+                        supertrend_period=strategy_cfg.get('supertrend_period', self.current_config.get('supertrend_period', 10)),
+                        supertrend_multiplier=strategy_cfg.get('supertrend_multiplier', self.current_config.get('supertrend_multiplier', 2.8)),
+                        rsi_length=strategy_cfg.get('rsi_length', self.current_config.get('rsi_length', 14)),
+                        macd_fast=strategy_cfg.get('macd_fast', self.current_config.get('macd_fast', 12)),
+                        macd_slow=strategy_cfg.get('macd_slow', self.current_config.get('macd_slow', 26)),
+                        macd_signal=strategy_cfg.get('macd_signal', self.current_config.get('macd_signal', 9)),
+                        tsi_fast=strategy_cfg.get('tsi_fast', self.current_config.get('tsi_fast', 8)),
+                        tsi_slow=strategy_cfg.get('tsi_slow', self.current_config.get('tsi_slow', 15)),
+                        tsi_signal=strategy_cfg.get('tsi_signal', self.current_config.get('tsi_signal', 6)),
+                        accuracy=strategy_cfg.get('accuracy', 0.0),
+                        total_signals=strategy_cfg.get('total_signals', 0),
+                        winning_signals=strategy_cfg.get('winning_signals', 0),
+                        last_used=strategy_cfg.get('last_used', 0.0),
+                        optimization_score=strategy_cfg.get('optimization_score', 0.0)
                     )
-        except Exception as e: self.logger.error(f"[{self.symbol}] Error loading config: {e}. Defaults used.", exc_info=True)
-        return SignalParameters()
+                    return params
+                    
+        except Exception as e: 
+            self.logger.error(f"[{self.symbol}] Error loading config: {e}")
+        
+        # Return defaults based on strategy type
+        params = SignalParameters(strategy_type=self.strategy_type)
+        # Update with strategy-specific defaults
+        for key, value in self.current_config.items():
+            if hasattr(params, key):
+                setattr(params, key, value)
+        
+        return params
 
     def _load_signal_history(self) -> deque:
         try:
@@ -1059,45 +1358,66 @@ class AdaptiveCryptoSignals:
             configs = {}
             if os.path.exists(self.config_file):
                 try: 
-                    with open(self.config_file, 'r') as f: configs = json.load(f)
-                except json.JSONDecodeError: self.logger.warning(f"Config {self.config_file} corrupted. Overwriting."); configs = {}
+                    with open(self.config_file, 'r') as f: 
+                        configs = json.load(f)
+                except json.JSONDecodeError: 
+                    self.logger.warning(f"Config {self.config_file} corrupted. Overwriting.")
+                    configs = {}
             
-            configs[self.symbol] = {
-            'qqe_length': self.params.qqe_length, 
-            'qqe_smooth': self.params.qqe_smooth, 
-            'qqe_factor': self.params.qqe_factor, # Ensure it's saved
-            'supertrend_period': self.params.supertrend_period, 
-            'supertrend_multiplier': self.params.supertrend_multiplier,
-            'accuracy': self.params.accuracy, 
-            'total_signals': self.params.total_signals, 
-            'winning_signals': self.params.winning_signals, 
-            'last_used': self.params.last_used,
-            'signal_history': list(self.signal_performance)[-100:], # Ensure deque is converted to list
-            'last_updated': time.time()
-        }
+            # Ensure symbol config exists
+            if self.symbol not in configs:
+                configs[self.symbol] = {}
+            
+            # Save strategy-specific config
+            strategy_key = f"{self.strategy_type}_config"
+            configs[self.symbol][strategy_key] = {
+                'strategy_type': self.params.strategy_type,
+                'qqe_length': self.params.qqe_length,
+                'qqe_smooth': self.params.qqe_smooth,
+                'qqe_factor': self.params.qqe_factor,
+                'supertrend_period': self.params.supertrend_period,
+                'supertrend_multiplier': self.params.supertrend_multiplier,
+                'rsi_length': self.params.rsi_length,
+                'macd_fast': self.params.macd_fast,
+                'macd_slow': self.params.macd_slow,
+                'macd_signal': self.params.macd_signal,
+                'tsi_fast': self.params.tsi_fast,
+                'tsi_slow': self.params.tsi_slow,
+                'tsi_signal': self.params.tsi_signal,
+                'accuracy': self.params.accuracy,
+                'total_signals': self.params.total_signals,
+                'winning_signals': self.params.winning_signals,
+                'last_used': self.params.last_used,
+                'optimization_score': self.params.optimization_score,
+                'last_updated': time.time()
+            }
+            
+            # Keep backward compatibility - save current strategy as default
+            configs[self.symbol].update(configs[self.symbol][strategy_key])
+            
+            # Save signal history per strategy
+            configs[self.symbol][f"{self.strategy_type}_signal_history"] = list(self.signal_performance)[-100:]
+            
             config_dir = os.path.dirname(self.config_file)
-            if config_dir and not os.path.exists(config_dir): os.makedirs(config_dir, exist_ok=True)
+            if config_dir and not os.path.exists(config_dir): 
+                os.makedirs(config_dir, exist_ok=True)
+            
             temp_file = self.config_file + '.tmp'
-            with open(temp_file, 'w') as f: json.dump(configs, f, indent=2)
+            with open(temp_file, 'w') as f: 
+                json.dump(configs, f, indent=2)
             os.replace(temp_file, self.config_file)
-        except Exception as e: self.logger.error(f"[{self.symbol}] Error saving config: {e}", exc_info=True)
+            
+            self.logger.debug(f"[{self.symbol}] Saved {self.strategy_type} config")
+            
+        except Exception as e: 
+            self.logger.error(f"[{self.symbol}] Error saving config: {e}")
 
     def get_system_status(self) -> Dict:
-        """Enhanced system status with Optuna information"""
+        """Enhanced system status with strategy information"""
         return {
-            'system_type': 'QQE_Supertrend_Optuna_Enhanced',
-            'params': { 
-                'qqe_length': self.params.qqe_length, 
-                'qqe_smooth': self.params.qqe_smooth,
-                'supertrend_period': self.params.supertrend_period, 
-                'supertrend_multiplier': self.params.supertrend_multiplier,
-            },
-            'optimization': {
-                'optuna_available': OPTUNA_AVAILABLE,
-                'optimization_score': self.params.optimization_score,
-                'last_optimization': self.last_optimization,
-                'historical_data_periods': self.historical_data_periods
-            },
+            'system_type': f'{self.strategy_type}_strategy',
+            'strategy_type': self.strategy_type,
+            'strategy_config': self.current_config,
             'performance': {
                 'live_accuracy': self.params.accuracy, 
                 'total_signals': self.params.total_signals, 
@@ -1105,16 +1425,21 @@ class AdaptiveCryptoSignals:
             },
             'market_state': {
                 'trend': self.current_trend, 
-                'volatility': self.volatility_level,
-                'entry_zones': f"Long<{self.qqe_long_entry_max_zone}, Short>{self.qqe_short_entry_min_zone}"
+                'volatility': self.volatility_level
             }
         }
 
-def integrate_adaptive_crypto_signals(strategy_instance, config_file: str = None):
-    if config_file is None: config_file = os.path.join(os.getcwd(), "data", "crypto_signal_configs.json")
-    strategy_instance.logger.info(f"🔧 Integrating QQE & Supertrend ONLY Crypto Signals, config: {config_file}")
+# Update this function in core/adaptive_crypto_signals.py
+
+def integrate_adaptive_crypto_signals(strategy_instance, config_file: str = None, strategy_type: str = 'tsi_vwap'):
+    if config_file is None: 
+        config_file = os.path.join(os.getcwd(), "data", "crypto_signal_configs.json")
+    
+    strategy_instance.logger.info(f"🔧 Integrating {strategy_type} Crypto Signals, config: {config_file}")
     base_sym = getattr(strategy_instance, 'original_symbol', strategy_instance.symbol)
-    crypto_sigs = AdaptiveCryptoSignals(symbol=base_sym, config_file=config_file)
+    
+    # Create adaptive signals with strategy type
+    crypto_sigs = AdaptiveCryptoSignals(symbol=base_sym, config_file=config_file, strategy_type=strategy_type)
     
     strategy_instance._get_technical_direction = lambda: crypto_sigs.get_technical_direction(strategy_instance.exchange)
     strategy_instance.get_signal_status = crypto_sigs.get_system_status
@@ -1122,17 +1447,18 @@ def integrate_adaptive_crypto_signals(strategy_instance, config_file: str = None
     strategy_instance._crypto_signal_system = crypto_sigs
     
     try:
-        strategy_instance.logger.info(f"Initial indicator test for {base_sym} (QQE/ST Only)...")
+        strategy_instance.logger.info(f"Initial indicator test for {base_sym} ({strategy_type})...")
         test_res = strategy_instance.test_crypto_indicators()
-        # Log test_res details if needed, for brevity, just confirming success/failure
+        
         if isinstance(test_res, dict) and 'error' not in test_res:
-             strategy_instance.logger.info(f"📊 Indicator Test (QQE/ST Only) for {base_sym} successful. Signal sim: {test_res.get('composite_signal_sim', 'N/A')}")
+             strategy_instance.logger.info(f"📊 Indicator Test ({strategy_type}) for {base_sym} successful.")
         else:
-            strategy_instance.logger.warning(f"📊 Indicator Test (QQE/ST Only) for {base_sym} may have issues: {test_res}")
+            strategy_instance.logger.warning(f"📊 Indicator Test ({strategy_type}) for {base_sym} may have issues: {test_res}")
 
-    except Exception as e: strategy_instance.logger.error(f"Failed initial indicator test (QQE/ST Only): {e}", exc_info=True)
+    except Exception as e: 
+        strategy_instance.logger.error(f"Failed initial indicator test ({strategy_type}): {e}", exc_info=True)
     
-    strategy_instance.logger.info("⚡ QQE & Supertrend ONLY Crypto Signals integrated!")
+    strategy_instance.logger.info(f"⚡ {strategy_type} Crypto Signals integrated!")
     return crypto_sigs
 
 def test_indicators(self: AdaptiveCryptoSignals, exchange) -> Dict:

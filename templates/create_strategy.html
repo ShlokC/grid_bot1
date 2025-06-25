@@ -1,0 +1,130 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Create New Signal Strategy</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta charset="UTF-8">
+    <style>
+        body { font-family: Arial, sans-serif; margin: 0; padding: 20px; }
+        h1 { color: #333; }
+        .subtitle { color: #666; margin-bottom: 20px; }
+        .form-group { margin-bottom: 15px; }
+        label { display: block; margin-bottom: 5px; font-weight: bold; }
+        select, input[type="text"] { 
+            width: 100%; padding: 8px; box-sizing: border-box; 
+            border: 1px solid #ddd; border-radius: 4px; height: 35px;
+        }
+        .button { 
+            display: inline-block; padding: 10px 20px; text-decoration: none; 
+            color: white; background-color: #4CAF50; border: none;
+            border-radius: 4px; cursor: pointer; margin-right: 10px;
+        }
+        .button.cancel { background-color: #f44336; }
+        .error { color: red; margin-bottom: 15px; }
+        .checkbox-group { margin-bottom: 15px; }
+        .checkbox-group label { display: inline; margin-left: 5px; font-weight: normal; }
+        .info-box { background: #e8f4f8; border: 1px solid #bee5eb; border-radius: 4px; padding: 15px; margin-bottom: 20px; }
+        .info-box h3 { margin-top: 0; color: #0c5460; }
+        .strategy-info { background: #f8f9fa; border: 1px solid #dee2e6; border-radius: 4px; padding: 10px; margin-top: 10px; font-size: 14px; }
+        .strategy-params { font-family: monospace; color: #6c757d; font-size: 12px; margin-top: 5px; }
+    </style>
+    <script>
+        function updateStrategyInfo() {
+            const strategySelect = document.getElementById('strategy_type');
+            const strategyInfo = document.getElementById('strategy_info');
+            const selectedStrategy = strategySelect.value;
+            
+            const strategies = {
+                'qqe_supertrend_fixed': {
+                    description: 'Current QQE + Supertrend with fixed logic. Balanced approach for most market conditions.',
+                    params: 'QQE(12,5), Supertrend(10, 2.8)',
+                    exit: 'Both indicators must turn against position'
+                },
+                'qqe_supertrend_fast': {
+                    description: 'Faster QQE + Supertrend optimized for 3-minute crypto trading. More responsive to quick moves.',
+                    params: 'QQE(8,3), Supertrend(6, 2.2)',
+                    exit: 'Both indicators must turn against position'
+                },
+                'rsi_macd': {
+                    description: 'RSI oversold/overbought levels with MACD trend confirmation. Good for ranging markets.',
+                    params: 'RSI(14), MACD(12,26,9)',
+                    exit: 'RSI extreme levels + MACD reversal'
+                },
+                'tsi_vwap': {
+                    description: 'Fast TSI momentum with VWAP trend following. Effective for trending markets.',
+                    params: 'TSI(8,15,6), VWAP',
+                    exit: 'TSI reversal + price moves away from VWAP'
+                }
+            };
+            
+            if (strategies[selectedStrategy]) {
+                strategyInfo.innerHTML = `
+                    <strong>Description:</strong> ${strategies[selectedStrategy].description}<br>
+                    <div class="strategy-params"><strong>Parameters:</strong> ${strategies[selectedStrategy].params}</div>
+                    <div class="strategy-params"><strong>Exit Logic:</strong> ${strategies[selectedStrategy].exit}</div>
+                `;
+                strategyInfo.style.display = 'block';
+            } else {
+                strategyInfo.style.display = 'none';
+            }
+        }
+        
+        window.onload = function() {
+            updateStrategyInfo();
+        };
+    </script>
+</head>
+<body>
+    <h1>Create New Signal Strategy</h1>
+    <p class="subtitle">Choose strategy type and symbol for automated signal trading</p>
+    
+    <div class="info-box">
+        <h3>Fixed Parameters</h3>
+        <ul>
+            <li><strong>Position Size:</strong> $1 USD per strategy</li>
+            <li><strong>Leverage:</strong> 20x</li>
+            <li><strong>Risk Management:</strong> Built-in stop loss and take profit orders</li>
+            <li><strong>Exit Logic:</strong> Strategy-specific technical exit conditions</li>
+        </ul>
+    </div>
+    
+    {% if error %}
+    <div class="error">{{ error }}</div>
+    {% endif %}
+    
+    <form method="post">
+        <div class="form-group">
+            <label for="strategy_type">Strategy Type:</label>
+            <select id="strategy_type" name="strategy_type" required onchange="updateStrategyInfo()">
+                <option value="qqe_supertrend_fixed">QQE + Supertrend (Current)</option>
+                <option value="qqe_supertrend_fast">Fast QQE + Supertrend</option>
+                <option value="rsi_macd">RSI + MACD</option>
+                <option value="tsi_vwap">TSI + VWAP</option>
+            </select>
+            <div id="strategy_info" class="strategy-info"></div>
+        </div>
+        
+        <div class="form-group">
+            <label for="symbol">Symbol:</label>
+            <select id="symbol" name="symbol" required>
+                <option value="">Select a symbol</option>
+                {% for symbol in available_symbols %}
+                <option value="{{ symbol }}">{{ symbol }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        
+        <div class="checkbox-group">
+            <input type="checkbox" id="auto_start" name="auto_start" checked>
+            <label for="auto_start">Start Strategy Automatically</label>
+        </div>
+        
+        <div class="form-group">
+            <button type="submit" class="button">Create Strategy</button>
+            <a href="/" class="button cancel">Cancel</a>
+        </div>
+    </form>
+</body>
+</html>
+        

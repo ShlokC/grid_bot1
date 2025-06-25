@@ -163,8 +163,8 @@ class SignalManager:
         except Exception:
             return False
     
-    def create_strategy(self, symbol: str, auto_created: bool = True) -> str:
-        """Create a new signal strategy for a symbol."""
+    def create_strategy(self, symbol: str, auto_created: bool = True, strategy_type: str = 'tsi_vwap') -> str:
+        """Create a new signal strategy for a symbol with specified strategy type."""
         try:
             # Validate limits
             if len(self.strategies) >= self.max_concurrent_strategies:
@@ -180,13 +180,14 @@ class SignalManager:
             # Generate unique ID
             strategy_id = str(uuid.uuid4())
             
-            # Create strategy
+            # Create strategy with specified type
             strategy = SignalStrategy(
                 exchange=self.exchange,
                 symbol=symbol,
                 strategy_id=strategy_id,
                 position_size_usd=self.position_size_usd,
-                leverage=self.leverage
+                leverage=self.leverage,
+                strategy_type=strategy_type  # Pass strategy type
             )
             
             self.strategies[strategy_id] = strategy
@@ -194,7 +195,7 @@ class SignalManager:
             # Save to data store
             self.data_store.save_grid(strategy_id, strategy.get_status())  # Reuse existing method
             
-            self.logger.info(f"Created signal strategy: {strategy_id} for {symbol}")
+            self.logger.info(f"Created signal strategy: {strategy_id} for {symbol} using {strategy_type}")
             return strategy_id
             
         except Exception as e:

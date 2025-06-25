@@ -18,23 +18,24 @@ class SignalStrategy:
     """
     
     def __init__(self, 
-                 exchange: Exchange, 
-                 symbol: str,
-                 strategy_id: str,
-                 position_size_usd: float = 1.0,
-                 leverage: float = 20.0):
-        """Initialize signal strategy with fixed parameters."""
+             exchange: Exchange, 
+             symbol: str,
+             strategy_id: str,
+             position_size_usd: float = 1.0,
+             leverage: float = 20.0,
+             strategy_type: str = 'tsi_vwap'):
+        """Initialize signal strategy with specified strategy type."""
         
         self.logger = logging.getLogger(__name__)
         self.exchange = exchange
         self.original_symbol = symbol
         self.symbol = exchange._get_symbol_id(symbol) if hasattr(exchange, '_get_symbol_id') else symbol
         self.strategy_id = strategy_id
+        self.strategy_type = strategy_type  # Store strategy type
         
         # Fixed parameters (simplified)
         self.position_size_usd = position_size_usd
         self.leverage = leverage
-        
         
         # Fetch market info
         self._fetch_market_info()
@@ -54,11 +55,11 @@ class SignalStrategy:
         self._order_attempts = []
         
         self.logger.info(f"✅ Centralized order management initialized for {symbol}")
-        # Integrate TSI system
-        integrate_adaptive_crypto_signals(self)
         
-        self.logger.info(f"Signal Strategy initialized: {symbol}, Size: ${position_size_usd}, Leverage: {leverage}x")
-    
+        # Integrate signal system with strategy type
+        integrate_adaptive_crypto_signals(self, strategy_type=strategy_type)
+        
+        self.logger.info(f"Signal Strategy initialized: {symbol}, Size: ${position_size_usd}, Leverage: {leverage}x, Strategy: {strategy_type}")
     def _fetch_market_info(self):
         """Fetch market precision and limits."""
         try:
@@ -772,13 +773,24 @@ class SignalStrategy:
             self.logger.error(f"Error stopping strategy for {self.symbol}: {e}")
             self.running = False
     
+    # Update this method in core/signal_strategy.py
+
     def get_status(self) -> Dict[str, Any]:
-        """Get strategy status (removed TP/SL fields)."""
+        """Get strategy status with strategy type information."""
         try:
             with self.update_lock:
                 pnl_percentage = (self.total_pnl / self.position_size_usd * 100) if self.position_size_usd > 0 else 0.0
                 has_position = self._has_active_position()
                 effective_running = has_position or self.running
+                
+                # Get strategy display name
+                strategy_names = {
+                    'qqe_supertrend_fixed': 'QQE+ST (Current)',
+                    'qqe_supertrend_fast': 'QQE+ST (Fast)', 
+                    'rsi_macd': 'RSI+MACD',
+                    'tsi_vwap': 'TSI+VWAP'
+                }
+                strategy_display = strategy_names.get(self.strategy_type, self.strategy_type)
                 
                 return {
                     'strategy_id': self.strategy_id,
@@ -786,14 +798,15 @@ class SignalStrategy:
                     'display_symbol': self.original_symbol,
                     'position_size_usd': self.position_size_usd,
                     'leverage': self.leverage,
-                    'strategy_type': 'tsi_only',  # Identify as TSI-only
+                    'strategy_type': self.strategy_type,
+                    'strategy_display': strategy_display,  # For UI display
                     'running': effective_running,
                     'has_position': has_position,
                     'trades_count': self.total_trades,
                     'pnl': self.total_pnl,
                     'pnl_percentage': pnl_percentage,
                     'last_update': self.last_update_time,
-                    'exit_method': 'tsi_momentum_only'  # Clear identification
+                    'exit_method': f'{self.strategy_type}_signals'
                 }
                 
         except Exception as e:
@@ -801,6 +814,7 @@ class SignalStrategy:
             return {
                 'strategy_id': self.strategy_id,
                 'symbol': self.symbol,
+                'strategy_type': getattr(self, 'strategy_type', 'unknown'),
                 'running': False,
                 'error': str(e)
             }
