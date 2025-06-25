@@ -31,3 +31,5 @@ backtest_results/
 !backtest_results/.gitkeep
 
 winrate_optimization_results/winrate_focused_results.csv
+
+walk_forward_results/walk_forward_analysis.csv
