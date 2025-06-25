@@ -76,7 +76,7 @@ def run_strategy_comparison():
             commission_pct=0.075,       # Binance futures commission
             take_profit_pct=1.5,        # 1.5% TP
             stop_loss_pct=1.0,          # 1.0% SL
-            timeframe='1m',             # 1-minute timeframe
+            timeframe='3m',             # 1-minute timeframe
             limit=1400,                 # 1400 candles as requested
             max_open_time_minutes=60    # Max 1 hour per trade
         )
@@ -98,7 +98,7 @@ def run_strategy_comparison():
                     'supertrend': {'length': 6, 'multiplier': 2.2}
                 },
                 'signal_func': qqe_supertrend_signal_fixed,
-                'description': 'Faster QQE + Supertrend for 1m crypto'
+                'description': 'Faster QQE + Supertrend for 3m crypto'
             },
             
             'RSI_MACD_Combo': {
@@ -305,7 +305,7 @@ def test_single_symbol_all_strategies(symbol: str = None):
             commission_pct=0.075,
             take_profit_pct=1.5,
             stop_loss_pct=1.0,
-            timeframe='1m',
+            timeframe='3m',
             limit=1400
         )
         

@@ -270,8 +270,8 @@ class GridStrategy:
         direction = 'none'
         
         try:
-            # Get OHLCV data - FIXED: Use 1m for faster signals
-            ohlcv_data = self.exchange.get_ohlcv(self.symbol, timeframe='1m', limit=100)
+            # Get OHLCV data - FIXED: Use 3m for faster signals
+            ohlcv_data = self.exchange.get_ohlcv(self.symbol, timeframe='3m', limit=100)
             
             if not ohlcv_data or len(ohlcv_data) < 50:
                 self.logger.warning("Insufficient OHLCV data for TSI analysis")

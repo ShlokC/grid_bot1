@@ -145,7 +145,7 @@ class AdaptiveCryptoSignals:
             elif current_time - self.last_signal_time < self.signal_cooldown: 
                 return 'none'
             
-            ohlcv_data = exchange.get_ohlcv(self.symbol, timeframe='1m', limit=1400) 
+            ohlcv_data = exchange.get_ohlcv(self.symbol, timeframe='3m', limit=1400) 
             # filename = f"{self.symbol}_close_prices.csv"
             # self.export_close_to_csv(ohlcv_data, filename)
             if not ohlcv_data or len(ohlcv_data) < 50: 
@@ -1137,7 +1137,7 @@ def integrate_adaptive_crypto_signals(strategy_instance, config_file: str = None
 
 def test_indicators(self: AdaptiveCryptoSignals, exchange) -> Dict:
     try:
-        ohlcv = exchange.get_ohlcv(self.symbol, timeframe='1m', limit=300)
+        ohlcv = exchange.get_ohlcv(self.symbol, timeframe='3m', limit=300)
         if not ohlcv or len(ohlcv) < 50: return {'error': f'Insufficient data: {len(ohlcv) if ohlcv else 0}'}
         
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])

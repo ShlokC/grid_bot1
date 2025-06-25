@@ -32,7 +32,7 @@ class BacktestConfig:
     take_profit_pct: float = 1.5
     stop_loss_pct: float = 1.0
     max_open_time_minutes: int = 60
-    timeframe: str = '1m'
+    timeframe: str = '3m'
     limit: int = 1400  # Number of candles to fetch
 
 @dataclass
@@ -89,7 +89,7 @@ class IntegratedBacktester:
             self.logger.error(f" Failed to initialize exchange: {e}")
             raise
     
-    def fetch_ohlcv_data(self, symbol: str, timeframe: str = '1m', limit: int = 1400) -> pd.DataFrame:
+    def fetch_ohlcv_data(self, symbol: str, timeframe: str = '3m', limit: int = 1400) -> pd.DataFrame:
         """Fetch OHLCV data using your existing exchange connection"""
         try:
             self.logger.info(f"Fetching {limit} {timeframe} candles for {symbol}...")
