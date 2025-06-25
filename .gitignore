@@ -30,3 +30,4 @@ BANANAS31USDT_close_prices.csv
 backtest_results/
 !backtest_results/.gitkeep
 
+winrate_optimization_results/winrate_focused_results.csv

@@ -1,25 +1,28 @@
 """
-Strategy Tester - Integration with existing folder structure
-File: test_strategies.py (place in root directory)
-
-This script integrates with your existing:
-- core/exchange.py
-- config.json
-- Current folder structure
+Win Rate Focused Strategy Optimizer
+Prioritizes win rate improvement over other metrics
 """
 
 import os
 import sys
 import logging
 import json
-from typing import Dict, List
+from typing import Dict, List, Tuple, Optional
 import pandas as pd
+import time
 
-# Add core directory to path
 sys.path.append(os.path.join(os.path.dirname(__file__), 'core'))
 
 from core.backtester import IntegratedBacktester, BacktestConfig
 from core.backtester import qqe_supertrend_signal_fixed, rsi_macd_signal, tsi_vwap_signal
+
+try:
+    import optuna
+    OPTUNA_AVAILABLE = True
+    print("Optuna available for parameter optimization")
+except ImportError:
+    OPTUNA_AVAILABLE = False
+    print("Optuna not available. Install with: pip install optuna")
 
 def setup_logging():
     """Setup logging for strategy testing"""
@@ -27,351 +30,607 @@ def setup_logging():
         level=logging.INFO,
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         handlers=[
-            logging.FileHandler('logs/strategy_testing.log'),
+            logging.FileHandler('logs/winrate_optimization.log'),
             logging.StreamHandler()
         ]
     )
-    # Ensure logs directory exists
     os.makedirs('logs', exist_ok=True)
 
-def get_active_symbols(backtester: IntegratedBacktester, limit: int = 5) -> List[str]:
-    """Get top active symbols from your exchange"""
+def get_active_symbols(backtester: IntegratedBacktester, limit: int = 3) -> List[str]:
+    """Get top active symbols from exchange"""
     try:
         logger = logging.getLogger(__name__)
-        logger.info(" Fetching top active symbols from exchange...")
+        logger.info(f"Fetching top {limit} active symbols from exchange...")
         
-        # Use your exchange's method to get active symbols
         active_symbols_data = backtester.exchange.get_top_active_symbols(limit=limit)
         
         if active_symbols_data:
             symbols = [item['symbol'] for item in active_symbols_data]
-            logger.info(f" Found active symbols: {symbols}")
+            logger.info(f"Found active symbols: {symbols}")
             return symbols
         else:
-            # Fallback to common crypto pairs
-            fallback_symbols = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'ADAUSDT', 'SOLUSDT']
-            logger.warning(f"⚠️ Using fallback symbols: {fallback_symbols}")
+            fallback_symbols = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT'][:limit]
+            logger.warning(f"Using fallback symbols: {fallback_symbols}")
             return fallback_symbols
             
     except Exception as e:
         logger = logging.getLogger(__name__)
         logger.error(f"Error fetching active symbols: {e}")
-        # Return some common symbols as fallback
-        return ['BTCUSDT', 'ETHUSDT', 'BNBUSDT']
+        return ['BTCUSDT', 'ETHUSDT'][:limit]
 
-def run_strategy_comparison():
-    """Run comprehensive strategy comparison using live exchange data"""
+class WinRateOptimizer:
+    """Aggressive win rate optimizer with expanded parameter ranges"""
+    
+    def __init__(self, backtester: IntegratedBacktester, backtest_config: BacktestConfig):
+        self.backtester = backtester
+        self.backtest_config = backtest_config
+        self.logger = logging.getLogger(__name__)
+        
+        # Aggressive optimization settings for win rate
+        self.optimization_timeout = 180  # 3 minutes per strategy
+        self.n_trials = 100  # More trials for better exploration
+        self.min_trades_threshold = 15  # Minimum trades for reliable win rate
+        
+    def optimize_for_winrate(self, symbol: str, strategy_name: str, 
+                            signal_func, base_indicators: Dict) -> Tuple[Dict, float, Dict]:
+        """
+        Aggressively optimize for win rate with expanded parameter ranges
+        """
+        if not OPTUNA_AVAILABLE:
+            self.logger.warning(f"Optuna not available, using base parameters for {strategy_name}")
+            return base_indicators, 0.0, {}
+        
+        try:
+            self.logger.info(f"Optimizing {strategy_name} for WIN RATE on {symbol}...")
+            start_time = time.time()
+            
+            # Create study with win rate focus
+            study_name = f"winrate_{strategy_name}_{symbol}_{int(time.time())}"
+            study = optuna.create_study(
+                study_name=study_name,
+                direction='maximize',
+                storage=None
+            )
+            
+            # Multi-stage optimization
+            best_indicators, best_score, opt_details = self._multi_stage_optimization(
+                study, symbol, strategy_name, signal_func, base_indicators
+            )
+            
+            optimization_time = time.time() - start_time
+            
+            if best_score > 0:
+                opt_details.update({
+                    'optimization_time': optimization_time,
+                    'trials_completed': len(study.trials),
+                    'best_winrate': best_score
+                })
+                
+                self.logger.info(f"Optimization completed in {optimization_time:.1f}s")
+                self.logger.info(f"Best win rate: {best_score:.2f}%")
+                self.logger.info(f"Trials: {len(study.trials)}")
+                
+                return best_indicators, best_score, opt_details
+            else:
+                return base_indicators, 0.0, {}
+                
+        except Exception as e:
+            self.logger.error(f"Optimization error for {strategy_name}: {e}")
+            return base_indicators, 0.0, {'error': str(e)}
+    
+    def _multi_stage_optimization(self, study, symbol: str, strategy_name: str, 
+                                 signal_func, base_indicators: Dict) -> Tuple[Dict, float, Dict]:
+        """
+        Multi-stage optimization: broad search then refinement
+        """
+        # Stage 1: Broad parameter exploration
+        self.logger.info("Stage 1: Broad parameter exploration...")
+        objective_func = self._get_broad_objective_function(symbol, strategy_name, signal_func)
+        
+        study.optimize(
+            objective_func,
+            n_trials=int(self.n_trials * 0.7),  # 70% of trials for broad search
+            timeout=int(self.optimization_timeout * 0.7),
+            show_progress_bar=False
+        )
+        
+        stage1_best = study.best_value if study.best_trial else 0
+        
+        # Stage 2: Refined search around best parameters
+        if study.best_trial and stage1_best > 0:
+            self.logger.info("Stage 2: Refined parameter search...")
+            
+            # Create refined ranges around best parameters
+            refined_objective = self._get_refined_objective_function(
+                symbol, strategy_name, signal_func, study.best_params
+            )
+            
+            study.optimize(
+                refined_objective,
+                n_trials=int(self.n_trials * 0.3),  # 30% for refinement
+                timeout=int(self.optimization_timeout * 0.3),
+                show_progress_bar=False
+            )
+        
+        if study.best_trial:
+            best_params = study.best_params
+            best_score = study.best_value
+            best_indicators = self._params_to_indicators(best_params, strategy_name)
+            
+            return best_indicators, best_score, {
+                'best_params': best_params,
+                'stage1_best': stage1_best,
+                'final_best': best_score,
+                'improvement_stages': best_score - stage1_best
+            }
+        else:
+            return base_indicators, 0.0, {}
+    
+    def _get_broad_objective_function(self, symbol: str, strategy_name: str, signal_func):
+        """Broad parameter search objective function"""
+        if 'qqe' in strategy_name.lower():
+            return lambda trial: self._qqe_broad_objective(trial, symbol, signal_func)
+        elif 'rsi' in strategy_name.lower():
+            return lambda trial: self._rsi_broad_objective(trial, symbol, signal_func)
+        elif 'tsi' in strategy_name.lower():
+            return lambda trial: self._tsi_broad_objective(trial, symbol, signal_func)
+        else:
+            return lambda trial: 0.0
+    
+    def _get_refined_objective_function(self, symbol: str, strategy_name: str, 
+                                       signal_func, best_params: Dict):
+        """Refined parameter search around best found parameters"""
+        if 'qqe' in strategy_name.lower():
+            return lambda trial: self._qqe_refined_objective(trial, symbol, signal_func, best_params)
+        elif 'rsi' in strategy_name.lower():
+            return lambda trial: self._rsi_refined_objective(trial, symbol, signal_func, best_params)
+        elif 'tsi' in strategy_name.lower():
+            return lambda trial: self._tsi_refined_objective(trial, symbol, signal_func, best_params)
+        else:
+            return lambda trial: 0.0
+    
+    def _qqe_broad_objective(self, trial, symbol: str, signal_func) -> float:
+        """Broad QQE parameter search with expanded ranges"""
+        try:
+            # Significantly expanded ranges for aggressive optimization
+            qqe_length = trial.suggest_int('qqe_length', 5, 30)  # Expanded from 8-20
+            qqe_smooth = trial.suggest_int('qqe_smooth', 2, 12)  # Expanded from 3-8
+            qqe_factor = trial.suggest_float('qqe_factor', 2.0, 8.0)  # Expanded from 3-6
+            st_length = trial.suggest_int('st_length', 4, 25)  # Expanded from 6-15
+            st_multiplier = trial.suggest_float('st_multiplier', 1.5, 5.0)  # Expanded from 2-4
+            
+            indicator_config = {
+                'qqe': {
+                    'length': qqe_length,
+                    'smooth': qqe_smooth, 
+                    'factor': qqe_factor
+                },
+                'supertrend': {
+                    'length': st_length,
+                    'multiplier': st_multiplier
+                }
+            }
+            
+            return self._evaluate_winrate_focused(symbol, signal_func, indicator_config)
+            
+        except Exception:
+            return 0.0
+    
+    def _qqe_refined_objective(self, trial, symbol: str, signal_func, best_params: Dict) -> float:
+        """Refined QQE search around best parameters"""
+        try:
+            # Create ranges +/- 20% around best parameters
+            base_qqe_length = best_params.get('qqe_length', 12)
+            base_qqe_smooth = best_params.get('qqe_smooth', 5)
+            base_qqe_factor = best_params.get('qqe_factor', 4.236)
+            base_st_length = best_params.get('st_length', 10)
+            base_st_multiplier = best_params.get('st_multiplier', 2.8)
+            
+            qqe_length = trial.suggest_int('qqe_length', 
+                                         max(3, int(base_qqe_length * 0.8)), 
+                                         int(base_qqe_length * 1.2))
+            qqe_smooth = trial.suggest_int('qqe_smooth',
+                                         max(2, int(base_qqe_smooth * 0.8)),
+                                         int(base_qqe_smooth * 1.2))
+            qqe_factor = trial.suggest_float('qqe_factor',
+                                           base_qqe_factor * 0.8,
+                                           base_qqe_factor * 1.2)
+            st_length = trial.suggest_int('st_length',
+                                        max(3, int(base_st_length * 0.8)),
+                                        int(base_st_length * 1.2))
+            st_multiplier = trial.suggest_float('st_multiplier',
+                                              base_st_multiplier * 0.8,
+                                              base_st_multiplier * 1.2)
+            
+            indicator_config = {
+                'qqe': {
+                    'length': qqe_length,
+                    'smooth': qqe_smooth, 
+                    'factor': qqe_factor
+                },
+                'supertrend': {
+                    'length': st_length,
+                    'multiplier': st_multiplier
+                }
+            }
+            
+            return self._evaluate_winrate_focused(symbol, signal_func, indicator_config)
+            
+        except Exception:
+            return 0.0
+    
+    def _rsi_broad_objective(self, trial, symbol: str, signal_func) -> float:
+        """Broad RSI+MACD parameter search"""
+        try:
+            # Expanded ranges for RSI+MACD
+            rsi_length = trial.suggest_int('rsi_length', 8, 28)  # Expanded from 10-21
+            macd_fast = trial.suggest_int('macd_fast', 6, 20)  # Expanded from 8-16
+            macd_slow = trial.suggest_int('macd_slow', 15, 40)  # Expanded from 20-35
+            macd_signal = trial.suggest_int('macd_signal', 4, 15)  # Expanded from 6-12
+            
+            # Ensure MACD fast < slow
+            if macd_fast >= macd_slow:
+                return 0.0
+            
+            indicator_config = {
+                'rsi': {'length': rsi_length},
+                'macd': {
+                    'fast': macd_fast,
+                    'slow': macd_slow,
+                    'signal': macd_signal
+                }
+            }
+            
+            return self._evaluate_winrate_focused(symbol, signal_func, indicator_config)
+            
+        except Exception:
+            return 0.0
+    
+    def _rsi_refined_objective(self, trial, symbol: str, signal_func, best_params: Dict) -> float:
+        """Refined RSI+MACD search"""
+        try:
+            base_rsi = best_params.get('rsi_length', 14)
+            base_macd_fast = best_params.get('macd_fast', 12)
+            base_macd_slow = best_params.get('macd_slow', 26)
+            base_macd_signal = best_params.get('macd_signal', 9)
+            
+            rsi_length = trial.suggest_int('rsi_length',
+                                         max(8, int(base_rsi * 0.8)),
+                                         int(base_rsi * 1.2))
+            macd_fast = trial.suggest_int('macd_fast',
+                                        max(6, int(base_macd_fast * 0.8)),
+                                        int(base_macd_fast * 1.2))
+            macd_slow = trial.suggest_int('macd_slow',
+                                        max(15, int(base_macd_slow * 0.8)),
+                                        int(base_macd_slow * 1.2))
+            macd_signal = trial.suggest_int('macd_signal',
+                                          max(4, int(base_macd_signal * 0.8)),
+                                          int(base_macd_signal * 1.2))
+            
+            if macd_fast >= macd_slow:
+                return 0.0
+            
+            indicator_config = {
+                'rsi': {'length': rsi_length},
+                'macd': {
+                    'fast': macd_fast,
+                    'slow': macd_slow,
+                    'signal': macd_signal
+                }
+            }
+            
+            return self._evaluate_winrate_focused(symbol, signal_func, indicator_config)
+            
+        except Exception:
+            return 0.0
+    
+    def _tsi_broad_objective(self, trial, symbol: str, signal_func) -> float:
+        """Broad TSI+VWAP parameter search"""
+        try:
+            # Expanded ranges for TSI
+            tsi_fast = trial.suggest_int('tsi_fast', 4, 18)  # Expanded from 6-12
+            tsi_slow = trial.suggest_int('tsi_slow', 8, 35)  # Expanded from 12-25
+            tsi_signal = trial.suggest_int('tsi_signal', 3, 15)  # Expanded from 4-10
+            
+            # Ensure TSI fast < slow
+            if tsi_fast >= tsi_slow:
+                return 0.0
+            
+            indicator_config = {
+                'tsi': {
+                    'fast': tsi_fast,
+                    'slow': tsi_slow,
+                    'signal': tsi_signal
+                },
+                'vwap': {}
+            }
+            
+            return self._evaluate_winrate_focused(symbol, signal_func, indicator_config)
+            
+        except Exception:
+            return 0.0
+    
+    def _tsi_refined_objective(self, trial, symbol: str, signal_func, best_params: Dict) -> float:
+        """Refined TSI+VWAP search"""
+        try:
+            base_tsi_fast = best_params.get('tsi_fast', 8)
+            base_tsi_slow = best_params.get('tsi_slow', 15)
+            base_tsi_signal = best_params.get('tsi_signal', 6)
+            
+            tsi_fast = trial.suggest_int('tsi_fast',
+                                       max(4, int(base_tsi_fast * 0.8)),
+                                       int(base_tsi_fast * 1.2))
+            tsi_slow = trial.suggest_int('tsi_slow',
+                                       max(8, int(base_tsi_slow * 0.8)),
+                                       int(base_tsi_slow * 1.2))
+            tsi_signal = trial.suggest_int('tsi_signal',
+                                         max(3, int(base_tsi_signal * 0.8)),
+                                         int(base_tsi_signal * 1.2))
+            
+            if tsi_fast >= tsi_slow:
+                return 0.0
+            
+            indicator_config = {
+                'tsi': {
+                    'fast': tsi_fast,
+                    'slow': tsi_slow,
+                    'signal': tsi_signal
+                },
+                'vwap': {}
+            }
+            
+            return self._evaluate_winrate_focused(symbol, signal_func, indicator_config)
+            
+        except Exception:
+            return 0.0
+    
+    def _evaluate_winrate_focused(self, symbol: str, signal_func, indicator_config: Dict) -> float:
+        """
+        Pure win rate optimization with trade count constraints
+        """
+        try:
+            result = self.backtester.run_backtest(
+                symbol=symbol,
+                signal_func=signal_func,
+                indicator_config=indicator_config,
+                backtest_config=self.backtest_config
+            )
+            
+            if 'error' in result:
+                return 0.0
+            
+            metrics = result['metrics']
+            
+            win_rate = metrics.get('win_rate', 0)
+            total_trades = metrics.get('total_trades', 0)
+            profit_factor = metrics.get('profit_factor', 0)
+            max_drawdown = metrics.get('max_drawdown_pct', 100)
+            
+            # Strict minimum trade requirement for reliable win rate
+            if total_trades < self.min_trades_threshold:
+                return 0.0
+            
+            # Win rate is the primary score (80% weight)
+            win_rate_score = win_rate * 0.8
+            
+            # Small bonuses for supporting metrics (20% weight total)
+            trade_count_bonus = min(total_trades / 50.0 * 5, 5)  # Max 5% bonus for trade count
+            profit_factor_bonus = min(profit_factor * 2, 8) if profit_factor > 1 else 0  # Max 8% bonus
+            drawdown_penalty = min(max_drawdown * 0.1, 7)  # Max 7% penalty
+            
+            # Final score heavily weighted toward win rate
+            final_score = win_rate_score + trade_count_bonus + profit_factor_bonus - drawdown_penalty
+            
+            return max(0, final_score)
+            
+        except Exception:
+            return 0.0
+    
+    def _params_to_indicators(self, params: Dict, strategy_name: str) -> Dict:
+        """Convert Optuna parameters back to indicator configuration"""
+        if 'qqe' in strategy_name.lower():
+            return {
+                'qqe': {
+                    'length': params['qqe_length'],
+                    'smooth': params['qqe_smooth'],
+                    'factor': params['qqe_factor']
+                },
+                'supertrend': {
+                    'length': params['st_length'],
+                    'multiplier': params['st_multiplier']
+                }
+            }
+        elif 'rsi' in strategy_name.lower():
+            return {
+                'rsi': {'length': params['rsi_length']},
+                'macd': {
+                    'fast': params['macd_fast'],
+                    'slow': params['macd_slow'],
+                    'signal': params['macd_signal']
+                }
+            }
+        elif 'tsi' in strategy_name.lower():
+            return {
+                'tsi': {
+                    'fast': params['tsi_fast'],
+                    'slow': params['tsi_slow'],
+                    'signal': params['tsi_signal']
+                },
+                'vwap': {}
+            }
+        else:
+            return {}
+
+def run_winrate_focused_optimization():
+    """Run win rate focused optimization"""
     
     logger = logging.getLogger(__name__)
-    logger.info("tarting Strategy Comparison with Live Exchange Data")
+    logger.info("Starting WIN RATE FOCUSED optimization")
     
     try:
-        # Initialize backtester with your config.json
         backtester = IntegratedBacktester('config.json')
         
-        # Test configuration
+        # Optimized config for win rate
         config = BacktestConfig(
-            initial_capital=1.0,        # $1 per trade (matches your current system)
-            leverage=20.0,              # 20x leverage
-            commission_pct=0.075,       # Binance futures commission
-            take_profit_pct=1.5,        # 1.5% TP
-            stop_loss_pct=1.0,          # 1.0% SL
-            timeframe='3m',             # 1-minute timeframe
-            limit=1400,                 # 1400 candles as requested
-            max_open_time_minutes=60    # Max 1 hour per trade
+            initial_capital=1.0,
+            leverage=20.0,
+            commission_pct=0.075,
+            take_profit_pct=2.0,  # Slightly higher TP
+            stop_loss_pct=1.5,    # Slightly higher SL
+            timeframe='3m',
+            limit=1400,
+            max_open_time_minutes=90  # Longer hold time
         )
+        
+        optimizer = WinRateOptimizer(backtester, config)
         
         # Strategy definitions
         strategies = {
-            'Current_QQE_ST_Fixed': {
+            'QQE_Supertrend': {
                 'indicators': {
                     'qqe': {'length': 12, 'smooth': 5, 'factor': 4.236},
                     'supertrend': {'length': 10, 'multiplier': 2.8}
                 },
                 'signal_func': qqe_supertrend_signal_fixed,
-                'description': 'Current QQE + Supertrend with FIXED logic'
+                'description': 'QQE + Supertrend'
             },
-            
-            'Fast_QQE_ST': {
-                'indicators': {
-                    'qqe': {'length': 8, 'smooth': 3, 'factor': 4.236},
-                    'supertrend': {'length': 6, 'multiplier': 2.2}
-                },
-                'signal_func': qqe_supertrend_signal_fixed,
-                'description': 'Faster QQE + Supertrend for 3m crypto'
-            },
-            
-            'RSI_MACD_Combo': {
+            'RSI_MACD': {
                 'indicators': {
                     'rsi': {'length': 14},
                     'macd': {'fast': 12, 'slow': 26, 'signal': 9}
                 },
                 'signal_func': rsi_macd_signal,
-                'description': 'RSI Oversold/Overbought + MACD Confirmation'
+                'description': 'RSI + MACD'
             },
-            
-            'TSI_VWAP_Trend': {
+            'TSI_VWAP': {
                 'indicators': {
                     'tsi': {'fast': 8, 'slow': 15, 'signal': 6},
                     'vwap': {}
                 },
                 'signal_func': tsi_vwap_signal,
-                'description': 'Fast TSI + VWAP Trend Following'
+                'description': 'TSI + VWAP'
             }
         }
         
-        # Get symbols to test (using your exchange connection)
         test_symbols = get_active_symbols(backtester, limit=3)
-        
-        # Results storage
         all_results = []
-        summary_data = []
         
-        logger.info(f"Testing {len(strategies)} strategies on {len(test_symbols)} symbols")
-        logger.info(f"Symbols: {test_symbols}")
-        logger.info(f"Data: {config.limit} {config.timeframe} candles per symbol")
+        logger.info(f"Testing on symbols: {test_symbols}")
         
-        # Run tests
         for symbol in test_symbols:
-            logger.info(f"\n{'='*60}")
-            logger.info(f" TESTING SYMBOL: {symbol}")
-            logger.info(f"{'='*60}")
-            
-            symbol_results = []
+            logger.info(f"\nTesting symbol: {symbol}")
             
             for strategy_name, strategy_config in strategies.items():
-                logger.info(f"\n   Running: {strategy_name}")
-                logger.info(f"     {strategy_config['description']}")
+                logger.info(f"Processing: {strategy_name}")
                 
-                try:
-                    # Run backtest with live data
-                    result = backtester.run_backtest(
-                        symbol=symbol,
-                        signal_func=strategy_config['signal_func'],
-                        indicator_config=strategy_config['indicators'],
-                        backtest_config=config
-                    )
-                    
-                    if 'error' not in result:
-                        metrics = result['metrics']
-                        
-                        # Store results
-                        detailed_result = {
-                            'symbol': symbol,
-                            'strategy': strategy_name,
-                            'description': strategy_config['description'],
-                            **metrics,
-                            'data_points': result['data_points']
-                        }
-                        all_results.append(detailed_result)
-                        symbol_results.append(detailed_result)
-                        
-                        # Export individual results
-                        trades_file = backtester.export_results(symbol, strategy_name)
-                        
-                        # Log results
-                        logger.info(f"      Trades: {metrics['total_trades']}")
-                        logger.info(f"      Win Rate: {metrics['win_rate']}%")
-                        logger.info(f"      Return: {metrics['total_return_pct']}%")
-                        logger.info(f"     Profit Factor: {metrics['profit_factor']}")
-                        logger.info(f"      Max DD: {metrics['max_drawdown_pct']}%")
-                        if trades_file:
-                            logger.info(f"      Exported: {trades_file}")
-                    
-                    else:
-                        logger.error(f"     Error: {result['error']}")
+                # Test base strategy
+                base_result = backtester.run_backtest(
+                    symbol=symbol,
+                    signal_func=strategy_config['signal_func'],
+                    indicator_config=strategy_config['indicators'],
+                    backtest_config=config
+                )
                 
-                except Exception as e:
-                    logger.error(f"     Exception: {e}")
-            
-            # Symbol summary
-            if symbol_results:
-                best_strategy = max(symbol_results, key=lambda x: x['total_return_pct'])
-                logger.info(f"\n   Best for {symbol}: {best_strategy['strategy']}")
-                logger.info(f"      Return: {best_strategy['total_return_pct']}%")
-                logger.info(f"      Win Rate: {best_strategy['win_rate']}%")
+                if 'error' not in base_result:
+                    base_metrics = base_result['metrics']
+                    
+                    all_results.append({
+                        'symbol': symbol,
+                        'strategy': f"{strategy_name}_Base",
+                        'type': 'base',
+                        'description': strategy_config['description'],
+                        **base_metrics,
+                        'parameters': strategy_config['indicators']
+                    })
+                    
+                    logger.info(f"Base - Trades: {base_metrics['total_trades']}, "
+                              f"Win Rate: {base_metrics['win_rate']:.2f}%")
+                    
+                    # Run aggressive optimization
+                    if OPTUNA_AVAILABLE:
+                        opt_indicators, opt_winrate, opt_details = optimizer.optimize_for_winrate(
+                            symbol, strategy_name, strategy_config['signal_func'], 
+                            strategy_config['indicators']
+                        )
+                        
+                        if opt_winrate > 0:
+                            opt_result = backtester.run_backtest(
+                                symbol=symbol,
+                                signal_func=strategy_config['signal_func'],
+                                indicator_config=opt_indicators,
+                                backtest_config=config
+                            )
+                            
+                            if 'error' not in opt_result:
+                                opt_metrics = opt_result['metrics']
+                                
+                                all_results.append({
+                                    'symbol': symbol,
+                                    'strategy': f"{strategy_name}_WinRate_Optimized",
+                                    'type': 'optimized',
+                                    'description': f"{strategy_config['description']} (Win Rate Optimized)",
+                                    **opt_metrics,
+                                    'parameters': opt_indicators,
+                                    'optimization_details': opt_details
+                                })
+                                
+                                wr_improvement = opt_metrics['win_rate'] - base_metrics['win_rate']
+                                
+                                logger.info(f"Optimized - Trades: {opt_metrics['total_trades']}, "
+                                          f"Win Rate: {opt_metrics['win_rate']:.2f}% "
+                                          f"(+{wr_improvement:.2f}%)")
         
-        # Create final summary
+        # Export results
         if all_results:
-            logger.info(f"\n{'='*80}")
-            logger.info("FINAL STRATEGY COMPARISON SUMMARY")
-            logger.info(f"{'='*80}")
+            os.makedirs('winrate_optimization_results', exist_ok=True)
             
-            # Group by strategy
-            strategy_totals = {}
-            for result in all_results:
-                strategy = result['strategy']
-                if strategy not in strategy_totals:
-                    strategy_totals[strategy] = {
-                        'total_return': 0,
-                        'avg_win_rate': 0,
-                        'avg_profit_factor': 0,
-                        'max_drawdown': 0,
-                        'total_trades': 0,
-                        'symbols_tested': 0
-                    }
+            df = pd.DataFrame(all_results)
+            df.to_csv('winrate_optimization_results/winrate_focused_results.csv', index=False)
+            
+            # Summary statistics
+            logger.info(f"\nWIN RATE OPTIMIZATION SUMMARY:")
+            logger.info("=" * 60)
+            
+            base_results = [r for r in all_results if r['type'] == 'base']
+            opt_results = [r for r in all_results if r['type'] == 'optimized']
+            
+            if base_results and opt_results:
+                avg_base_wr = sum(r['win_rate'] for r in base_results) / len(base_results)
+                avg_opt_wr = sum(r['win_rate'] for r in opt_results) / len(opt_results)
+                avg_improvement = avg_opt_wr - avg_base_wr
                 
-                totals = strategy_totals[strategy]
-                totals['total_return'] += result['total_return_pct']
-                totals['avg_win_rate'] += result['win_rate']
-                totals['avg_profit_factor'] += result['profit_factor']
-                totals['max_drawdown'] = max(totals['max_drawdown'], result['max_drawdown_pct'])
-                totals['total_trades'] += result['total_trades']
-                totals['symbols_tested'] += 1
+                logger.info(f"Average Base Win Rate: {avg_base_wr:.2f}%")
+                logger.info(f"Average Optimized Win Rate: {avg_opt_wr:.2f}%")
+                logger.info(f"Average Improvement: +{avg_improvement:.2f}%")
+                
+                # Best results
+                best_opt = max(opt_results, key=lambda x: x['win_rate'])
+                logger.info(f"\nBest Optimized Strategy:")
+                logger.info(f"  {best_opt['strategy']} on {best_opt['symbol']}")
+                logger.info(f"  Win Rate: {best_opt['win_rate']:.2f}%")
+                logger.info(f"  Trades: {best_opt['total_trades']}")
+                logger.info(f"  Parameters: {best_opt['parameters']}")
             
-            # Calculate averages
-            for strategy, totals in strategy_totals.items():
-                count = totals['symbols_tested']
-                totals['avg_win_rate'] = round(totals['avg_win_rate'] / count, 1)
-                totals['avg_profit_factor'] = round(totals['avg_profit_factor'] / count, 2)
-                totals['total_return'] = round(totals['total_return'], 2)
-            
-            # Print summary table
-            print(f"\n{'Strategy':<25} {'Total Return':<12} {'Avg Win%':<10} {'Avg PF':<8} {'Max DD%':<8} {'Trades':<8}")
-            print("-" * 85)
-            
-            # Sort by total return
-            sorted_strategies = sorted(strategy_totals.items(), 
-                                     key=lambda x: x[1]['total_return'], 
-                                     reverse=True)
-            
-            for strategy_name, totals in sorted_strategies:
-                print(f"{strategy_name:<25} {totals['total_return']:>10}% "
-                      f"{totals['avg_win_rate']:>8}% "
-                      f"{totals['avg_profit_factor']:>6} "
-                      f"{totals['max_drawdown']:>6}% "
-                      f"{totals['total_trades']:>6}")
-            
-            # Export summary
-            os.makedirs('backtest_results', exist_ok=True)
-            
-            # Detailed results
-            detailed_df = pd.DataFrame(all_results)
-            detailed_df.to_csv('backtest_results/live_data_detailed_results.csv', index=False)
-            
-            # Summary
-            summary_df = pd.DataFrame([
-                {
-                    'strategy': name,
-                    'description': strategies[name]['description'],
-                    **totals
-                }
-                for name, totals in sorted_strategies
-            ])
-            summary_df.to_csv('backtest_results/live_data_strategy_summary.csv', index=False)
-            
-            # Winner announcement
-            if sorted_strategies:
-                winner = sorted_strategies[0]
-                logger.info(f"\ OVERALL WINNER: {winner[0]}")
-                logger.info(f"    Total Return: {winner[1]['total_return']}%")
-                logger.info(f"    Avg Win Rate: {winner[1]['avg_win_rate']}%")
-                logger.info(f"   Avg Profit Factor: {winner[1]['avg_profit_factor']}")
-                logger.info(f"    Max Drawdown: {winner[1]['max_drawdown']}%")
-                logger.info(f"    Total Trades: {winner[1]['total_trades']}")
-                logger.info(f"    Description: {strategies[winner[0]]['description']}")
-            
-            logger.info(f"\ Results exported to:")
-            logger.info(f"   Summary: backtest_results/live_data_strategy_summary.csv")
-            logger.info(f"    Detailed: backtest_results/live_data_detailed_results.csv")
-            logger.info(f"    Individual trades: backtest_results/*_trades_*.csv")
+            logger.info(f"\nResults exported to: winrate_optimization_results/winrate_focused_results.csv")
         
-        else:
-            logger.warning("No successful backtests completed")
-    
     except Exception as e:
-        logger.error(f"Critical error in strategy comparison: {e}")
+        logger.error(f"Critical error in win rate optimization: {e}")
         import traceback
         logger.error(f"Traceback: {traceback.format_exc()}")
 
-def test_single_symbol_all_strategies(symbol: str = None):
-    """Test all strategies on a single symbol for detailed analysis"""
-    
-    logger = logging.getLogger(__name__)
-    
-    try:
-        backtester = IntegratedBacktester('config.json')
-        
-        # Use provided symbol or get one active symbol
-        if symbol is None:
-            active_symbols = get_active_symbols(backtester, limit=1)
-            symbol = active_symbols[0] if active_symbols else 'BTCUSDT'
-        
-        logger.info(f" DETAILED TESTING ON: {symbol}")
-        
-        config = BacktestConfig(
-            initial_capital=1.0,
-            leverage=20.0,
-            commission_pct=0.075,
-            take_profit_pct=1.5,
-            stop_loss_pct=1.0,
-            timeframe='3m',
-            limit=1400
-        )
-        
-        strategies = {
-            'Current_Fixed': {
-                'indicators': {'qqe': {'length': 12, 'smooth': 5, 'factor': 4.236}, 'supertrend': {'length': 10, 'multiplier': 2.8}},
-                'signal_func': qqe_supertrend_signal_fixed
-            },
-            'Fast_Version': {
-                'indicators': {'qqe': {'length': 8, 'smooth': 3, 'factor': 4.236}, 'supertrend': {'length': 6, 'multiplier': 2.2}},
-                'signal_func': qqe_supertrend_signal_fixed
-            },
-            'RSI_MACD': {
-                'indicators': {'rsi': {'length': 14}, 'macd': {'fast': 12, 'slow': 26, 'signal': 9}},
-                'signal_func': rsi_macd_signal
-            }
-        }
-        
-        results = []
-        
-        for strategy_name, strategy_config in strategies.items():
-            logger.info(f"\n Testing {strategy_name}...")
-            
-            result = backtester.run_backtest(
-                symbol=symbol,
-                signal_func=strategy_config['signal_func'],
-                indicator_config=strategy_config['indicators'],
-                backtest_config=config
-            )
-            
-            if 'error' not in result:
-                metrics = result['metrics']
-                results.append((strategy_name, metrics))
-                
-                backtester.export_results(symbol, strategy_name)
-                
-                logger.info(f"   Trades: {metrics['total_trades']}, Win Rate: {metrics['win_rate']}%, Return: {metrics['total_return_pct']}%")
-        
-        # Compare results
-        if results:
-            logger.info(f"\nCOMPARISON FOR {symbol}:")
-            for strategy_name, metrics in sorted(results, key=lambda x: x[1]['total_return_pct'], reverse=True):
-                logger.info(f"   {strategy_name}: {metrics['total_return_pct']}% return, {metrics['win_rate']}% win rate")
-    
-    except Exception as e:
-        logger.error(f"Error in single symbol test: {e}")
-
 def main():
-    """Main function to run strategy testing"""
+    """Main function"""
     setup_logging()
     
     logger = logging.getLogger(__name__)
-    logger.info("tarting Integrated Strategy Testing")
+    logger.info("Win Rate Focused Strategy Optimizer")
     
-    import argparse
-    parser = argparse.ArgumentParser(description='Test trading strategies with live exchange data')
-    parser.add_argument('--mode', choices=['full', 'single'], default='full',
-                       help='Run full comparison or single symbol test')
-    parser.add_argument('--symbol', type=str, help='Symbol for single mode')
+    if not OPTUNA_AVAILABLE:
+        logger.error("Optuna is required for win rate optimization")
+        logger.error("Install with: pip install optuna")
+        return
     
-    args = parser.parse_args()
-    
-    if args.mode == 'full':
-        run_strategy_comparison()
-    else:
-        test_single_symbol_all_strategies(args.symbol)
+    run_winrate_focused_optimization()
 
 if __name__ == "__main__":
     main()
