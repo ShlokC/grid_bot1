@@ -23,3 +23,10 @@ env/
 # IDE settings
 .idea/
 .vscode/
+1000SATSUSDT_close_prices.csv
+BANANAS31USDT_close_prices.csv
+
+# Backtest results
+backtest_results/
+!backtest_results/.gitkeep
+
