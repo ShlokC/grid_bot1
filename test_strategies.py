@@ -1,10 +1,15 @@
 """
 VectorBT-based Strategy Testing for Win Rate Optimization
-Simplified implementation replacing custom backtester
+Updated with proper bidirectional signal generation
 """
 
 import os
 import sys
+
+# Set UTF-8 encoding for Windows compatibility
+if sys.platform.startswith('win'):
+    os.environ['PYTHONIOENCODING'] = 'utf-8'
+
 import logging
 import json
 import numpy as _np
@@ -31,16 +36,37 @@ except ImportError:
 from core.exchange import Exchange
 
 def setup_logging():
-    """Setup logging for strategy testing"""
-    logging.basicConfig(
-        level=logging.INFO,  # Changed to INFO to reduce verbosity
-        format='%(asctime)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.FileHandler('logs/vectorbt_optimization.log'),
-            logging.StreamHandler()
-        ]
-    )
+    """Setup logging for strategy testing with proper Unicode handling"""
+    import sys
     os.makedirs('logs', exist_ok=True)
+    
+    # Create file handler with UTF-8 encoding
+    file_handler = logging.FileHandler('logs/vectorbt_optimization.log', encoding='utf-8')
+    
+    # Create console handler with UTF-8 encoding if possible
+    try:
+        console_handler = logging.StreamHandler(sys.stdout)
+        if hasattr(sys.stdout, 'reconfigure'):
+            sys.stdout.reconfigure(encoding='utf-8')
+    except:
+        console_handler = logging.StreamHandler()
+    
+    # Set formatters
+    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    file_handler.setFormatter(formatter)
+    console_handler.setFormatter(formatter)
+    
+    # Configure root logger
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+    
+    # Clear existing handlers
+    for handler in root_logger.handlers[:]:
+        root_logger.removeHandler(handler)
+    
+    # Add our handlers
+    root_logger.addHandler(file_handler)
+    root_logger.addHandler(console_handler)
 
 def get_active_symbols(exchange: Exchange, limit: int = 3) -> List[str]:
     """Get top active symbols from exchange"""
@@ -86,7 +112,7 @@ def fetch_data_for_symbol(exchange: Exchange, symbol: str, limit: int = 1400) ->
         raise
 
 class VectorBTStrategyTester:
-    """Simplified VectorBT-based strategy testing focused on win rate"""
+    """VectorBT-based strategy testing with proper bidirectional signals"""
     
     def __init__(self, exchange: Exchange):
         self.exchange = exchange
@@ -129,7 +155,7 @@ class VectorBTStrategyTester:
     
     def generate_qqe_supertrend_signals(self, data: pd.DataFrame, qqe_length: int, qqe_smooth: int, 
                                        st_length: int, st_multiplier: float) -> tuple:
-        """Generate QQE + Supertrend signals using pandas_ta"""
+        """Generate QQE + Supertrend signals for both directions"""
         try:
             # QQE calculation using pandas_ta
             qqe = ta.qqe(data['close'], length=qqe_length, smooth=qqe_smooth)
@@ -152,12 +178,18 @@ class VectorBTStrategyTester:
             
             st_direction = st[dir_cols[0]]
             
-            # Generate signals
-            qqe_bullish = qqe_signal > qqe_line
+            # Define directional conditions
+            qqe_bullish = qqe_line > qqe_signal
             st_bullish = st_direction == 1
             
-            entries = qqe_bullish & st_bullish
-            exits = (~qqe_bullish) | (~st_bullish)
+            # Generate directional entries: 1=LONG, -1=SHORT, 0=no entry
+            entries = pd.Series(0, index=data.index, dtype=float)
+            entries[qqe_bullish & st_bullish] = 1.0    # LONG: both bullish
+            entries[~qqe_bullish & ~st_bullish] = -1.0  # SHORT: both bearish
+            
+            # Generate exits: either indicator changes direction
+            exits = ((qqe_bullish != qqe_bullish.shift(1)) | 
+                    (st_direction != st_direction.shift(1))).fillna(False)
             
             return entries, exits
             
@@ -166,7 +198,7 @@ class VectorBTStrategyTester:
     
     def generate_rsi_macd_signals(self, data: pd.DataFrame, rsi_length: int, 
                                  macd_fast: int, macd_slow: int, macd_signal: int) -> tuple:
-        """Generate RSI + MACD signals using pandas_ta"""
+        """Generate RSI + MACD signals for both directions"""
         try:
             if macd_fast >= macd_slow:
                 return None, None
@@ -184,9 +216,18 @@ class VectorBTStrategyTester:
             macd_line = macd.iloc[:, 0]
             macd_signal_line = macd.iloc[:, 2]
             
-            # Generate signals
-            entries = (rsi < 35) & (macd_line > macd_signal_line)
-            exits = (rsi > 65) | (macd_line < macd_signal_line)
+            # Define directional conditions
+            macd_bullish = macd_line > macd_signal_line
+            
+            # Generate directional entries: 1=LONG, -1=SHORT, 0=no entry
+            entries = pd.Series(0, index=data.index, dtype=float)
+            entries[(rsi < 35) & macd_bullish] = 1.0   # LONG: oversold + bullish MACD
+            entries[(rsi > 65) & ~macd_bullish] = -1.0  # SHORT: overbought + bearish MACD
+            
+            # Generate exits: either indicator reverses
+            exits = (((rsi > 50) & (rsi.shift(1) <= 35)) |  # RSI exits oversold
+                    ((rsi < 50) & (rsi.shift(1) >= 65)) |   # RSI exits overbought
+                    (macd_bullish != macd_bullish.shift(1))).fillna(False)  # MACD direction change
             
             return entries, exits
             
@@ -195,7 +236,7 @@ class VectorBTStrategyTester:
     
     def generate_tsi_vwap_signals(self, data: pd.DataFrame, tsi_fast: int, 
                                  tsi_slow: int, tsi_signal: int) -> tuple:
-        """Generate TSI + VWAP signals using pandas_ta"""
+        """Generate TSI + VWAP signals for both directions"""
         try:
             if tsi_fast >= tsi_slow:
                 return None, None
@@ -206,19 +247,25 @@ class VectorBTStrategyTester:
                 return None, None
             
             tsi_line = tsi.iloc[:, 0]
-            tsi_signal_line = tsi.iloc[:, 1] if len(tsi.columns) > 1 else 0
+            tsi_signal_line = tsi.iloc[:, 1] if len(tsi.columns) > 1 else pd.Series(0, index=tsi_line.index)
             
             # VWAP calculation using pandas_ta
             vwap = ta.vwap(data['high'], data['low'], data['close'], data['volume'])
             if vwap is None:
                 return None, None
             
-            # Generate signals
+            # Define directional conditions
             tsi_bullish = tsi_line > tsi_signal_line
             price_above_vwap = data['close'] > vwap
             
-            entries = tsi_bullish & price_above_vwap
-            exits = (~tsi_bullish) | (~price_above_vwap)
+            # Generate directional entries: 1=LONG, -1=SHORT, 0=no entry
+            entries = pd.Series(0, index=data.index, dtype=float)
+            entries[tsi_bullish & price_above_vwap] = 1.0   # LONG: TSI bullish + above VWAP
+            entries[~tsi_bullish & ~price_above_vwap] = -1.0 # SHORT: TSI bearish + below VWAP
+            
+            # Generate exits: either indicator reverses
+            exits = ((tsi_bullish != tsi_bullish.shift(1)) |  # TSI direction change
+                    (price_above_vwap != price_above_vwap.shift(1))).fillna(False)  # VWAP cross
             
             return entries, exits
             
@@ -226,7 +273,7 @@ class VectorBTStrategyTester:
             return None, None
     
     def test_strategy_on_symbol(self, symbol: str, strategy_name: str, max_combinations: int = 100) -> List[Dict]:
-        """Test strategy on symbol using VectorBT optimization"""
+        """Test strategy on symbol using VectorBT optimization with both directions"""
         try:
             self.logger.info(f"Testing {strategy_name} on {symbol}")
             
@@ -241,7 +288,7 @@ class VectorBTStrategyTester:
             if strategy_name == 'qqe_supertrend':
                 param_combinations = [
                     (ql, qs, sl, sm) 
-                    for ql in list(strategy_config['params']['qqe_length'])[::2]  # Sample every 2nd
+                    for ql in list(strategy_config['params']['qqe_length'])[::2]
                     for qs in list(strategy_config['params']['qqe_smooth'])[::2]
                     for sl in list(strategy_config['params']['st_length'])[::2] 
                     for sm in list(strategy_config['params']['st_multiplier'])[::2]
@@ -256,13 +303,11 @@ class VectorBTStrategyTester:
                             data['close'], entries, exits,
                             init_cash=self.initial_cash,
                             fees=self.commission,
-                            freq='3min'
+                            freq='3min',
+                            direction='both'
                         )
                         
                         stats = pf.stats()
-                        
-                        # Debug: Log available stat keys
-                        self.logger.debug(f"Available VectorBT stats: {list(stats.index)}")
                         
                         # Handle different possible stat key names
                         trades_key = None
@@ -291,7 +336,6 @@ class VectorBTStrategyTester:
                         
                         # Skip if essential stats are missing
                         if not all([trades_key, win_rate_key, return_key]):
-                            self.logger.warning(f"Missing essential stats - trades: {trades_key}, win_rate: {win_rate_key}, return: {return_key}")
                             continue
                         
                         results.append({
@@ -319,7 +363,7 @@ class VectorBTStrategyTester:
                     for mf in list(strategy_config['params']['macd_fast'])[::2]
                     for ms in list(strategy_config['params']['macd_slow'])[::2]
                     for msig in list(strategy_config['params']['macd_signal'])[::2]
-                    if mf < ms  # Ensure fast < slow
+                    if mf < ms
                 ][:max_combinations]
                 
                 for rsi_length, macd_fast, macd_slow, macd_signal in param_combinations:
@@ -331,7 +375,8 @@ class VectorBTStrategyTester:
                             data['close'], entries, exits,
                             init_cash=self.initial_cash,
                             fees=self.commission,
-                            freq='3min'
+                            freq='3min',
+                            direction='both'
                         )
                         
                         stats = pf.stats()
@@ -389,7 +434,7 @@ class VectorBTStrategyTester:
                     for tf in list(strategy_config['params']['tsi_fast'])[::2]
                     for ts in list(strategy_config['params']['tsi_slow'])[::2]
                     for tsig in list(strategy_config['params']['tsi_signal'])[::2]
-                    if tf < ts  # Ensure fast < slow
+                    if tf < ts
                 ][:max_combinations]
                 
                 for tsi_fast, tsi_slow, tsi_signal in param_combinations:
@@ -401,7 +446,8 @@ class VectorBTStrategyTester:
                             data['close'], entries, exits,
                             init_cash=self.initial_cash,
                             fees=self.commission,
-                            freq='3min'
+                            freq='3min',
+                            direction='both'
                         )
                         
                         stats = pf.stats()
@@ -460,10 +506,10 @@ class VectorBTStrategyTester:
             return []
 
 def run_vectorbt_optimization():
-    """Run VectorBT-based strategy optimization"""
+    """Run VectorBT-based strategy optimization with both directions"""
     
     logger = logging.getLogger(__name__)
-    logger.info("Starting VectorBT Win Rate Optimization")
+    logger.info("Starting VectorBT Bidirectional Strategy Optimization")
     
     try:
         # Load exchange configuration
@@ -503,12 +549,12 @@ def run_vectorbt_optimization():
             
             df = pd.DataFrame(all_results)
             timestamp = time.strftime("%Y%m%d_%H%M%S")
-            results_file = f'vectorbt_results/strategy_optimization_{timestamp}.csv'
+            results_file = f'vectorbt_results/bidirectional_optimization_{timestamp}.csv'
             df.to_csv(results_file, index=False)
             
             # Summary statistics
-            logger.info(f"\nVectorBT Optimization Summary:")
-            logger.info("=" * 50)
+            logger.info(f"\nBidirectional VectorBT Optimization Summary:")
+            logger.info("=" * 60)
             
             if len(all_results) > 0:
                 avg_win_rate = df['win_rate'].mean()
@@ -535,7 +581,7 @@ def main():
     setup_logging()
     
     logger = logging.getLogger(__name__)
-    logger.info("VectorBT Strategy Optimizer")
+    logger.info("VectorBT Bidirectional Strategy Optimizer")
     
     if not VECTORBT_AVAILABLE:
         logger.error("VectorBT is required for strategy optimization")
