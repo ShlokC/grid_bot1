@@ -33,7 +33,7 @@ from core.exchange import Exchange
 def setup_logging():
     """Setup logging for strategy testing"""
     logging.basicConfig(
-        level=logging.DEBUG,  # Changed to DEBUG to see stat keys
+        level=logging.INFO,  # Changed to INFO to reduce verbosity
         format='%(asctime)s - %(levelname)s - %(message)s',
         handlers=[
             logging.FileHandler('logs/vectorbt_optimization.log'),
@@ -157,7 +157,7 @@ class VectorBTStrategyTester:
             st_bullish = st_direction == 1
             
             entries = qqe_bullish & st_bullish
-            exits = (~qqe_bullish) & (~st_bullish)
+            exits = (~qqe_bullish) | (~st_bullish)
             
             return entries, exits
             
@@ -186,7 +186,7 @@ class VectorBTStrategyTester:
             
             # Generate signals
             entries = (rsi < 35) & (macd_line > macd_signal_line)
-            exits = (rsi > 65) & (macd_line < macd_signal_line)
+            exits = (rsi > 65) | (macd_line < macd_signal_line)
             
             return entries, exits
             
@@ -218,7 +218,7 @@ class VectorBTStrategyTester:
             price_above_vwap = data['close'] > vwap
             
             entries = tsi_bullish & price_above_vwap
-            exits = (~tsi_bullish) & (~price_above_vwap)
+            exits = (~tsi_bullish) | (~price_above_vwap)
             
             return entries, exits
             
