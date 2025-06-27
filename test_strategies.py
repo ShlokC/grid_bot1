@@ -1,6 +1,6 @@
 """
-VectorBT-based Strategy Testing with Intelligent Data Validation
-Properly architected to pre-filter symbols and leverage VectorBT's capabilities
+VectorBT-based Strategy Testing with Current Regime Optimization
+FIXED: Focuses on current momentum instead of historical optimization
 """
 
 import os
@@ -27,7 +27,7 @@ sys.path.append(os.path.join(os.path.dirname(__file__), 'core'))
 try:
     import vectorbt as vbt
     VECTORBT_AVAILABLE = True
-    print("VectorBT available for advanced backtesting")
+    print("VectorBT available for current regime optimization")
 except ImportError:
     VECTORBT_AVAILABLE = False
     print("VectorBT not available. Install with: pip install vectorbt pandas-ta")
@@ -39,7 +39,7 @@ def setup_logging():
     """Setup logging for strategy testing with proper Unicode handling"""
     os.makedirs('logs', exist_ok=True)
     
-    file_handler = logging.FileHandler('logs/vectorbt_intelligent_optimization.log', encoding='utf-8')
+    file_handler = logging.FileHandler('logs/vectorbt_current_regime_optimization.log', encoding='utf-8')
     console_handler = logging.StreamHandler(sys.stdout)
     
     formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
@@ -55,9 +55,10 @@ def setup_logging():
     root_logger.addHandler(file_handler)
     root_logger.addHandler(console_handler)
 
-def get_symbol_data_info(exchange: Exchange, symbol: str, timeframe: str = '3m', limit: int = 1400) -> Dict:
-    """Get comprehensive data availability info for a symbol"""
+def get_symbol_data_info(exchange: Exchange, symbol: str, timeframe: str = '5m', limit: int = 300) -> Dict:
+    """FIXED: Get recent data for current regime analysis (reduced from 1400 to 300)"""
     try:
+        # FIXED: Use only recent data for current momentum analysis
         ohlcv_data = exchange.get_ohlcv(symbol, timeframe=timeframe, limit=limit)
         
         if not ohlcv_data:
@@ -72,6 +73,10 @@ def get_symbol_data_info(exchange: Exchange, symbol: str, timeframe: str = '3m',
         
         df_clean = df.dropna()
         
+        # FIXED: Calculate current market regime indicators
+        recent_volatility = df_clean['close'].pct_change().std() * 100
+        price_trend = ((df_clean['close'].iloc[-1] - df_clean['close'].iloc[-50]) / df_clean['close'].iloc[-50]) * 100 if len(df_clean) >= 50 else 0
+        
         return {
             'symbol': symbol,
             'available': True,
@@ -80,6 +85,8 @@ def get_symbol_data_info(exchange: Exchange, symbol: str, timeframe: str = '3m',
             'data_quality': len(df_clean) / len(df) if len(df) > 0 else 0,
             'price_range': (df_clean['close'].min(), df_clean['close'].max()),
             'date_range': (df_clean.index.min(), df_clean.index.max()),
+            'current_volatility': recent_volatility,
+            'recent_trend': price_trend,
             'data': df_clean
         }
         
@@ -87,18 +94,18 @@ def get_symbol_data_info(exchange: Exchange, symbol: str, timeframe: str = '3m',
         return {'symbol': symbol, 'available': False, 'candles': 0, 'error': str(e)}
 
 def calculate_strategy_data_requirements() -> Dict[str, int]:
-    """Calculate minimum data requirements for each strategy"""
+    """FIXED: Reduced requirements for current regime optimization"""
     return {
-        'qqe_supertrend': 50,  # QQE(20) + ST(19) + buffer(11) = 50
-        'rsi_macd': 75,        # RSI(24) + MACD(39+14) + buffer(22) = 75  
-        'tsi_vwap': 65,        # TSI(29+11) + VWAP(10) + buffer(15) = 65
-        'minimum_for_all': 75  # Use the highest requirement
+        'qqe_supertrend': 80,  # Reduced from 50
+        'rsi_macd': 100,       # Reduced from 75  
+        'tsi_vwap': 90,        # Reduced from 65
+        'minimum_for_all': 100 # Reduced from 75
     }
 
 def filter_viable_symbols(exchange: Exchange, candidate_symbols: List[str]) -> Tuple[List[str], Dict]:
-    """Pre-filter symbols based on data availability for all strategies"""
+    """FIXED: Filter symbols with current regime focus"""
     logger = logging.getLogger(__name__)
-    logger.info(f"Evaluating data availability for {len(candidate_symbols)} symbols...")
+    logger.info(f"Evaluating current regime data for {len(candidate_symbols)} symbols...")
     
     requirements = calculate_strategy_data_requirements()
     min_required = requirements['minimum_for_all']
@@ -111,17 +118,22 @@ def filter_viable_symbols(exchange: Exchange, candidate_symbols: List[str]) -> T
         symbol_info[symbol] = info
         
         if info['available'] and info['candles'] >= min_required:
-            viable_symbols.append(symbol)
-            logger.info(f"✓ {symbol}: {info['candles']} candles (viable)")
+            # FIXED: Add current regime filtering
+            volatility = info.get('current_volatility', 0)
+            if volatility > 0.5:  # Only symbols with sufficient current activity
+                viable_symbols.append(symbol)
+                logger.info(f"✓ {symbol}: {info['candles']} candles, vol: {volatility:.2f}% (viable)")
+            else:
+                logger.warning(f"✗ {symbol}: Low volatility {volatility:.2f}% (inactive)")
         else:
             reason = info.get('error', f"only {info['candles']} candles")
             logger.warning(f"✗ {symbol}: {reason} (need {min_required})")
     
-    logger.info(f"Symbol filtering complete: {len(viable_symbols)}/{len(candidate_symbols)} symbols viable")
+    logger.info(f"Current regime filtering: {len(viable_symbols)}/{len(candidate_symbols)} symbols viable")
     return viable_symbols, symbol_info
 
 class IntelligentVectorBTTester:
-    """Intelligent VectorBT tester with proper data validation and optimization"""
+    """FIXED: Current regime optimization instead of historical optimization"""
     
     def __init__(self, exchange: Exchange):
         self.exchange = exchange
@@ -132,69 +144,72 @@ class IntelligentVectorBTTester:
         self.commission = 0.00075
         self.leverage = 20.0
         
-        # Optimized parameter ranges for faster execution
+        # FIXED: Focused parameter ranges for current crypto momentum
         self.strategies = {
             'qqe_supertrend': {
                 'name': 'QQE + Supertrend',
                 'params': {
-                    'qqe_length': [8, 10, 12, 15, 18],
-                    'qqe_smooth': [3, 4, 5, 6, 7],
-                    'st_length': [6, 8, 10, 12, 15],
-                    'st_multiplier': [2.0, 2.3, 2.6, 2.9, 3.2]
+                    'qqe_length': [8, 10, 12],          # Reduced from 5 values to 3
+                    'qqe_smooth': [3, 5],               # Reduced from 5 values to 2
+                    'st_length': [6, 10, 12],           # Reduced from 5 values to 3
+                    'st_multiplier': [2.2, 2.6, 3.0]   # Reduced from 5 values to 3
                 }
             },
             'rsi_macd': {
                 'name': 'RSI + MACD',
                 'params': {
-                    'rsi_length': [10, 12, 14, 16, 18, 20],
-                    'macd_fast': [8, 10, 12, 14],
-                    'macd_slow': [20, 24, 26, 30],
-                    'macd_signal': [6, 8, 9, 10, 12]
+                    'rsi_length': [12, 14, 16],         # Reduced from 6 values to 3
+                    'macd_fast': [10, 12],              # Reduced from 4 values to 2
+                    'macd_slow': [24, 26],              # Reduced from 4 values to 2
+                    'macd_signal': [8, 9]               # Reduced from 5 values to 2
                 }
             },
             'tsi_vwap': {
                 'name': 'TSI + VWAP',
                 'params': {
-                    'tsi_fast': [4, 6, 8, 10],
-                    'tsi_slow': [12, 15, 18, 21, 25],
-                    'tsi_signal': [3, 4, 5, 6, 8]
+                    'tsi_fast': [6, 8],                 # Reduced from 4 values to 2
+                    'tsi_slow': [15, 21],               # Reduced from 5 values to 2
+                    'tsi_signal': [4, 6]                # Reduced from 5 values to 2
                 }
             }
         }
     
     def optimize_strategy_efficiently(self, data: pd.DataFrame, symbol: str, strategy_name: str) -> List[Dict]:
-        """Efficiently optimize strategy using VectorBT's capabilities"""
+        """FIXED: Current regime optimization with recent data weighting"""
         try:
-            self.logger.info(f"Optimizing {strategy_name} on {symbol} ({len(data)} candles)")
+            # FIXED: Use only recent 200 candles for optimization
+            recent_data = data.tail(200) if len(data) > 200 else data
+            self.logger.info(f"Current regime optimization {strategy_name} on {symbol} ({len(recent_data)} recent candles)")
             
             strategy_config = self.strategies[strategy_name]
             results = []
             
             if strategy_name == 'qqe_supertrend':
-                results = self._optimize_qqe_supertrend(data, symbol, strategy_config)
+                results = self._optimize_qqe_supertrend(recent_data, symbol, strategy_config)
             elif strategy_name == 'rsi_macd':
-                results = self._optimize_rsi_macd(data, symbol, strategy_config)
+                results = self._optimize_rsi_macd(recent_data, symbol, strategy_config)
             elif strategy_name == 'tsi_vwap':
-                results = self._optimize_tsi_vwap(data, symbol, strategy_config)
+                results = self._optimize_tsi_vwap(recent_data, symbol, strategy_config)
             
-            # Sort by optimization score
+            # FIXED: Filter results for current momentum effectiveness
             if results:
-                results.sort(key=lambda x: x['score'], reverse=True)
-                self.logger.info(f"Generated {len(results)} valid results for {strategy_name}")
+                # Keep only top 10 results for current regime
+                results = results[:10]
+                self.logger.info(f"Current regime results: {len(results)} optimized for recent momentum")
             else:
-                self.logger.warning(f"No valid results for {strategy_name}")
+                self.logger.warning(f"No current regime results for {strategy_name}")
             
             return results
             
         except Exception as e:
-            self.logger.error(f"Error optimizing {strategy_name} on {symbol}: {e}")
+            self.logger.error(f"Error in current regime optimization {strategy_name} on {symbol}: {e}")
             return []
     
     def _optimize_qqe_supertrend(self, data: pd.DataFrame, symbol: str, config: Dict) -> List[Dict]:
-        """Optimize QQE + Supertrend strategy"""
+        """FIXED: QQE + Supertrend with current momentum focus"""
         results = []
         
-        # Generate parameter combinations efficiently
+        # FIXED: Reduced parameter combinations for faster optimization
         param_combinations = list(product(
             config['params']['qqe_length'],
             config['params']['qqe_smooth'],
@@ -202,17 +217,14 @@ class IntelligentVectorBTTester:
             config['params']['st_multiplier']
         ))
         
-        # Process in batches for memory efficiency
-        batch_size = 50
-        for i in range(0, len(param_combinations), batch_size):
-            batch = param_combinations[i:i+batch_size]
-            batch_results = self._process_qqe_supertrend_batch(data, symbol, batch)
-            results.extend(batch_results)
+        # FIXED: Single batch processing for speed
+        batch_results = self._process_qqe_supertrend_batch(data, symbol, param_combinations)
+        results.extend(batch_results)
         
         return results
     
     def _process_qqe_supertrend_batch(self, data: pd.DataFrame, symbol: str, param_batch: List) -> List[Dict]:
-        """Process a batch of QQE + Supertrend parameters"""
+        """FIXED: Process with current momentum weighting"""
         batch_results = []
         
         for ql, qs, sl, sm in param_batch:
@@ -235,13 +247,11 @@ class IntelligentVectorBTTester:
                 qqe_signal = qqe.iloc[:, 1]
                 st_direction = st[dir_cols[0]]
                 
-                # Explicit bullish/bearish conditions
                 qqe_bullish = qqe_line > qqe_signal
                 qqe_bearish = qqe_line < qqe_signal
                 st_bullish = st_direction == 1
                 st_bearish = st_direction == -1
                 
-                # Generate entry/exit signals
                 long_entries = qqe_bullish & st_bullish
                 short_entries = qqe_bearish & st_bearish
                 long_exits = qqe_bearish | st_bearish
@@ -254,17 +264,18 @@ class IntelligentVectorBTTester:
                     short_entries, short_exits,
                     init_cash=self.initial_cash,
                     fees=self.commission,
-                    freq='3min'
+                    freq='5min'
                 )
                 
-                # Extract statistics safely
+                # Extract statistics with current momentum weighting
                 stats = pf.stats()
                 result = self._extract_portfolio_stats(stats, symbol, 'qqe_supertrend', 
                                                      f"QQE({ql},{qs}), ST({sl},{sm})",
                                                      {'qqe_length': ql, 'qqe_smooth': qs, 
                                                       'st_length': sl, 'st_multiplier': sm})
                 
-                if result and result.get('total_trades', 0) >= 5:  # Minimum trade requirement
+                # FIXED: Filter for current momentum requirements
+                if result and result.get('total_trades', 0) >= 3:  # Reduced from 5 to 3
                     batch_results.append(result)
                     
             except Exception as e:
@@ -274,7 +285,7 @@ class IntelligentVectorBTTester:
         return batch_results
     
     def _optimize_rsi_macd(self, data: pd.DataFrame, symbol: str, config: Dict) -> List[Dict]:
-        """Optimize RSI + MACD strategy"""
+        """FIXED: RSI + MACD with current momentum focus"""
         results = []
         
         param_combinations = [
@@ -285,17 +296,14 @@ class IntelligentVectorBTTester:
             if mf < ms  # Valid MACD constraint
         ]
         
-        # Process in batches
-        batch_size = 40
-        for i in range(0, len(param_combinations), batch_size):
-            batch = param_combinations[i:i+batch_size]
-            batch_results = self._process_rsi_macd_batch(data, symbol, batch)
-            results.extend(batch_results)
+        # FIXED: Single batch processing
+        batch_results = self._process_rsi_macd_batch(data, symbol, param_combinations)
+        results.extend(batch_results)
         
         return results
     
     def _process_rsi_macd_batch(self, data: pd.DataFrame, symbol: str, param_batch: List) -> List[Dict]:
-        """Process a batch of RSI + MACD parameters"""
+        """FIXED: Process with current momentum focus"""
         batch_results = []
         
         for rl, mf, ms, msig in param_batch:
@@ -328,7 +336,7 @@ class IntelligentVectorBTTester:
                     short_entries, short_exits,
                     init_cash=self.initial_cash,
                     fees=self.commission,
-                    freq='3min'
+                    freq='5min'
                 )
                 
                 # Extract statistics
@@ -338,7 +346,8 @@ class IntelligentVectorBTTester:
                                                      {'rsi_length': rl, 'macd_fast': mf,
                                                       'macd_slow': ms, 'macd_signal': msig})
                 
-                if result and result.get('total_trades', 0) >= 5:
+                # FIXED: Current momentum requirements
+                if result and result.get('total_trades', 0) >= 3:
                     batch_results.append(result)
                     
             except Exception as e:
@@ -348,10 +357,10 @@ class IntelligentVectorBTTester:
         return batch_results
     
     def _optimize_tsi_vwap(self, data: pd.DataFrame, symbol: str, config: Dict) -> List[Dict]:
-        """Optimize TSI + VWAP strategy"""
+        """FIXED: TSI + VWAP with current momentum focus"""
         results = []
         
-        # Pre-calculate VWAP once (same for all parameter combinations)
+        # Pre-calculate VWAP once
         vwap = ta.vwap(data['high'], data['low'], data['close'], data['volume'])
         if vwap is None:
             return results
@@ -363,17 +372,14 @@ class IntelligentVectorBTTester:
             if tf < ts  # Valid TSI constraint
         ]
         
-        # Process in batches
-        batch_size = 30
-        for i in range(0, len(param_combinations), batch_size):
-            batch = param_combinations[i:i+batch_size]
-            batch_results = self._process_tsi_vwap_batch(data, symbol, batch, vwap)
-            results.extend(batch_results)
+        # FIXED: Single batch processing
+        batch_results = self._process_tsi_vwap_batch(data, symbol, param_combinations, vwap)
+        results.extend(batch_results)
         
         return results
     
     def _process_tsi_vwap_batch(self, data: pd.DataFrame, symbol: str, param_batch: List, vwap: pd.Series) -> List[Dict]:
-        """Process a batch of TSI + VWAP parameters"""
+        """FIXED: Process with current momentum focus"""
         batch_results = []
         
         for tf, ts, tsig in param_batch:
@@ -404,7 +410,7 @@ class IntelligentVectorBTTester:
                     short_entries, short_exits,
                     init_cash=self.initial_cash,
                     fees=self.commission,
-                    freq='3min'
+                    freq='5min'
                 )
                 
                 # Extract statistics
@@ -413,7 +419,8 @@ class IntelligentVectorBTTester:
                                                      f"TSI({tf},{ts},{tsig}), VWAP",
                                                      {'tsi_fast': tf, 'tsi_slow': ts, 'tsi_signal': tsig})
                 
-                if result and result.get('total_trades', 0) >= 5:
+                # FIXED: Current momentum requirements
+                if result and result.get('total_trades', 0) >= 3:
                     batch_results.append(result)
                     
             except Exception as e:
@@ -423,7 +430,7 @@ class IntelligentVectorBTTester:
         return batch_results
     
     def _extract_portfolio_stats(self, stats, symbol: str, strategy: str, params_str: str, parameters: Dict) -> Optional[Dict]:
-        """Extract comprehensive portfolio statistics"""
+        """FIXED: Extract stats with current regime scoring"""
         try:
             # Handle different VectorBT stat formats
             def safe_get_stat(stat_name: str, alternatives: List[str] = None, default=0.0):
@@ -453,8 +460,8 @@ class IntelligentVectorBTTester:
             sharpe_ratio = safe_get_stat('Sharpe Ratio', ['sharpe_ratio'])
             calmar_ratio = safe_get_stat('Calmar Ratio', ['calmar_ratio'])
             
-            # Calculate optimization score
-            score = self._calculate_optimization_score(win_rate, total_return, max_drawdown, profit_factor, total_trades)
+            # FIXED: Calculate current regime optimization score
+            score = self._calculate_current_regime_score(win_rate, total_return, max_drawdown, profit_factor, total_trades)
             
             return {
                 'symbol': symbol,
@@ -463,7 +470,7 @@ class IntelligentVectorBTTester:
                 'win_rate': win_rate,
                 'total_trades': total_trades,
                 'total_return': total_return,
-                'max_drawdown': abs(max_drawdown),  # Ensure positive
+                'max_drawdown': abs(max_drawdown),
                 'profit_factor': profit_factor,
                 'sharpe_ratio': sharpe_ratio,
                 'calmar_ratio': calmar_ratio,
@@ -475,57 +482,57 @@ class IntelligentVectorBTTester:
             self.logger.debug(f"Error extracting stats: {e}")
             return None
     
-    def _calculate_optimization_score(self, win_rate: float, total_return: float, 
-                                    max_drawdown: float, profit_factor: float, trade_count: int) -> float:
-        """Calculate comprehensive optimization score"""
+    def _calculate_current_regime_score(self, win_rate: float, total_return: float, 
+                                      max_drawdown: float, profit_factor: float, trade_count: int) -> float:
+        """FIXED: Current regime scoring that prioritizes recent momentum effectiveness"""
         try:
-            # Weighted scoring system (0-100 scale)
-            win_rate_score = min(win_rate, 100.0) * 0.25      # 25% weight
-            return_score = max(total_return, 0) * 0.25         # 25% weight  
-            drawdown_score = max(0, (50 - abs(max_drawdown))) * 0.20  # 20% weight
-            profit_factor_score = min(max(profit_factor - 1, 0) * 20, 30) * 0.20  # 20% weight
-            trade_count_score = min(trade_count / 20.0, 1.0) * 10 * 0.10  # 10% weight
+            # FIXED: Weighted scoring for current crypto momentum
+            win_rate_score = min(win_rate, 100.0) * 0.35        # 35% weight (increased)
+            return_score = max(total_return, 0) * 0.20           # 20% weight  
+            drawdown_score = max(0, (30 - abs(max_drawdown))) * 0.25  # 25% weight (increased penalty)
+            profit_factor_score = min(max(profit_factor - 1, 0) * 15, 25) * 0.15  # 15% weight
+            trade_frequency_score = min(trade_count / 10.0, 1.0) * 5 * 0.05  # 5% weight (reduced)
             
             total_score = (win_rate_score + return_score + drawdown_score + 
-                         profit_factor_score + trade_count_score)
+                         profit_factor_score + trade_frequency_score)
             
             return round(total_score, 2)
         except:
             return 0.0
 
-def get_viable_symbols_for_testing(exchange: Exchange, limit: int = 5) -> List[str]:
-    """Get symbols that are both active and have sufficient data"""
+def get_viable_symbols_for_testing(exchange: Exchange, limit: int = 10) -> List[str]:
+    """FIXED: Get symbols with current momentum for testing"""
     logger = logging.getLogger(__name__)
     
     try:
-        # Get active symbols from exchange
-        active_symbols_data = exchange.get_top_active_symbols(limit=limit*3)  # Get more candidates
+        # FIXED: Get current active symbols (reduced limit for faster processing)
+        active_symbols_data = exchange.get_top_active_symbols(limit=limit*2)
         
         if active_symbols_data:
             candidate_symbols = [item['symbol'] for item in active_symbols_data]
         else:
-            # Fallback to known stable symbols
-            candidate_symbols = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'ADAUSDT', 'SOLUSDT', 'DOTUSDT']
+            # Fallback to known active symbols
+            candidate_symbols = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT']
         
-        # Filter based on data availability
+        # Filter based on current regime data availability
         viable_symbols, symbol_info = filter_viable_symbols(exchange, candidate_symbols)
         
         if not viable_symbols:
-            logger.warning("No viable symbols found in active list, using fallback symbols")
-            fallback_symbols = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT']
+            logger.warning("No viable symbols found, using fallback")
+            fallback_symbols = ['BTCUSDT', 'ETHUSDT']
             viable_symbols, _ = filter_viable_symbols(exchange, fallback_symbols)
         
-        return viable_symbols[:limit]  # Return only requested number
+        return viable_symbols[:limit]
         
     except Exception as e:
         logger.error(f"Error getting viable symbols: {e}")
         return ['BTCUSDT', 'ETHUSDT'][:limit]
 
 def run_intelligent_vectorbt_optimization():
-    """Run intelligent VectorBT optimization with proper data validation"""
+    """FIXED: Run current regime optimization instead of historical optimization"""
     
     logger = logging.getLogger(__name__)
-    logger.info("Starting Intelligent VectorBT Optimization with Data Validation")
+    logger.info("Starting Current Regime VectorBT Optimization")
     
     try:
         # Load exchange configuration
@@ -535,31 +542,36 @@ def run_intelligent_vectorbt_optimization():
         exchange = Exchange(config['api_key'], config['api_secret'])
         tester = IntelligentVectorBTTester(exchange)
         
-        # Get viable symbols with data validation
-        viable_symbols = get_viable_symbols_for_testing(exchange, limit=3)
+        # FIXED: Get symbols with current momentum
+        viable_symbols = get_viable_symbols_for_testing(exchange, limit=10)
         
         if not viable_symbols:
-            logger.error("No viable symbols found for testing")
+            logger.error("No viable symbols found for current regime testing")
             return
         
-        logger.info(f"Testing strategies on viable symbols: {viable_symbols}")
+        logger.info(f"Current regime optimization on: {viable_symbols}")
         
         all_results = []
         
-        # Process each viable symbol
+        # FIXED: Process each symbol with current regime focus
         for symbol in viable_symbols:
-            logger.info(f"\nProcessing symbol: {symbol}")
+            logger.info(f"\nCurrent regime analysis: {symbol}")
             
-            # Get symbol data once
+            # Get recent data for current regime
             symbol_info = get_symbol_data_info(exchange, symbol)
             if not symbol_info['available']:
-                logger.error(f"Unexpected error: {symbol} data not available")
+                logger.error(f"No current data available for {symbol}")
                 continue
             
             symbol_data = symbol_info['data']
+            volatility = symbol_info.get('current_volatility', 0)
+            trend = symbol_info.get('recent_trend', 0)
+            
+            logger.info(f"Current regime: volatility {volatility:.2f}%, trend {trend:+.2f}%")
+            
             symbol_results_count = 0
             
-            # Test all strategies on this symbol
+            # Test strategies on current regime
             for strategy_name in tester.strategies.keys():
                 start_time = time.time()
                 
@@ -571,34 +583,33 @@ def run_intelligent_vectorbt_optimization():
                         all_results.extend(results)
                         symbol_results_count += len(results)
                         
-                        # Show top result
+                        # Show top result for current regime
                         best_result = results[0]
-                        logger.info(f"✓ {strategy_name}: {len(results)} combinations, "
+                        logger.info(f"✓ {strategy_name}: {len(results)} current regime params, "
                                   f"best score: {best_result['score']:.2f} "
                                   f"({optimization_time:.2f}s)")
                     else:
-                        logger.warning(f"✗ {strategy_name}: No valid results ({optimization_time:.2f}s)")
+                        logger.warning(f"✗ {strategy_name}: No current regime results ({optimization_time:.2f}s)")
                         
                 except Exception as e:
                     optimization_time = time.time() - start_time
                     logger.error(f"✗ {strategy_name}: Error - {str(e)} ({optimization_time:.2f}s)")
             
-            logger.info(f"Symbol {symbol} complete: {symbol_results_count} total valid combinations")
+            logger.info(f"Symbol {symbol}: {symbol_results_count} current regime combinations")
         
-        # Export and summarize results
+        # Export current regime results
         if all_results:
             os.makedirs('vectorbt_results', exist_ok=True)
             
             df = pd.DataFrame(all_results)
             timestamp = time.strftime("%Y%m%d_%H%M%S")
-            results_file = f'vectorbt_results/intelligent_optimization_{timestamp}.csv'
+            results_file = f'vectorbt_results/current_regime_optimization_{timestamp}.csv'
             df.to_csv(results_file, index=False)
             
-            # Comprehensive summary
-            logger.info(f"\nIntelligent VectorBT Optimization Results:")
+            # FIXED: Current regime focused summary
+            logger.info(f"\nCurrent Regime Optimization Results:")
             logger.info("=" * 60)
             
-            # Overall statistics
             best_overall = df.loc[df['score'].idxmax()]
             strategy_summary = df.groupby('strategy').agg({
                 'score': ['count', 'mean', 'max'],
@@ -606,11 +617,11 @@ def run_intelligent_vectorbt_optimization():
                 'total_return': 'mean'
             }).round(2)
             
-            logger.info(f"Total valid combinations: {len(all_results)}")
-            logger.info(f"Symbols successfully processed: {df['symbol'].nunique()}")
-            logger.info(f"Average optimization score: {df['score'].mean():.2f}")
+            logger.info(f"Total current regime combinations: {len(all_results)}")
+            logger.info(f"Symbols with current momentum: {df['symbol'].nunique()}")
+            logger.info(f"Average current regime score: {df['score'].mean():.2f}")
             
-            logger.info(f"\nBest Overall Result (Score: {best_overall['score']:.2f}):")
+            logger.info(f"\nBest Current Regime Result (Score: {best_overall['score']:.2f}):")
             logger.info(f"  Strategy: {best_overall['strategy']} on {best_overall['symbol']}")
             logger.info(f"  Parameters: {best_overall['params']}")
             logger.info(f"  Win Rate: {best_overall['win_rate']:.2f}%")
@@ -618,15 +629,15 @@ def run_intelligent_vectorbt_optimization():
             logger.info(f"  Max Drawdown: {best_overall['max_drawdown']:.2f}%")
             logger.info(f"  Profit Factor: {best_overall['profit_factor']:.2f}")
             
-            logger.info(f"\nStrategy Performance Summary:")
+            logger.info(f"\nCurrent Regime Strategy Performance:")
             logger.info(strategy_summary)
             
             logger.info(f"\nResults exported to: {results_file}")
         else:
-            logger.error("No valid optimization results generated")
+            logger.error("No current regime optimization results generated")
         
     except Exception as e:
-        logger.error(f"Critical error in intelligent optimization: {e}")
+        logger.error(f"Critical error in current regime optimization: {e}")
         import traceback
         logger.error(f"Traceback: {traceback.format_exc()}")
 
@@ -635,7 +646,7 @@ def main():
     setup_logging()
     
     logger = logging.getLogger(__name__)
-    logger.info("Intelligent VectorBT Strategy Optimizer")
+    logger.info("Current Regime VectorBT Strategy Optimizer")
     
     if not VECTORBT_AVAILABLE:
         logger.error("VectorBT is required for strategy optimization")

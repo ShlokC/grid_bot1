@@ -1,6 +1,6 @@
 """
-Fixed Adaptive Crypto Signal System - Complete Implementation with Signal-Based Exits
-Key fixes: Non-blocking signals + Technical signal-based exit conditions
+Fixed Adaptive Crypto Signal System - Current Regime Optimization
+FIXED: Uses current momentum optimization instead of historical optimization
 """
 
 import logging
@@ -60,42 +60,128 @@ class SignalParameters:
     optimization_score: float = 0.0
 
 class IntegratedWinRateOptimizer:
-    """Simplified WinRateOptimizer for background optimization"""
+    """FIXED: Current regime optimizer for real-time parameter optimization"""
     
     def __init__(self, symbol: str, strategy_type: str):
         self.symbol = symbol
         self.strategy_type = strategy_type
-        self.logger = logging.getLogger(f"{__name__}.WinRateOptimizer.{symbol}")
+        self.logger = logging.getLogger(f"{__name__}.CurrentRegimeOptimizer.{symbol}")
         
-        self.optimization_timeout = 60  # Reduced timeout
-        self.n_trials = 50  # Reduced trials for faster optimization
-        self.min_trades_threshold = 10
+        # FIXED: Current regime optimization settings
+        self.optimization_timeout = 30  # Reduced from 60 for faster optimization
+        self.n_trials = 20              # Reduced from 50 for current regime focus
+        self.min_trades_threshold = 3   # Reduced from 10 for current momentum
+        
+        # FIXED: Current regime parameter ranges (focused like test_strategies.py)
+        self.current_regime_params = {
+            'qqe_supertrend_fixed': {
+                'qqe_length': [8, 10, 12],          # Reduced from wider range
+                'qqe_smooth': [3, 5],               # Focused range
+                'supertrend_period': [6, 10, 12],   # Current momentum focused
+                'supertrend_multiplier': [2.2, 2.6, 3.0]
+            },
+            'qqe_supertrend_fast': {
+                'qqe_length': [6, 8, 10],           # Faster for current regime
+                'qqe_smooth': [2, 3],
+                'supertrend_period': [4, 6, 8],
+                'supertrend_multiplier': [2.0, 2.4, 2.8]
+            },
+            'rsi_macd': {
+                'rsi_length': [12, 14, 16],         # Focused range
+                'macd_fast': [10, 12],
+                'macd_slow': [24, 26],
+                'macd_signal': [8, 9]
+            },
+            'tsi_vwap': {
+                'tsi_fast': [6, 8],                 # Current momentum focused
+                'tsi_slow': [15, 21],
+                'tsi_signal': [4, 6]
+            }
+        }
         
     def optimize_for_winrate(self, historical_data: list, current_params: SignalParameters) -> Tuple[Dict, float, Dict]:
-        """Simple grid search optimization for non-blocking operation"""
+        """FIXED: Current regime optimization using recent data only"""
         try:
             if not historical_data or len(historical_data) < 50:
                 return self._params_to_dict(current_params), 0.0, {}
             
+            # FIXED: Use only recent data for current regime optimization (like test_strategies.py)
+            recent_data = historical_data[-150:] if len(historical_data) > 150 else historical_data
+            
+            self.logger.info(f"Current regime optimization: {len(recent_data)} recent candles")
+            
             best_params = None
             best_score = current_params.accuracy
             
-            # Simple parameter ranges for quick optimization
+            # FIXED: Use focused parameter combinations for current regime
+            param_ranges = self.current_regime_params.get(self.strategy_type, {})
+            if not param_ranges:
+                return self._params_to_dict(current_params), 0.0, {}
+            
+            # FIXED: Current regime parameter testing (similar to test_strategies.py approach)
             if 'qqe' in self.strategy_type.lower():
                 param_combinations = [
-                    (10, 4, 8, 2.5), (12, 5, 10, 2.8), (15, 6, 12, 3.0)
+                    (ql, qs, sp, sm) for ql in param_ranges.get('qqe_length', [12])
+                    for qs in param_ranges.get('qqe_smooth', [5])
+                    for sp in param_ranges.get('supertrend_period', [10])
+                    for sm in param_ranges.get('supertrend_multiplier', [2.8])
                 ]
                 
-                for qqe_len, qqe_smooth, st_period, st_mult in param_combinations:
+                for ql, qs, sp, sm in param_combinations:
                     test_params = SignalParameters(
                         strategy_type=self.strategy_type,
-                        qqe_length=qqe_len,
-                        qqe_smooth=qqe_smooth,
-                        supertrend_period=st_period,
-                        supertrend_multiplier=st_mult
+                        qqe_length=ql,
+                        qqe_smooth=qs,
+                        supertrend_period=sp,
+                        supertrend_multiplier=sm
                     )
                     
-                    score = self._simple_backtest_winrate(historical_data, test_params)
+                    # FIXED: Current regime scoring
+                    score = self._current_regime_backtest(recent_data, test_params)
+                    if score > best_score:
+                        best_score = score
+                        best_params = self._params_to_dict(test_params)
+                        
+            elif self.strategy_type == 'rsi_macd':
+                param_combinations = [
+                    (rl, mf, ms, msig) for rl in param_ranges.get('rsi_length', [14])
+                    for mf in param_ranges.get('macd_fast', [12])
+                    for ms in param_ranges.get('macd_slow', [26])
+                    for msig in param_ranges.get('macd_signal', [9])
+                    if mf < ms
+                ]
+                
+                for rl, mf, ms, msig in param_combinations:
+                    test_params = SignalParameters(
+                        strategy_type=self.strategy_type,
+                        rsi_length=rl,
+                        macd_fast=mf,
+                        macd_slow=ms,
+                        macd_signal=msig
+                    )
+                    
+                    score = self._current_regime_backtest(recent_data, test_params)
+                    if score > best_score:
+                        best_score = score
+                        best_params = self._params_to_dict(test_params)
+                        
+            elif self.strategy_type == 'tsi_vwap':
+                param_combinations = [
+                    (tf, ts, tsig) for tf in param_ranges.get('tsi_fast', [8])
+                    for ts in param_ranges.get('tsi_slow', [15])
+                    for tsig in param_ranges.get('tsi_signal', [6])
+                    if tf < ts
+                ]
+                
+                for tf, ts, tsig in param_combinations:
+                    test_params = SignalParameters(
+                        strategy_type=self.strategy_type,
+                        tsi_fast=tf,
+                        tsi_slow=ts,
+                        tsi_signal=tsig
+                    )
+                    
+                    score = self._current_regime_backtest(recent_data, test_params)
                     if score > best_score:
                         best_score = score
                         best_params = self._params_to_dict(test_params)
@@ -103,50 +189,73 @@ class IntegratedWinRateOptimizer:
             return best_params or self._params_to_dict(current_params), best_score, {}
             
         except Exception as e:
-            self.logger.error(f"Optimization error: {e}")
+            self.logger.error(f"Current regime optimization error: {e}")
             return self._params_to_dict(current_params), 0.0, {}
     
-    def _simple_backtest_winrate(self, historical_data: list, test_params: SignalParameters) -> float:
-        """Simple backtest for parameter evaluation"""
+    def _current_regime_backtest(self, recent_data: list, test_params: SignalParameters) -> float:
+        """FIXED: Current regime backtesting using recent momentum patterns"""
         try:
-            df = pd.DataFrame(historical_data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            df = pd.DataFrame(recent_data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
             for col in ['open', 'high', 'low', 'close', 'volume']:
                 df[col] = df[col].astype(float)
             
+            if len(df) < 30:
+                return 0.0
+            
             signals = []
-            for i in range(20, len(df)):
+            # FIXED: Focus on recent signals only (like test_strategies.py)
+            start_idx = max(20, len(df) - 100)  # Only test recent 100 candles
+            
+            for i in range(start_idx, len(df)):
                 current_df = df.iloc[:i+1]
-                signal = self._generate_test_signal(current_df, test_params)
+                signal = self._generate_current_regime_signal(current_df, test_params)
                 if signal != 'none':
                     signals.append({'signal': signal, 'price': current_df['close'].iloc[-1], 'index': i})
             
-            if len(signals) < 5:
+            if len(signals) < self.min_trades_threshold:
                 return 0.0
             
+            # FIXED: Current regime evaluation (shorter time horizon)
             wins = 0
             total = 0
             
             for signal_data in signals:
-                if signal_data['index'] + 5 < len(df):
-                    future_price = df['close'].iloc[signal_data['index'] + 5]
+                if signal_data['index'] + 3 < len(df):  # Reduced from 5 to 3 for faster evaluation
+                    future_price = df['close'].iloc[signal_data['index'] + 3]
                     price_change = ((future_price - signal_data['price']) / signal_data['price']) * 100
                     
-                    if signal_data['signal'] == 'buy' and price_change > 0.2:
+                    # FIXED: Current regime success criteria (tighter thresholds)
+                    if signal_data['signal'] == 'buy' and price_change > 0.15:  # Reduced from 0.2
                         wins += 1
-                    elif signal_data['signal'] == 'sell' and price_change < -0.2:
+                    elif signal_data['signal'] == 'sell' and price_change < -0.15:  # Reduced from -0.2
                         wins += 1
                     total += 1
             
-            return (wins / total) * 100.0 if total > 0 else 0.0
+            if total == 0:
+                return 0.0
+            
+            # FIXED: Current regime scoring (prioritizes consistency over raw returns)
+            win_rate = (wins / total) * 100.0
+            
+            # FIXED: Apply current regime bonus for recent effectiveness
+            regime_bonus = 0
+            if len(signals) >= 5:  # Bonus for sufficient signal generation
+                regime_bonus = 5.0
+            if win_rate > 40:  # Bonus for good current performance
+                regime_bonus += 10.0
+                
+            return min(win_rate + regime_bonus, 100.0)
             
         except Exception:
             return 0.0
     
-    def _generate_test_signal(self, df: pd.DataFrame, test_params: SignalParameters) -> str:
-        """Generate test signal for optimization"""
+    def _generate_current_regime_signal(self, df: pd.DataFrame, test_params: SignalParameters) -> str:
+        """FIXED: Generate signals using current regime parameters"""
         try:
             if 'qqe' in self.strategy_type.lower():
-                qqe_result = ta.qqe(df['close'], length=test_params.qqe_length, smooth=test_params.qqe_smooth)
+                qqe_result = ta.qqe(df['close'], 
+                                  length=test_params.qqe_length, 
+                                  smooth=test_params.qqe_smooth)
                 st_result = ta.supertrend(df['high'], df['low'], df['close'], 
                                         length=test_params.supertrend_period, 
                                         multiplier=test_params.supertrend_multiplier)
@@ -156,15 +265,49 @@ class IntegratedWinRateOptimizer:
                     
                     dir_col = next((col for col in st_result.columns if 'SUPERTd' in col), None)
                     if dir_col:
-                        rsi_ma = qqe_result.iloc[-1, 1]  # Corresponds to QQE_..._RSIMA or RsiMa
-                        qqe_line = qqe_result.iloc[-1, 0] # Corresponds to QQE_... or FastAtrRsiTL
-                        
+                        rsi_ma = qqe_result.iloc[-1, 1]
+                        qqe_line = qqe_result.iloc[-1, 0]
                         st_dir = st_result[dir_col].iloc[-1]
 
                         if rsi_ma > qqe_line and st_dir == 1:
                             return 'buy'
                         elif qqe_line > rsi_ma and st_dir != 1:
                             return 'sell'
+                            
+            elif self.strategy_type == 'rsi_macd':
+                rsi = ta.rsi(df['close'], length=test_params.rsi_length)
+                macd = ta.macd(df['close'], 
+                             fast=test_params.macd_fast,
+                             slow=test_params.macd_slow,
+                             signal=test_params.macd_signal)
+                
+                if rsi is not None and macd is not None and not macd.empty and len(macd.columns) >= 3:
+                    rsi_val = rsi.iloc[-1]
+                    macd_line = macd.iloc[-1, 0]
+                    macd_signal = macd.iloc[-1, 2]
+                    
+                    if rsi_val < 30 and macd_line > macd_signal:
+                        return 'buy'
+                    elif rsi_val > 70 and macd_line < macd_signal:
+                        return 'sell'
+                        
+            elif self.strategy_type == 'tsi_vwap':
+                tsi = ta.tsi(df['close'], 
+                           fast=test_params.tsi_fast,
+                           slow=test_params.tsi_slow,
+                           signal=test_params.tsi_signal)
+                vwap = ta.vwap(df['high'], df['low'], df['close'], df['volume'])
+                
+                if tsi is not None and not tsi.empty and vwap is not None:
+                    tsi_line = tsi.iloc[-1, 0]
+                    tsi_signal = tsi.iloc[-1, 1] if len(tsi.columns) > 1 else 0
+                    price = df['close'].iloc[-1]
+                    vwap_val = vwap.iloc[-1]
+                    
+                    if tsi_line > tsi_signal and price > vwap_val:
+                        return 'buy'
+                    elif tsi_line < tsi_signal and price < vwap_val:
+                        return 'sell'
             
             return 'none'
         except Exception:
@@ -188,7 +331,7 @@ class IntegratedWinRateOptimizer:
         }
 
 class AdaptiveCryptoSignals:
-    """COMPLETE: Non-blocking signal generation with proper technical exit conditions"""
+    """FIXED: Current regime adaptive signals with pre-order optimization"""
     
     def __init__(self, symbol: str, config_file: str = "data/crypto_signal_configs.json", strategy_type: str = 'qqe_supertrend_fixed'):
         self.logger = logging.getLogger(f"{__name__}.{symbol}")
@@ -205,56 +348,65 @@ class AdaptiveCryptoSignals:
         self._params_snapshot = copy.deepcopy(self.params)
         self._snapshot_lock = threading.RLock()
         
-        # Initialize integrated WinRateOptimizer
+        # FIXED: Initialize current regime optimizer (uses focused parameter ranges)
         self.win_rate_optimizer = IntegratedWinRateOptimizer(symbol, strategy_type)
         
-        # Signal control with faster cooldown for non-blocking
+        # FIXED: Faster signal control for current regime
         self.last_signal = 'none'
         self.last_signal_time = 0
-        self.signal_cooldown = 5
+        self.signal_cooldown = 3  # Reduced from 5 for current momentum
         
         # FIXED: Store last calculated indicators for exit evaluation
         self._last_calculated_indicators = {}
         self._indicator_lock = threading.RLock()
         
-        # FIXED: Optimization control with proper isolation
+        # FIXED: Current regime optimization control
         self.optimization_in_progress = False
         self.optimization_lock = threading.RLock()
         self.last_optimization = time.time()
         
-        # FIXED: Indicator calculation timeout
-        self.indicator_timeout = 2.0
+        # FIXED: Current regime settings
+        self.indicator_timeout = 1.5  # Reduced from 2.0
         
-        # Enhanced optimization settings
-        self.min_signals_for_optimization = 15
-        self.optimization_interval = 180
-        self.win_rate_threshold = 40.0
+        # FIXED: Current regime optimization triggers
+        self.min_signals_for_optimization = 8    # Reduced from 15
+        self.optimization_interval = 120         # Reduced from 180
+        self.win_rate_threshold = 35.0           # Reduced from 40.0
         
-        # FIXED: Simplified cache with size limit
+        # FIXED: Current data cache settings
         self._historical_data_cache = None
         self._cache_timestamp = 0
-        self._cache_validity = 300
-        self._max_cache_size = 500
+        self._cache_validity = 180  # Reduced from 300
+        self._max_cache_size = 200  # Reduced from 500
         
-        self.logger.info(f"COMPLETE: Non-blocking Adaptive Crypto Signals for {strategy_type} on {symbol}")
+        self.logger.info(f"CURRENT REGIME: Adaptive Crypto Signals for {strategy_type} on {symbol}")
 
     def get_technical_direction(self, exchange) -> str:
-        """FIXED: Non-blocking signal generation with parameter snapshots"""
+        """FIXED: TRUE pre-order optimization - parameters optimized BEFORE signal generation"""
         try:
             current_time = time.time()
             if current_time - self.last_signal_time < self.signal_cooldown:
                 return 'none'
             
-            # FIXED: Quick data fetch with size limit
-            ohlcv_data = exchange.get_ohlcv(self.symbol, timeframe='3m', limit=100)
-            if not ohlcv_data or len(ohlcv_data) < 30:
+            # FIXED: Get recent data for current regime analysis
+            ohlcv_data = exchange.get_ohlcv(self.symbol, timeframe='3m', limit=200)
+            if not ohlcv_data or len(ohlcv_data) < 50:
                 return 'none'
             
-            # FIXED: Create thread-safe parameter snapshot for this signal generation
+            # FIXED: TRUE PRE-ORDER OPTIMIZATION - Wait for completion before proceeding
+            if self._should_optimize_before_signal(ohlcv_data):
+                self.logger.info(f"PRE-ORDER OPTIMIZATION: Optimizing parameters before signal generation")
+                optimized = self._execute_pre_order_optimization(ohlcv_data)
+                if optimized:
+                    self.logger.info(f"PRE-ORDER OPTIMIZATION: Parameters updated before signal")
+                else:
+                    self.logger.warning(f"PRE-ORDER OPTIMIZATION: Using existing parameters")
+            
+            # FIXED: Use current parameters (either existing or newly optimized)
             with self._snapshot_lock:
                 current_params = copy.deepcopy(self._params_snapshot)
             
-            # FIXED: Fast DataFrame conversion with timeout protection
+            # FIXED: Generate signal with guaranteed current regime parameters
             signal, indicators = self._generate_signal_with_indicators(ohlcv_data, current_params)
             
             # FIXED: Store indicators for exit evaluation
@@ -266,34 +418,141 @@ class AdaptiveCryptoSignals:
                 self._track_signal_fast(signal, float(ohlcv_data[-1][4]))
                 self.last_signal = signal
                 self.last_signal_time = current_time
-                self.logger.info(f"SIGNAL: {signal.upper()} @ ${float(ohlcv_data[-1][4]):.6f}")
+                self.logger.info(f"OPTIMIZED SIGNAL: {signal.upper()} @ ${float(ohlcv_data[-1][4]):.6f}")
             
-            # FIXED: Non-blocking cache update
-            if not self.optimization_in_progress:
-                self._update_cache_if_needed(ohlcv_data)
-            
-            # FIXED: Trigger background optimization without blocking
-            if self._should_optimize_quick_check():
-                self._trigger_non_blocking_optimization()
+            # FIXED: Update cache for current regime
+            self._update_cache_if_needed(ohlcv_data)
             
             return signal
             
         except Exception as e:
-            self.logger.error(f"Error generating signal: {e}")
+            self.logger.error(f"Error in current regime signal generation: {e}")
             return 'none'
 
-    def _generate_signal_with_indicators(self, ohlcv_data: list, params) -> Tuple[str, Dict]:
-        """FIXED: Generate signal and return indicators for exit evaluation"""
+    def _should_optimize_before_signal(self, ohlcv_data: list) -> bool:
+        """FIXED: Smart pre-order optimization triggers - only when really needed"""
         try:
-            # Fast DataFrame conversion
+            current_time = time.time()
+            
+            # FIXED: Don't optimize if already in progress
+            if self.optimization_in_progress:
+                return False
+            
+            # FIXED: Don't optimize too frequently (minimum 3 minutes between optimizations)
+            if current_time - self.last_optimization < 180:
+                return False
+            
+            # FIXED: Need minimum signals for meaningful optimization
+            if len(self.signal_performance) < self.min_signals_for_optimization:
+                return False
+            
+            # FIXED: Priority triggers for pre-order optimization
+            
+            # TRIGGER 1: Low accuracy (immediate optimization needed)
+            if hasattr(self.params, 'accuracy') and self.params.accuracy < self.win_rate_threshold:
+                self.logger.info(f"PRE-ORDER TRIGGER: Low accuracy {self.params.accuracy:.1f}% < {self.win_rate_threshold}%")
+                return True
+            
+            # TRIGGER 2: No optimization yet but have sufficient signals
+            if self.last_optimization == 0 and len(self.signal_performance) >= 10:
+                self.logger.info(f"PRE-ORDER TRIGGER: Initial optimization needed ({len(self.signal_performance)} signals)")
+                return True
+            
+            # TRIGGER 3: Long time since last optimization (5+ minutes) and recent poor performance
+            time_since_opt = current_time - self.last_optimization
+            if time_since_opt > 300:  # 5 minutes
+                # Check recent signal performance
+                recent_signals = list(self.signal_performance)[-5:]
+                if len(recent_signals) >= 3:
+                    recent_correct = sum(1 for s in recent_signals if s.get('evaluated') and s.get('correct'))
+                    recent_total = sum(1 for s in recent_signals if s.get('evaluated'))
+                    if recent_total >= 2:
+                        recent_accuracy = (recent_correct / recent_total) * 100
+                        if recent_accuracy < 30:  # Recent poor performance
+                            self.logger.info(f"PRE-ORDER TRIGGER: Poor recent performance {recent_accuracy:.1f}%")
+                            return True
+            
+            # TRIGGER 4: Have new market data and parameters haven't been updated recently
+            if len(ohlcv_data) >= 150 and time_since_opt > 600:  # 10 minutes
+                self.logger.info(f"PRE-ORDER TRIGGER: Stale parameters ({time_since_opt/60:.1f} min old)")
+                return True
+            
+            return False
+            
+        except Exception as e:
+            self.logger.error(f"Error in pre-order optimization check: {e}")
+            return False
+
+    def _execute_pre_order_optimization(self, ohlcv_data: list) -> bool:
+        """FIXED: SYNCHRONOUS pre-order optimization - completes BEFORE signal generation"""
+        try:
+            with self.optimization_lock:
+                if self.optimization_in_progress:
+                    self.logger.info(f"PRE-ORDER OPTIMIZATION: Already in progress, using existing parameters")
+                    return False
+                self.optimization_in_progress = True
+            
+            try:
+                start_time = time.time()
+                self.logger.info(f"PRE-ORDER OPTIMIZATION: Starting synchronous optimization for {self.symbol}")
+                
+                # FIXED: SYNCHRONOUS optimization using current data
+                current_data = ohlcv_data.copy()
+                
+                if current_data and len(current_data) >= 100:
+                    best_params, best_score, opt_details = self.win_rate_optimizer.optimize_for_winrate(
+                        current_data, self.params
+                    )
+                    
+                    # FIXED: Apply optimization if improvement found
+                    if best_params and best_score > self.params.accuracy + 2.0:
+                        old_accuracy = self.params.accuracy
+                        self._update_optimized_parameters_safe(best_params, best_score)
+                        
+                        # FIXED: Update snapshot immediately for current signal
+                        with self._snapshot_lock:
+                            self._params_snapshot = copy.deepcopy(self.params)
+                        
+                        optimization_time = time.time() - start_time
+                        self.logger.info(f"PRE-ORDER OPTIMIZATION: Parameters updated in {optimization_time:.2f}s")
+                        self.logger.info(f"PRE-ORDER OPTIMIZATION: Accuracy {old_accuracy:.1f}% -> {best_score:.1f}%")
+                        
+                        self.last_optimization = time.time()
+                        return True
+                    else:
+                        optimization_time = time.time() - start_time
+                        self.logger.info(f"PRE-ORDER OPTIMIZATION: No improvement found in {optimization_time:.2f}s")
+                        self.last_optimization = time.time()
+                        return False
+                else:
+                    self.logger.warning(f"PRE-ORDER OPTIMIZATION: Insufficient data ({len(current_data)} candles)")
+                    return False
+                    
+            except Exception as e:
+                self.logger.error(f"PRE-ORDER OPTIMIZATION: Error during optimization: {e}")
+                return False
+            finally:
+                with self.optimization_lock:
+                    self.optimization_in_progress = False
+                    
+        except Exception as e:
+            self.logger.error(f"PRE-ORDER OPTIMIZATION: Critical error: {e}")
+            with self.optimization_lock:
+                self.optimization_in_progress = False
+            return False
+
+    def _generate_signal_with_indicators(self, ohlcv_data: list, params) -> Tuple[str, Dict]:
+        """FIXED: Generate signal using current regime optimized parameters"""
+        try:
+            # FIXED: Fast DataFrame conversion for current regime
             df = pd.DataFrame(ohlcv_data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
             for col in ['open', 'high', 'low', 'close', 'volume']:
                 df[col] = df[col].astype(float)
             
-            if len(df) < 20:
+            if len(df) < 30:  # Reduced from 20
                 return 'none', {}
             
-            # FIXED: Calculate indicators and signal together
+            # FIXED: Use current regime parameters for signal generation
             if self.strategy_type in ['qqe_supertrend_fixed', 'qqe_supertrend_fast']:
                 return self._qqe_supertrend_signal_with_indicators(df, params)
             elif self.strategy_type == 'rsi_macd':
@@ -308,13 +567,13 @@ class AdaptiveCryptoSignals:
             return 'none', {}
 
     def _qqe_supertrend_signal_with_indicators(self, df: pd.DataFrame, params) -> Tuple[str, Dict]:
-        """FIXED: QQE + Supertrend signal with indicators for exit evaluation"""
+        """QQE + Supertrend signal with indicators for exit evaluation"""
         try:
             # Calculate indicators
             qqe_result = ta.qqe(df['close'], 
-                              length=params.qqe_length,
-                              smooth=params.qqe_smooth,
-                              factor=params.qqe_factor)
+                            length=params.qqe_length,
+                            smooth=params.qqe_smooth,
+                            factor=params.qqe_factor)
             
             if qqe_result is None or qqe_result.empty or len(qqe_result.columns) < 2:
                 return 'none', {}
@@ -331,26 +590,71 @@ class AdaptiveCryptoSignals:
             if not dir_col:
                 return 'none', {}
             
-            # Get latest values
-            rsi_ma = qqe_result.iloc[-1, 1]  # Corresponds to QQE_..._RSIMA or RsiMa
-            qqe_line = qqe_result.iloc[-1, 0] # Corresponds to QQE_... or FastAtrRsiTL
-            st_dir = st_result[dir_col].iloc[-1]
+            # Need at least 5 candles for lookback analysis
+            lookback_period = min(5, len(qqe_result) - 1)
+            if lookback_period < 1:
+                return 'none', {}
+            
+            # Get current values
+            rsi_ma_current = qqe_result.iloc[-1, 1]
+            qqe_line_current = qqe_result.iloc[-1, 0]
+            st_dir_current = st_result[dir_col].iloc[-1]
             
             # Store indicators for exit evaluation
             indicators = {
-                'qqe_value': float(rsi_ma),      # RsiMa
-                'qqe_signal': float(qqe_line),   # FastAtrRsiTL
-                'st_direction': int(st_dir),
+                'qqe_value': float(rsi_ma_current),
+                'qqe_signal': float(qqe_line_current),
+                'st_direction': int(st_dir_current),
                 'current_price': float(df['close'].iloc[-1])
             }
             
-            # Generate signal
-            qqe_bullish = rsi_ma > qqe_line
-            st_bullish = st_dir == 1
+            # Current states
+            qqe_currently_bullish = rsi_ma_current > qqe_line_current
+            qqe_currently_bearish = rsi_ma_current <= qqe_line_current
+            st_currently_positive = st_dir_current == 1
+            st_currently_negative = st_dir_current == -1
             
-            if qqe_bullish and st_bullish:
+            # Check for recent QQE change to bullish within lookback period
+            qqe_recently_turned_bullish = False
+            for i in range(1, lookback_period + 1):
+                rsi_ma_past = qqe_result.iloc[-1-i, 1]
+                qqe_line_past = qqe_result.iloc[-1-i, 0]
+                if rsi_ma_past <= qqe_line_past and qqe_currently_bullish:
+                    qqe_recently_turned_bullish = True
+                    break
+            
+            # Check for recent QQE change to bearish within lookback period
+            qqe_recently_turned_bearish = False
+            for i in range(1, lookback_period + 1):
+                rsi_ma_past = qqe_result.iloc[-1-i, 1]
+                qqe_line_past = qqe_result.iloc[-1-i, 0]
+                if rsi_ma_past > qqe_line_past and qqe_currently_bearish:
+                    qqe_recently_turned_bearish = True
+                    break
+            
+            # Check for recent ST change to positive within lookback period
+            st_recently_turned_positive = False
+            for i in range(1, lookback_period + 1):
+                st_dir_past = st_result[dir_col].iloc[-1-i]
+                if st_dir_past != 1 and st_currently_positive:
+                    st_recently_turned_positive = True
+                    break
+            
+            # Check for recent ST change to negative within lookback period
+            st_recently_turned_negative = False
+            for i in range(1, lookback_period + 1):
+                st_dir_past = st_result[dir_col].iloc[-1-i]
+                if st_dir_past != -1 and st_currently_negative:
+                    st_recently_turned_negative = True
+                    break
+            
+            # Generate signals when both conditions align
+            # LONG: ST positive AND QQE recently turned bullish OR QQE bullish AND ST recently turned positive
+            if st_currently_positive and (qqe_recently_turned_bullish or (qqe_currently_bullish and st_recently_turned_positive)):
                 return 'buy', indicators
-            elif not qqe_bullish and not st_bullish:
+            
+            # SHORT: ST negative AND QQE recently turned bearish OR QQE bearish AND ST recently turned negative  
+            elif st_currently_negative and (qqe_recently_turned_bearish or (qqe_currently_bearish and st_recently_turned_negative)):
                 return 'sell', indicators
             
             return 'none', indicators
@@ -358,9 +662,8 @@ class AdaptiveCryptoSignals:
         except Exception as e:
             self.logger.error(f"QQE+ST calculation error: {e}")
             return 'none', {}
-
     def _rsi_macd_signal_with_indicators(self, df: pd.DataFrame, params) -> Tuple[str, Dict]:
-        """FIXED: RSI + MACD signal with indicators for exit evaluation"""
+        """FIXED: RSI + MACD with current regime parameters"""
         try:
             rsi_result = ta.rsi(df['close'], length=params.rsi_length)
             if rsi_result is None:
@@ -398,7 +701,7 @@ class AdaptiveCryptoSignals:
             return 'none', {}
 
     def _tsi_vwap_signal_with_indicators(self, df: pd.DataFrame, params) -> Tuple[str, Dict]:
-        """FIXED: TSI + VWAP signal with indicators for exit evaluation"""
+        """FIXED: TSI + VWAP with current regime parameters"""
         try:
             tsi_result = ta.tsi(df['close'], 
                               fast=params.tsi_fast,
@@ -440,7 +743,7 @@ class AdaptiveCryptoSignals:
             return 'none', {}
 
     def evaluate_exit_conditions(self, position_side: str, entry_price: float, current_price: float) -> Dict:
-        """COMPLETE: Exit evaluation using BOTH technical signals AND percentage-based stops"""
+        """Current regime exit evaluation using optimized parameters"""
         try:
             result = {'should_exit': False, 'exit_reason': '', 'exit_urgency': 'none'}
             
@@ -496,27 +799,27 @@ class AdaptiveCryptoSignals:
             return {'should_exit': False, 'exit_reason': 'Error', 'exit_urgency': 'none'}
 
     def _check_technical_exit_conditions(self, position_side: str, indicators: Dict, pnl_pct: float) -> Dict:
-        """FIXED: Strategy-specific technical exit conditions"""
+        """Strategy-specific technical exit conditions using current regime indicators"""
         try:
             result = {'should_exit': False, 'exit_reason': '', 'exit_urgency': 'none'}
             
             if self.strategy_type in ['qqe_supertrend_fixed', 'qqe_supertrend_fast']:
                 # QQE + Supertrend exit logic
-                if all(key in indicators for key in ['qqe_value', 'qqe_signal', 'st_direction']):
-                    qqe_bearish = indicators['qqe_value'] > indicators['qqe_signal']  # QQE turned bearish
-                    st_bearish = indicators['st_direction'] != 1  # Supertrend turned bearish
+                if all(key in indicators for key in ['rsi_ma', 'qqe_signal', 'st_direction']):
+                    qqe_bearish = indicators['qqe_signal'] > indicators['rsi_ma'] 
+                    st_bearish = indicators['st_direction'] != 1
                     
-                    if position_side == 'long' and qqe_bearish and st_bearish:
+                    if position_side == 'long' and (qqe_bearish or st_bearish):
                         result.update({
                             'should_exit': True,
                             'exit_reason': f"QQE+ST bearish reversal (PnL: {pnl_pct:.2f}%)",
                             'exit_urgency': 'normal'
                         })
                     elif position_side == 'short':
-                        qqe_bullish = indicators['qqe_signal'] > indicators['qqe_value']  # QQE turned bullish
-                        st_bullish = indicators['st_direction'] == 1  # Supertrend turned bullish
+                        qqe_bullish = indicators['rsi_ma'] > indicators['qqe_signal']
+                        st_bullish = indicators['st_direction'] == 1
                         
-                        if qqe_bullish and st_bullish:
+                        if qqe_bullish or st_bullish:
                             result.update({
                                 'should_exit': True,
                                 'exit_reason': f"QQE+ST bullish reversal (PnL: {pnl_pct:.2f}%)",
@@ -575,10 +878,11 @@ class AdaptiveCryptoSignals:
             return {'should_exit': False, 'exit_reason': 'Technical exit error', 'exit_urgency': 'none'}
 
     def _update_cache_if_needed(self, ohlcv_data: list):
-        """FIXED: Non-blocking cache update with size limit"""
+        """FIXED: Current regime cache update with recent data focus"""
         try:
             current_time = time.time()
             if current_time - self._cache_timestamp > self._cache_validity:
+                # FIXED: Cache only recent data for current regime
                 if len(ohlcv_data) > self._max_cache_size:
                     self._historical_data_cache = ohlcv_data[-self._max_cache_size:]
                 else:
@@ -587,72 +891,8 @@ class AdaptiveCryptoSignals:
         except Exception:
             pass
 
-    def _should_optimize_quick_check(self) -> bool:
-        """FIXED: Quick optimization check without blocking operations"""
-        try:
-            current_time = time.time()
-            
-            if self.optimization_in_progress:
-                return False
-            
-            if current_time - self.last_optimization < self.optimization_interval:
-                return False
-            
-            if len(self.signal_performance) < self.min_signals_for_optimization:
-                return False
-            
-            if hasattr(self.params, 'accuracy') and self.params.accuracy < self.win_rate_threshold:
-                return True
-            
-            return False
-            
-        except Exception:
-            return False
-
-    def _trigger_non_blocking_optimization(self):
-        """FIXED: Truly non-blocking optimization trigger"""
-        try:
-            with self.optimization_lock:
-                if self.optimization_in_progress:
-                    return
-                self.optimization_in_progress = True
-            
-            def isolated_optimization():
-                try:
-                    cached_data = None
-                    if self._historical_data_cache:
-                        cached_data = self._historical_data_cache.copy()
-                    
-                    if cached_data and len(cached_data) >= 50:
-                        best_params, best_score, opt_details = self.win_rate_optimizer.optimize_for_winrate(
-                            cached_data, self.params
-                        )
-                        
-                        if best_params and best_score > self.params.accuracy + 3.0:
-                            self._update_optimized_parameters_safe(best_params, best_score)
-                            
-                            with self._snapshot_lock:
-                                self._params_snapshot = copy.deepcopy(self.params)
-                            
-                            self.logger.info(f"Optimization: +{best_score - self.params.accuracy:.1f}% improvement")
-                    
-                    self.last_optimization = time.time()
-                    
-                except Exception as e:
-                    self.logger.error(f"Background optimization error: {e}")
-                finally:
-                    with self.optimization_lock:
-                        self.optimization_in_progress = False
-            
-            opt_thread = threading.Thread(target=isolated_optimization, daemon=True)
-            opt_thread.start()
-            
-        except Exception as e:
-            with self.optimization_lock:
-                self.optimization_in_progress = False
-
     def _update_optimized_parameters_safe(self, best_params: Dict, best_score: float):
-        """FIXED: Thread-safe parameter update"""
+        """Thread-safe parameter update"""
         try:
             for param_name, param_value in best_params.items():
                 if hasattr(self.params, param_name):
@@ -667,7 +907,7 @@ class AdaptiveCryptoSignals:
             self.logger.error(f"Error updating parameters: {e}")
 
     def _track_signal_fast(self, signal: str, price: float):
-        """FIXED: Fast signal tracking without blocking operations"""
+        """Fast signal tracking for current regime"""
         try:
             signal_data = {
                 'signal': signal,
@@ -678,22 +918,22 @@ class AdaptiveCryptoSignals:
             }
             self.signal_performance.append(signal_data)
             
-            if len(self.signal_performance) > 100:
-                self.signal_performance = deque(list(self.signal_performance)[-50:], maxlen=50)
+            if len(self.signal_performance) > 50:  # Reduced from 100
+                self.signal_performance = deque(list(self.signal_performance)[-30:], maxlen=50)
             
-            if len(self.signal_performance) % 5 == 0:
+            if len(self.signal_performance) % 3 == 0:  # More frequent evaluation
                 self._evaluate_signals_quick()
                 
         except Exception:
             pass
 
     def _evaluate_signals_quick(self):
-        """FIXED: Quick signal evaluation without blocking"""
+        """FIXED: Quick current regime signal evaluation"""
         try:
             current_time = time.time()
-            evaluation_delay = 180
+            evaluation_delay = 120  # Reduced from 180 for faster evaluation
             
-            recent_signals = list(self.signal_performance)[-10:]
+            recent_signals = list(self.signal_performance)[-8:]  # Reduced from 10
             
             for signal_data in recent_signals:
                 if signal_data.get('evaluated', False):
@@ -706,10 +946,11 @@ class AdaptiveCryptoSignals:
                 if price_diff > 0:
                     price_change_pct = ((recent_signals[-1]['price'] - signal_data['price']) / signal_data['price']) * 100
                     
+                    # FIXED: Current regime success criteria
                     if signal_data['signal'] == 'buy':
-                        signal_data['correct'] = price_change_pct > 0.3
+                        signal_data['correct'] = price_change_pct > 0.2  # Slightly higher threshold
                     elif signal_data['signal'] == 'sell':
-                        signal_data['correct'] = price_change_pct < -0.3
+                        signal_data['correct'] = price_change_pct < -0.2
                     
                     signal_data['evaluated'] = True
             
@@ -757,11 +998,32 @@ class AdaptiveCryptoSignals:
                             optimization_score=strategy_cfg.get('optimization_score', 0.0)
                         )
                         
+        except json.JSONDecodeError as e:
+            self.logger.error(f"Corrupted JSON config file: {e}")
+            self._handle_corrupted_config_file()
         except Exception as e:
             self.logger.error(f"Error loading config: {e}")
         
         return SignalParameters(strategy_type=self.strategy_type)
-
+    def _handle_corrupted_config_file(self):
+        """Handle corrupted config file by backing up and recreating"""
+        try:
+            if os.path.exists(self.config_file):
+                backup_file = f"{self.config_file}.corrupted.{int(time.time())}"
+                os.rename(self.config_file, backup_file)
+                self.logger.warning(f"Moved corrupted config to: {backup_file}")
+            
+            config_dir = os.path.dirname(self.config_file)
+            if config_dir and not os.path.exists(config_dir):
+                os.makedirs(config_dir, exist_ok=True)
+            
+            with open(self.config_file, 'w') as f:
+                json.dump({}, f, indent=2)
+            
+            self.logger.info(f"Created new clean config file: {self.config_file}")
+            
+        except Exception as e:
+            self.logger.error(f"Error handling corrupted config file: {e}")
     def _load_signal_history(self) -> deque:
         """Load signal performance history"""
         try:
@@ -772,12 +1034,15 @@ class AdaptiveCryptoSignals:
                     hist_key = f"{self.strategy_type}_signal_history"
                     hist = configs[self.symbol].get(hist_key, [])
                     return deque([item for item in hist if isinstance(item, dict)][-50:], maxlen=50)
+        except json.JSONDecodeError as e:
+            self.logger.error(f"Corrupted JSON config file: {e}")
+            self._handle_corrupted_config_file()
         except Exception as e:
             self.logger.error(f"Error loading signal history: {e}")
         return deque(maxlen=50)
 
     def _save_config(self):
-        """Save optimized parameters and performance"""
+        """Save current regime optimized parameters"""
         try:
             configs = {}
             if os.path.exists(self.config_file):
@@ -811,7 +1076,7 @@ class AdaptiveCryptoSignals:
             }
             
             hist_key = f"{self.strategy_type}_signal_history"
-            configs[self.symbol][hist_key] = list(self.signal_performance)[-50:]
+            configs[self.symbol][hist_key] = list(self.signal_performance)[-30:]  # Keep recent history
             
             config_dir = os.path.dirname(self.config_file)
             if config_dir and not os.path.exists(config_dir):
@@ -826,14 +1091,14 @@ class AdaptiveCryptoSignals:
             self.logger.error(f"Error saving config: {e}")
 
     def get_system_status(self) -> Dict:
-        """Get system status with technical exit information"""
+        """Get current regime system status"""
         with self.optimization_lock:
             optimization_status = self.optimization_in_progress
         
         return {
-            'system_type': f'{self.strategy_type}_technical_exits',
+            'system_type': f'{self.strategy_type}_current_regime',
             'strategy_type': self.strategy_type,
-            'optimized_parameters': {
+            'current_regime_parameters': {
                 'qqe_length': self.params.qqe_length,
                 'qqe_smooth': self.params.qqe_smooth,
                 'supertrend_period': self.params.supertrend_period,
@@ -852,21 +1117,22 @@ class AdaptiveCryptoSignals:
             'exit_conditions': {
                 'emergency_sl': '1.5% loss',
                 'take_profit': '2.0% gain', 
-                'technical_exits': f'{self.strategy_type}_specific',
+                'technical_exits': f'{self.strategy_type}_current_regime',
                 'time_based': '60 minutes maximum'
             },
-            'optimization': {
+            'current_regime_optimization': {
                 'in_progress': optimization_status,
-                'last_optimization': self.last_optimization
+                'last_optimization': self.last_optimization,
+                'pre_order_optimization': 'enabled'
             }
         }
 
 def integrate_adaptive_crypto_signals(strategy_instance, config_file: str = None, strategy_type: str = 'qqe_supertrend_fixed'):
-    """Integration function with proper technical exits"""
+    """FIXED: Integration with current regime optimization"""
     if config_file is None:
         config_file = os.path.join(os.getcwd(), "data", "crypto_signal_configs.json")
     
-    strategy_instance.logger.info(f"Integrating COMPLETE {strategy_type} signals with technical exits, config: {config_file}")
+    strategy_instance.logger.info(f"Integrating CURRENT REGIME {strategy_type} signals with pre-order optimization")
     base_sym = getattr(strategy_instance, 'original_symbol', strategy_instance.symbol)
     
     crypto_sigs = AdaptiveCryptoSignals(symbol=base_sym, config_file=config_file, strategy_type=strategy_type)
@@ -875,10 +1141,11 @@ def integrate_adaptive_crypto_signals(strategy_instance, config_file: str = None
     strategy_instance.get_signal_status = crypto_sigs.get_system_status
     strategy_instance._crypto_signal_system = crypto_sigs
     
-    strategy_instance.logger.info(f"COMPLETE {strategy_type} signals integrated with technical exits:")
+    strategy_instance.logger.info(f"CURRENT REGIME {strategy_type} signals integrated:")
+    strategy_instance.logger.info(f"  - Pre-order optimization: enabled")
+    strategy_instance.logger.info(f"  - Current regime parameters: focused ranges")
     strategy_instance.logger.info(f"  - Emergency SL: 1.5% loss")
     strategy_instance.logger.info(f"  - Take Profit: 2.0% gain")
     strategy_instance.logger.info(f"  - Technical exits: {strategy_type} signal reversals")
-    strategy_instance.logger.info(f"  - Time exit: 60 minutes maximum")
     
     return crypto_sigs

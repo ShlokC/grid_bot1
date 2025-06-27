@@ -568,8 +568,8 @@ class GridManager:
             self.logger.info("📊 Updating active symbols data (24hr bulk ticker - OPTIMIZED)...")
             
             # OPTIMIZATION: These now use single API call instead of 435 individual calls
-            top_active = self.exchange.get_top_active_symbols(limit=5)
-            gainers_losers = self.exchange.get_top_gainers_losers(limit=3)
+            top_active = self.exchange.get_top_active_symbols(limit=10)
+            gainers_losers = self.exchange.get_top_gainers_losers(limit=5)
             
             # Update stored data
             self.active_symbols_data = {

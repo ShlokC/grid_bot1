@@ -601,44 +601,18 @@ class Exchange:
             return None
     def _is_truly_active(self, activity_data: Dict) -> bool:
         """
-        STRICT filter to ensure only genuinely active symbols pass through.
-        Designed to eliminate sideways/stagnant symbols like NEWTUSDT.
+        Simple filter - only reject completely dead symbols.
         """
         try:
-            # Extract key metrics
             recent_change = abs(activity_data['recent_change_pct'])
-            momentum = activity_data['momentum_score']
-            volume_spike = activity_data['volume_spike_factor']
             last_candle_move = activity_data['last_candle_movement']
-            activity_score = activity_data['activity_score']
             
-            # RULE 1: Minimum recent movement (last 9 minutes)
-            if recent_change < 0.3:  # Less than 0.3% in last 3 candles
-                self.logger.debug(f"{activity_data['symbol']}: Filtered - low recent movement ({recent_change:.2f}%)")
+            # Only filter out completely stagnant symbols
+            if recent_change < 0.1 and last_candle_move < 0.02:
+                self.logger.debug(f"{activity_data['symbol']}: Filtered - completely stagnant")
                 return False
             
-            # RULE 2: Must have some momentum OR volume spike
-            if abs(momentum) < 0.5 and volume_spike < 1.2:  # No momentum AND no volume
-                self.logger.debug(f"{activity_data['symbol']}: Filtered - no momentum ({momentum:.1f}) or volume ({volume_spike:.1f}x)")
-                return False
-            
-            # RULE 3: Last candle must show movement (current activity)
-            if last_candle_move < 0.05:  # Less than 0.05% in last candle
-                self.logger.debug(f"{activity_data['symbol']}: Filtered - stagnant last candle ({last_candle_move:.3f}%)")
-                return False
-            
-            # RULE 4: Minimum activity score threshold
-            if activity_score < 2.0:  # Raised from previous threshold
-                self.logger.debug(f"{activity_data['symbol']}: Filtered - low activity score ({activity_score:.1f})")
-                return False
-            
-            # RULE 5: Anti-sideways filter - check for genuine trend
-            if recent_change < 0.5 and abs(momentum) < 1.0:  # Small move + no momentum = sideways
-                self.logger.debug(f"{activity_data['symbol']}: Filtered - sideways pattern (change:{recent_change:.2f}%, momentum:{momentum:.1f})")
-                return False
-            
-            # PASSED all filters - truly active symbol
-            self.logger.debug(f"{activity_data['symbol']}: PASSED - Recent:{recent_change:.2f}%, Momentum:{momentum:.1f}, Volume:{volume_spike:.1f}x, Score:{activity_score:.1f}")
+            self.logger.debug(f"{activity_data['symbol']}: PASSED")
             return True
             
         except Exception as e:

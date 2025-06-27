@@ -396,10 +396,10 @@ class SignalStrategy:
                         
                     self.logger.info(f"[{self.symbol}] 📊 Setting TP/SL. Position: {amount:.6f} @ ${fill_price:.8f}. TP: ${tp_price:.8f}, SL: ${sl_price:.8f}")
                     
-                    try:
-                        tp_order = self.exchange.create_take_profit_market_order(self.symbol, tp_side, amount, tp_price)
-                        if tp_order and 'id' in tp_order: self.logger.info(f"[{self.symbol}] 🎯 TAKE PROFIT placed: {tp_order['id']}")
-                    except Exception as e: self.logger.error(f"[{self.symbol}] ❌ Failed TP order: {e}")
+                    # try:
+                    #     tp_order = self.exchange.create_take_profit_market_order(self.symbol, tp_side, amount, tp_price)
+                    #     if tp_order and 'id' in tp_order: self.logger.info(f"[{self.symbol}] 🎯 TAKE PROFIT placed: {tp_order['id']}")
+                    # except Exception as e: self.logger.error(f"[{self.symbol}] ❌ Failed TP order: {e}")
                     
                     try:
                         sl_order = self.exchange.create_stop_order(self.symbol, sl_side, amount, sl_price, order_type='stop_market')

@@ -396,8 +396,8 @@ class SignalManager:
                 return
             
             # Get market data
-            top_active = self.exchange.get_top_active_symbols(limit=5)
-            gainers_losers = self.exchange.get_top_gainers_losers(limit=3)
+            top_active = self.exchange.get_top_active_symbols(limit=10)
+            gainers_losers = self.exchange.get_top_gainers_losers(limit=5)
             
             self.active_symbols_data = {
                 'top_active': top_active,
