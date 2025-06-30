@@ -56,44 +56,86 @@ def setup_logging():
     root_logger.addHandler(console_handler)
 
 def get_symbol_data_info(exchange: Exchange, symbol: str, timeframe: str = '15m', limit: int = 300) -> Dict:
-    """FIXED: Get recent data for current regime analysis (reduced from 1400 to 300)"""
+    """FIXED: Get data with multi-timeframe support for ROC"""
     try:
-        # FIXED: Use only recent data for current momentum analysis
-        ohlcv_data = exchange.get_ohlcv(symbol, timeframe=timeframe, limit=limit)
-        
-        if not ohlcv_data:
-            return {'symbol': symbol, 'available': False, 'candles': 0, 'error': 'No data'}
-        
-        df = pd.DataFrame(ohlcv_data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-        df = df.set_index('timestamp').sort_index()
-        
-        for col in ['open', 'high', 'low', 'close', 'volume']:
-            df[col] = df[col].astype(float)
-        
-        df_clean = df.dropna()
-        
-        # FIXED: Calculate current market regime indicators
-        if len(df_clean) >= 10:
-            # Calculate recent 5-candle average absolute movement
-            recent_changes = df_clean['close'].pct_change().tail(5).abs() * 100
-            recent_volatility = recent_changes.mean()
+        if timeframe == 'multi_roc':
+            # For ROC multi-timeframe, fetch both 3m and 15m separately
+            ohlcv_3m = exchange.get_ohlcv(symbol, timeframe='3m', limit=limit)
+            ohlcv_15m = exchange.get_ohlcv(symbol, timeframe='15m', limit=limit//5)  # 15m needs fewer candles
+            
+            if not ohlcv_3m or len(ohlcv_3m) < 50 or not ohlcv_15m or len(ohlcv_15m) < 20:
+                return {'symbol': symbol, 'available': False, 'candles': 0, 'error': 'Insufficient multi-timeframe data'}
+            
+            # Convert both to DataFrames with proper datetime index
+            df_3m = pd.DataFrame(ohlcv_3m, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            df_15m = pd.DataFrame(ohlcv_15m, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            
+            for df in [df_3m, df_15m]:
+                df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+                df = df.set_index('timestamp').sort_index()
+                for col in ['open', 'high', 'low', 'close', 'volume']:
+                    df[col] = df[col].astype(float)
+            
+            df_3m = df_3m.set_index('timestamp').sort_index()
+            df_15m = df_15m.set_index('timestamp').sort_index()
+            
+            # Calculate current volatility from 3m data
+            if len(df_3m) >= 10:
+                recent_changes = df_3m['close'].pct_change().tail(5).abs() * 100
+                recent_volatility = recent_changes.mean()
+            else:
+                recent_volatility = 0
+            
+            price_trend = ((df_3m['close'].iloc[-1] - df_3m['close'].iloc[-50]) / df_3m['close'].iloc[-50]) * 100 if len(df_3m) >= 50 else 0
+            
+            return {
+                'symbol': symbol,
+                'available': True,
+                'candles': len(df_3m),
+                'raw_candles': len(df_3m),
+                'data_quality': 1.0,
+                'price_range': (df_3m['close'].min(), df_3m['close'].max()),
+                'date_range': (df_3m.index.min(), df_3m.index.max()),
+                'current_volatility': recent_volatility,
+                'recent_trend': price_trend,
+                'data': {'3m': df_3m, '15m': df_15m}  # Return both timeframes
+            }
         else:
-            recent_volatility = 0
-        price_trend = ((df_clean['close'].iloc[-1] - df_clean['close'].iloc[-50]) / df_clean['close'].iloc[-50]) * 100 if len(df_clean) >= 50 else 0
-        
-        return {
-            'symbol': symbol,
-            'available': True,
-            'candles': len(df_clean),
-            'raw_candles': len(df),
-            'data_quality': len(df_clean) / len(df) if len(df) > 0 else 0,
-            'price_range': (df_clean['close'].min(), df_clean['close'].max()),
-            'date_range': (df_clean.index.min(), df_clean.index.max()),
-            'current_volatility': recent_volatility,
-            'recent_trend': price_trend,
-            'data': df_clean
-        }
+            # Original single timeframe logic
+            ohlcv_data = exchange.get_ohlcv(symbol, timeframe=timeframe, limit=limit)
+            
+            if not ohlcv_data:
+                return {'symbol': symbol, 'available': False, 'candles': 0, 'error': 'No data'}
+            
+            df = pd.DataFrame(ohlcv_data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+            df = df.set_index('timestamp').sort_index()
+            
+            for col in ['open', 'high', 'low', 'close', 'volume']:
+                df[col] = df[col].astype(float)
+            
+            df_clean = df.dropna()
+            
+            # Calculate current market regime indicators
+            if len(df_clean) >= 10:
+                recent_changes = df_clean['close'].pct_change().tail(5).abs() * 100
+                recent_volatility = recent_changes.mean()
+            else:
+                recent_volatility = 0
+            price_trend = ((df_clean['close'].iloc[-1] - df_clean['close'].iloc[-50]) / df_clean['close'].iloc[-50]) * 100 if len(df_clean) >= 50 else 0
+            
+            return {
+                'symbol': symbol,
+                'available': True,
+                'candles': len(df_clean),
+                'raw_candles': len(df),
+                'data_quality': len(df_clean) / len(df) if len(df) > 0 else 0,
+                'price_range': (df_clean['close'].min(), df_clean['close'].max()),
+                'date_range': (df_clean.index.min(), df_clean.index.max()),
+                'current_volatility': recent_volatility,
+                'recent_trend': price_trend,
+                'data': df_clean
+            }
         
     except Exception as e:
         return {'symbol': symbol, 'available': False, 'candles': 0, 'error': str(e)}
@@ -238,37 +280,78 @@ class IntelligentVectorBTTester:
         results.extend(batch_results)
         
         return results
-    def _process_roc_multi_timeframe_batch(self, data: pd.DataFrame, symbol: str, param_batch: List) -> List[Dict]:
-        """Process ROC multi-timeframe with current momentum focus"""
+    def _process_roc_multi_timeframe_batch(self, data, symbol: str, param_batch: List) -> List[Dict]:
+        """FIXED: Process ROC multi-timeframe with clear signal logic like TSI+VWAP"""
         batch_results = []
+        
+        # Handle multi-timeframe data structure
+        if isinstance(data, dict) and '3m' in data and '15m' in data:
+            df_3m = data['3m'].copy()
+            df_15m = data['15m'].copy()
+        else:
+            # Fallback: create 15m from 3m data
+            df_3m = data.copy()
+            if not isinstance(df_3m.index, pd.DatetimeIndex):
+                return batch_results
+            
+            try:
+                df_15m = df_3m.resample('15min').agg({
+                    'open': 'first',
+                    'high': 'max', 
+                    'low': 'min',
+                    'close': 'last',
+                    'volume': 'sum'
+                }).dropna()
+            except Exception:
+                return batch_results
+        
+        # Validate data
+        if len(df_3m) < 50 or len(df_15m) < 20:
+            return batch_results
         
         for r3l, r15l, r3t, r15t, raf in param_batch:
             try:
-                # Calculate 3m ROC
-                roc_3m = ta.roc(data['close'], length=r3l)
-                if roc_3m is None or len(roc_3m.dropna()) < 10:
+                # Calculate ROC for both timeframes
+                roc_3m = ta.roc(df_3m['close'], length=r3l)
+                roc_15m = ta.roc(df_15m['close'], length=r15l)
+                
+                if (roc_3m is None or len(roc_3m.dropna()) < 10 or
+                    roc_15m is None or len(roc_15m.dropna()) < 5):
                     continue
                 
-                # Simulate 15m by resampling
-                data_15m = data.iloc[::5].copy()
-                if len(data_15m) < r15l + 5:
-                    continue
-                    
-                roc_15m = ta.roc(data_15m['close'], length=r15l)
-                if roc_15m is None or len(roc_15m.dropna()) < 5:
-                    continue
+                # FIXED: Clear signal logic like TSI+VWAP
+                # Align 15m ROC to 3m timeframe
+                roc_15m_aligned = pd.Series(index=df_3m.index, dtype=float)
+                for timestamp in df_3m.index:
+                    # Find closest 15m timestamp
+                    time_diffs = abs(df_15m.index - timestamp)
+                    if len(time_diffs) > 0:
+                        closest_15m_timestamp = time_diffs.idxmin()
+                        if time_diffs.min() <= pd.Timedelta(minutes=15):
+                            if closest_15m_timestamp in roc_15m.index:
+                                roc_15m_aligned.loc[timestamp] = roc_15m.loc[closest_15m_timestamp]
                 
-                # Align timeframes for signal generation
-                aligned_data = self._align_timeframes_for_signals(data, roc_3m, roc_15m, r3t, r15t, raf)
+                # FIXED: Simple bullish/bearish logic
+                roc_3m_bullish = roc_3m > r3t
+                roc_15m_bullish = roc_15m_aligned > r15t
+                roc_3m_bearish = roc_3m < -r3t
+                roc_15m_bearish = roc_15m_aligned < -r15t
                 
-                if aligned_data is None:
-                    continue
+                # FIXED: Clear entry and exit signals
+                long_entries = roc_3m_bullish & roc_15m_bullish
+                short_entries = roc_3m_bearish & roc_15m_bearish
+                long_exits = roc_3m_bearish | roc_15m_bearish
+                short_exits = roc_3m_bullish | roc_15m_bullish
                 
-                long_entries, long_exits, short_entries, short_exits = aligned_data
+                # Clean up NaN values
+                long_entries = long_entries.fillna(False)
+                short_entries = short_entries.fillna(False)
+                long_exits = long_exits.fillna(False)
+                short_exits = short_exits.fillna(False)
                 
                 # Run VectorBT simulation
                 pf = vbt.Portfolio.from_signals(
-                    data['close'],
+                    df_3m['close'],
                     long_entries, long_exits,
                     short_entries, short_exits,
                     init_cash=self.initial_cash,
@@ -279,10 +362,10 @@ class IntelligentVectorBTTester:
                 # Extract statistics
                 stats = pf.stats()
                 result = self._extract_portfolio_stats(stats, symbol, 'roc_multi_timeframe',
-                                                     f"ROC_3m({r3l},{r3t}), ROC_15m({r15l},{r15t}), Align({raf})",
-                                                     {'roc_3m_length': r3l, 'roc_15m_length': r15l,
-                                                      'roc_3m_threshold': r3t, 'roc_15m_threshold': r15t,
-                                                      'roc_alignment_factor': raf})
+                                                    f"ROC_3m({r3l},{r3t}), ROC_15m({r15l},{r15t}), Align({raf})",
+                                                    {'roc_3m_length': r3l, 'roc_15m_length': r15l,
+                                                    'roc_3m_threshold': r3t, 'roc_15m_threshold': r15t,
+                                                    'roc_alignment_factor': raf})
                 
                 if result and result.get('total_trades', 0) >= 3:
                     batch_results.append(result)
@@ -292,28 +375,151 @@ class IntelligentVectorBTTester:
                 continue
         
         return batch_results
-    def _align_timeframes_for_signals(self, data: pd.DataFrame, roc_3m: pd.Series, 
-                                    roc_15m: pd.Series, r3t: float, r15t: float, raf: float) -> Optional[Tuple]:
+    def _align_roc_timeframes_for_vectorbt(self, df_3m: pd.DataFrame, df_15m: pd.DataFrame, 
+                                     roc_3m: pd.Series, roc_15m: pd.Series,
+                                     r3t: float, r15t: float, raf: float) -> Optional[Tuple]:
+        """FIXED: Align ROC signals from both timeframes to 3m frequency for VectorBT"""
+        try:
+            # Create signal arrays aligned to 3m timeframe
+            long_entries = pd.Series(False, index=df_3m.index)
+            short_entries = pd.Series(False, index=df_3m.index)
+            long_exits = pd.Series(False, index=df_3m.index)
+            short_exits = pd.Series(False, index=df_3m.index)
+            
+            # For each 3m timestamp, find the corresponding 15m ROC value
+            for timestamp in df_3m.index:
+                # Get 3m ROC value
+                if timestamp not in roc_3m.index or pd.isna(roc_3m.loc[timestamp]):
+                    continue
+                current_roc_3m = roc_3m.loc[timestamp]
+                
+                # Find the closest 15m ROC value (within 15 minutes)
+                time_diffs = abs(df_15m.index - timestamp)
+                if len(time_diffs) == 0:
+                    continue
+                    
+                closest_15m_timestamp = time_diffs.idxmin()
+                
+                # Skip if the closest 15m timestamp is too far away
+                if time_diffs.min() > pd.Timedelta(minutes=15):
+                    continue
+                    
+                if closest_15m_timestamp not in roc_15m.index or pd.isna(roc_15m.loc[closest_15m_timestamp]):
+                    continue
+                current_roc_15m = roc_15m.loc[closest_15m_timestamp]
+                
+                # Multi-timeframe signal logic
+                roc_3m_bullish = current_roc_3m > r3t
+                roc_15m_bullish = current_roc_15m > r15t
+                roc_3m_bearish = current_roc_3m < -r3t
+                roc_15m_bearish = current_roc_15m < -r15t
+                
+                alignment_strength = abs(current_roc_3m * current_roc_15m) * raf
+                
+                # Generate entry signals
+                if roc_3m_bullish and roc_15m_bullish and alignment_strength > 1.0:
+                    long_entries.loc[timestamp] = True
+                elif roc_3m_bearish and roc_15m_bearish and alignment_strength > 1.0:
+                    short_entries.loc[timestamp] = True
+                
+                # Generate exit signals (timeframe divergence)
+                if (roc_3m_bearish or roc_15m_bearish) and alignment_strength > 0.5:
+                    long_exits.loc[timestamp] = True
+                if (roc_3m_bullish or roc_15m_bullish) and alignment_strength > 0.5:
+                    short_exits.loc[timestamp] = True
+            
+            return long_entries, long_exits, short_entries, short_exits
+            
+        except Exception as e:
+            self.logger.debug(f"Error aligning ROC timeframes: {e}")
+            return None
+    def _align_roc_signals_by_timestamp(self, df_3m: pd.DataFrame, df_15m: pd.DataFrame,
+                                  roc_3m: pd.Series, roc_15m: pd.Series,
+                                  r3t: float, r15t: float, raf: float) -> Optional[Tuple]:
+        """FIXED: Align ROC signals using timestamp-based matching"""
+        try:
+            # Create boolean arrays for signals aligned to 3m timeframe
+            long_entries = pd.Series(False, index=df_3m.index)
+            short_entries = pd.Series(False, index=df_3m.index)
+            long_exits = pd.Series(False, index=df_3m.index)
+            short_exits = pd.Series(False, index=df_3m.index)
+            
+            # For each 3m timestamp, find the closest 15m ROC value
+            for timestamp in df_3m.index:
+                if timestamp not in roc_3m.index or pd.isna(roc_3m.loc[timestamp]):
+                    continue
+                
+                # Find closest 15m timestamp (within 15 minutes)
+                time_diffs = abs(df_15m.index - timestamp)
+                closest_15m_idx = time_diffs.idxmin()
+                
+                if time_diffs.min() > pd.Timedelta(minutes=15):
+                    continue
+                    
+                if closest_15m_idx not in roc_15m.index or pd.isna(roc_15m.loc[closest_15m_idx]):
+                    continue
+                
+                current_roc_3m = roc_3m.loc[timestamp]
+                current_roc_15m = roc_15m.loc[closest_15m_idx]
+                
+                # Multi-timeframe logic
+                roc_3m_bullish = current_roc_3m > r3t
+                roc_15m_bullish = current_roc_15m > r15t
+                roc_3m_bearish = current_roc_3m < -r3t
+                roc_15m_bearish = current_roc_15m < -r15t
+                
+                alignment_strength = abs(current_roc_3m * current_roc_15m) * raf
+                
+                # Generate entry signals
+                if roc_3m_bullish and roc_15m_bullish and alignment_strength > 1.0:
+                    long_entries.loc[timestamp] = True
+                elif roc_3m_bearish and roc_15m_bearish and alignment_strength > 1.0:
+                    short_entries.loc[timestamp] = True
+                
+                # Generate exit signals
+                if (roc_3m_bearish or roc_15m_bearish) and alignment_strength > 0.5:
+                    long_exits.loc[timestamp] = True
+                if (roc_3m_bullish or roc_15m_bullish) and alignment_strength > 0.5:
+                    short_exits.loc[timestamp] = True
+            
+            return long_entries, long_exits, short_entries, short_exits
+            
+        except Exception as e:
+            self.logger.debug(f"Error aligning ROC signals: {e}")
+            return None
+    def _align_timeframes_for_signals(self, data_3m: pd.DataFrame, data_15m: pd.DataFrame, 
+                                roc_3m: pd.Series, roc_15m: pd.Series, 
+                                r3t: float, r15t: float, raf: float) -> Optional[Tuple]:
         """Align multi-timeframe ROC signals"""
         try:
             # Create boolean arrays for signals
-            long_entries = pd.Series(False, index=data.index)
-            short_entries = pd.Series(False, index=data.index)
-            long_exits = pd.Series(False, index=data.index)
-            short_exits = pd.Series(False, index=data.index)
+            long_entries = pd.Series(False, index=data_3m.index)
+            short_entries = pd.Series(False, index=data_3m.index)
+            long_exits = pd.Series(False, index=data_3m.index)
+            short_exits = pd.Series(False, index=data_3m.index)
             
-            # Process each point where we have ROC data
+            # FIXED: Use proper index alignment
             for i in range(len(roc_3m)):
                 if pd.isna(roc_3m.iloc[i]):
                     continue
                 
-                # Find corresponding 15m ROC value (every 5th point)
-                roc_15m_idx = i // 5
-                if roc_15m_idx >= len(roc_15m) or pd.isna(roc_15m.iloc[roc_15m_idx]):
-                    continue
-                
                 current_roc_3m = roc_3m.iloc[i]
-                current_roc_15m = roc_15m.iloc[roc_15m_idx]
+                
+                # FIXED: Find corresponding 15m ROC value using timestamp alignment
+                current_3m_time = data_3m.index[i] if i < len(data_3m) else data_3m.index[-1]
+                
+                # Find the closest 15m timestamp
+                if len(data_15m) > 0:
+                    # Get the 15m bar that contains this 3m timestamp
+                    time_diff = abs(data_15m.index - current_3m_time)
+                    closest_15m_idx = time_diff.argmin()
+                    
+                    if closest_15m_idx < len(roc_15m) and not pd.isna(roc_15m.iloc[closest_15m_idx]):
+                        current_roc_15m = roc_15m.iloc[closest_15m_idx]
+                    else:
+                        continue
+                else:
+                    continue
                 
                 # Multi-timeframe logic
                 roc_3m_bullish = current_roc_3m > r3t
@@ -329,7 +535,7 @@ class IntelligentVectorBTTester:
                 elif roc_3m_bearish and roc_15m_bearish and alignment_strength > 1.0:
                     short_entries.iloc[i] = True
                 
-                # Generate exit signals (timeframe divergence)
+                # Generate exit signals
                 if (roc_3m_bearish or roc_15m_bearish) and alignment_strength > 0.5:
                     long_exits.iloc[i] = True
                 if (roc_3m_bullish or roc_15m_bullish) and alignment_strength > 0.5:
@@ -640,22 +846,26 @@ def get_viable_symbols_for_testing(exchange: Exchange, limit: int = 10) -> List[
     logger = logging.getLogger(__name__)
     
     try:
-        # FIXED: Get current active symbols (reduced limit for faster processing)
         active_symbols_data = exchange.get_top_active_symbols(limit=limit*2)
         
         if active_symbols_data:
             candidate_symbols = [item['symbol'] for item in active_symbols_data]
         else:
-            # Fallback to known active symbols
             candidate_symbols = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT']
         
-        # Filter based on current regime data availability
-        viable_symbols, symbol_info = filter_viable_symbols(exchange, candidate_symbols)
-        
-        if not viable_symbols:
-            logger.warning("No viable symbols found, using fallback")
-            fallback_symbols = ['BTCUSDT', 'ETHUSDT']
-            viable_symbols, _ = filter_viable_symbols(exchange, fallback_symbols)
+        # FIXED: For ROC strategy, check multi-timeframe data
+        viable_symbols = []
+        for symbol in candidate_symbols:
+            # Check both 3m and 15m data availability
+            info_3m = get_symbol_data_info(exchange, symbol, timeframe='3m')
+            info_15m = get_symbol_data_info(exchange, symbol, timeframe='15m')
+            
+            if (info_3m['available'] and info_3m['candles'] >= 100 and
+                info_15m['available'] and info_15m['candles'] >= 25):
+                viable_symbols.append(symbol)
+                logger.info(f"✓ {symbol}: 3m:{info_3m['candles']} 15m:{info_15m['candles']} candles")
+            else:
+                logger.warning(f"✗ {symbol}: Insufficient multi-timeframe data")
         
         return viable_symbols[:limit]
         
@@ -664,7 +874,7 @@ def get_viable_symbols_for_testing(exchange: Exchange, limit: int = 10) -> List[
         return ['BTCUSDT', 'ETHUSDT'][:limit]
 
 def run_intelligent_vectorbt_optimization():
-    """FIXED: Run current regime optimization instead of historical optimization"""
+    """FIXED: Run current regime optimization with proper multi-timeframe data"""
     
     logger = logging.getLogger(__name__)
     logger.info("Starting Current Regime VectorBT Optimization")
@@ -677,8 +887,8 @@ def run_intelligent_vectorbt_optimization():
         exchange = Exchange(config['api_key'], config['api_secret'])
         tester = IntelligentVectorBTTester(exchange)
         
-        # FIXED: Get symbols with current momentum
-        viable_symbols = get_viable_symbols_for_testing(exchange, limit=10)
+        # FIXED: Get fewer symbols to avoid rate limiting
+        viable_symbols = get_viable_symbols_for_testing(exchange, limit=3)
         
         if not viable_symbols:
             logger.error("No viable symbols found for current regime testing")
@@ -692,18 +902,6 @@ def run_intelligent_vectorbt_optimization():
         for symbol in viable_symbols:
             logger.info(f"\nCurrent regime analysis: {symbol}")
             
-            # Get recent data for current regime
-            symbol_info = get_symbol_data_info(exchange, symbol)
-            if not symbol_info['available']:
-                logger.error(f"No current data available for {symbol}")
-                continue
-            
-            symbol_data = symbol_info['data']
-            volatility = symbol_info.get('current_volatility', 0)
-            trend = symbol_info.get('recent_trend', 0)
-            
-            logger.info(f"Current regime: volatility {volatility:.2f}%, trend {trend:+.2f}%")
-            
             symbol_results_count = 0
             
             # Test strategies on current regime
@@ -711,6 +909,20 @@ def run_intelligent_vectorbt_optimization():
                 start_time = time.time()
                 
                 try:
+                    # FIXED: Get appropriate data based on strategy
+                    if strategy_name == 'roc_multi_timeframe':
+                        # For ROC, get both 3m and 15m data
+                        symbol_info = get_symbol_data_info(exchange, symbol, timeframe='multi_roc', limit=300)
+                    else:
+                        # For other strategies, use 3m data
+                        symbol_info = get_symbol_data_info(exchange, symbol, timeframe='3m', limit=200)
+                    
+                    if not symbol_info['available']:
+                        logger.error(f"No current data available for {symbol} - {strategy_name}")
+                        continue
+                    
+                    symbol_data = symbol_info['data']
+                    
                     results = tester.optimize_strategy_efficiently(symbol_data, symbol, strategy_name)
                     optimization_time = time.time() - start_time
                     
@@ -731,8 +943,12 @@ def run_intelligent_vectorbt_optimization():
                     logger.error(f"✗ {strategy_name}: Error - {str(e)} ({optimization_time:.2f}s)")
             
             logger.info(f"Symbol {symbol}: {symbol_results_count} current regime combinations")
+            
+            # Add delay between symbols to avoid rate limiting
+            if symbol != viable_symbols[-1]:
+                time.sleep(1)
         
-        # Export current regime results
+        # Export results
         if all_results:
             os.makedirs('vectorbt_results', exist_ok=True)
             
@@ -741,33 +957,7 @@ def run_intelligent_vectorbt_optimization():
             results_file = f'vectorbt_results/current_regime_optimization_{timestamp}.csv'
             df.to_csv(results_file, index=False)
             
-            # FIXED: Current regime focused summary
-            logger.info(f"\nCurrent Regime Optimization Results:")
-            logger.info("=" * 60)
-            
-            best_overall = df.loc[df['score'].idxmax()]
-            strategy_summary = df.groupby('strategy').agg({
-                'score': ['count', 'mean', 'max'],
-                'win_rate': 'mean',
-                'total_return': 'mean'
-            }).round(2)
-            
-            logger.info(f"Total current regime combinations: {len(all_results)}")
-            logger.info(f"Symbols with current momentum: {df['symbol'].nunique()}")
-            logger.info(f"Average current regime score: {df['score'].mean():.2f}")
-            
-            logger.info(f"\nBest Current Regime Result (Score: {best_overall['score']:.2f}):")
-            logger.info(f"  Strategy: {best_overall['strategy']} on {best_overall['symbol']}")
-            logger.info(f"  Parameters: {best_overall['params']}")
-            logger.info(f"  Win Rate: {best_overall['win_rate']:.2f}%")
-            logger.info(f"  Return: {best_overall['total_return']:.2f}%")
-            logger.info(f"  Max Drawdown: {best_overall['max_drawdown']:.2f}%")
-            logger.info(f"  Profit Factor: {best_overall['profit_factor']:.2f}")
-            
-            logger.info(f"\nCurrent Regime Strategy Performance:")
-            logger.info(strategy_summary)
-            
-            logger.info(f"\nResults exported to: {results_file}")
+            logger.info(f"Results exported to: {results_file}")
         else:
             logger.error("No current regime optimization results generated")
         

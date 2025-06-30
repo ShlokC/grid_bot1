@@ -468,12 +468,20 @@ class AdaptiveCryptoSignals:
             
             # Get data based on strategy type
             if self.strategy_type == 'roc_multi_timeframe':
-                # Need more data for 15m simulation
-                ohlcv_data = exchange.get_ohlcv(self.symbol, timeframe='3m', limit=300)
+                # FIXED: Get both timeframes separately
+                ohlcv_3m = exchange.get_ohlcv(self.symbol, timeframe='3m', limit=200)
+                ohlcv_15m = exchange.get_ohlcv(self.symbol, timeframe='15m', limit=50)
+                
+                if not ohlcv_3m or len(ohlcv_3m) < 50 or not ohlcv_15m or len(ohlcv_15m) < 20:
+                    return 'none'
+                    
+                # Pass both datasets
+                ohlcv_data = {'3m': ohlcv_3m, '15m': ohlcv_15m}
             else:
                 ohlcv_data = exchange.get_ohlcv(self.symbol, timeframe='3m', limit=200)
                 
-            if not ohlcv_data or len(ohlcv_data) < 50:
+            if (self.strategy_type != 'roc_multi_timeframe' and 
+                (not ohlcv_data or len(ohlcv_data) < 50)):
                 return 'none'
             
             # FIXED: TRUE PRE-ORDER OPTIMIZATION
@@ -802,28 +810,49 @@ class AdaptiveCryptoSignals:
             self.logger.error(f"TSI+VWAP calculation error: {e}")
             return 'none', {}
 
-    def _roc_multi_timeframe_signal_with_indicators(self, df: pd.DataFrame, params) -> Tuple[str, Dict]:
-        """Multi-timeframe ROC signal with indicators for exit evaluation"""
+    def _roc_multi_timeframe_signal_with_indicators(self, data_input, params) -> Tuple[str, Dict]:
+        """FIXED: Multi-timeframe ROC signal with clear logic like TSI+VWAP"""
         try:
+            if isinstance(data_input, dict):
+                # New format with separate timeframes
+                df_3m = pd.DataFrame(data_input['3m'], columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+                df_15m = pd.DataFrame(data_input['15m'], columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+                
+                for col in ['open', 'high', 'low', 'close', 'volume']:
+                    df_3m[col] = df_3m[col].astype(float)
+                    df_15m[col] = df_15m[col].astype(float)
+                    
+                df_3m['timestamp'] = pd.to_datetime(df_3m['timestamp'], unit='ms')
+                df_15m['timestamp'] = pd.to_datetime(df_15m['timestamp'], unit='ms')
+                df_3m = df_3m.set_index('timestamp')
+                df_15m = df_15m.set_index('timestamp')
+            else:
+                # Fallback to old method for compatibility
+                df_3m = data_input.copy()
+                # Create 15m from 3m by proper resampling
+                if isinstance(df_3m.index, pd.DatetimeIndex):
+                    df_15m = df_3m.resample('15min').agg({
+                        'open': 'first',
+                        'high': 'max', 
+                        'low': 'min',
+                        'close': 'last',
+                        'volume': 'sum'
+                    }).dropna()
+                else:
+                    return 'none', {}
+            
             # Ensure we have enough data
-            if len(df) < max(params.roc_3m_length, params.roc_15m_length) + 10:
+            if len(df_3m) < max(params.roc_3m_length, 10) or len(df_15m) < max(params.roc_15m_length, 5):
                 return 'none', {}
             
-            # Calculate 3m ROC (current timeframe)
-            roc_3m = ta.roc(df['close'], length=params.roc_3m_length)
-            if roc_3m is None or len(roc_3m.dropna()) < 5:
-                return 'none', {}
-            
-            # Simulate 15m timeframe by resampling every 5 candles
-            df_15m = df.iloc[::5].copy()
-            if len(df_15m) < params.roc_15m_length + 5:
-                return 'none', {}
-            
+            # Calculate ROC for both timeframes
+            roc_3m = ta.roc(df_3m['close'], length=params.roc_3m_length)
             roc_15m = ta.roc(df_15m['close'], length=params.roc_15m_length)
-            if roc_15m is None or len(roc_15m.dropna()) < 3:
+            
+            if roc_3m is None or len(roc_3m.dropna()) < 5 or roc_15m is None or len(roc_15m.dropna()) < 3:
                 return 'none', {}
             
-            # Get current ROC values
+            # Get current values
             current_roc_3m = roc_3m.iloc[-1]
             current_roc_15m = roc_15m.iloc[-1]
             
@@ -837,30 +866,19 @@ class AdaptiveCryptoSignals:
                 'roc_3m_threshold': params.roc_3m_threshold,
                 'roc_15m_threshold': params.roc_15m_threshold,
                 'alignment_factor': params.roc_alignment_factor,
-                'current_price': float(df['close'].iloc[-1])
+                'current_price': float(df_3m['close'].iloc[-1])
             }
             
-            # Multi-timeframe alignment logic
+            # FIXED: Simple bullish/bearish logic like TSI+VWAP
             roc_3m_bullish = current_roc_3m > params.roc_3m_threshold
             roc_15m_bullish = current_roc_15m > params.roc_15m_threshold
             roc_3m_bearish = current_roc_3m < -params.roc_3m_threshold
             roc_15m_bearish = current_roc_15m < -params.roc_15m_threshold
             
-            # Alignment strength calculation
-            alignment_strength = abs(current_roc_3m * current_roc_15m) * params.roc_alignment_factor
-            
-            # Generate signals based on timeframe confluence
-            if roc_3m_bullish and roc_15m_bullish and alignment_strength > 1.0:
+            # FIXED: Clear entry signals - both timeframes must agree
+            if roc_3m_bullish and roc_15m_bullish:
                 return 'buy', indicators
-            elif roc_3m_bearish and roc_15m_bearish and alignment_strength > 1.0:
-                return 'sell', indicators
-            
-            # Additional signal: Strong single timeframe with weak opposite
-            elif (roc_3m_bullish and current_roc_3m > params.roc_3m_threshold * 2 and 
-                  current_roc_15m > -params.roc_15m_threshold):
-                return 'buy', indicators
-            elif (roc_3m_bearish and current_roc_3m < -params.roc_3m_threshold * 2 and 
-                  current_roc_15m < params.roc_15m_threshold):
+            elif roc_3m_bearish and roc_15m_bearish:
                 return 'sell', indicators
             
             return 'none', indicators
@@ -995,13 +1013,14 @@ class AdaptiveCryptoSignals:
                             })
                             
             elif self.strategy_type == 'roc_multi_timeframe':
+                # FIXED: Clear ROC exit logic
                 if all(key in indicators for key in ['roc_3m', 'roc_15m', 'roc_3m_threshold', 'roc_15m_threshold']):
                     roc_3m = indicators['roc_3m']
                     roc_15m = indicators['roc_15m']
                     threshold_3m = indicators['roc_3m_threshold']
                     threshold_15m = indicators['roc_15m_threshold']
                     
-                    # Exit on timeframe divergence or reversal
+                    # FIXED: Exit on either timeframe turning opposite
                     if position_side == 'long':
                         roc_3m_bearish = roc_3m < -threshold_3m
                         roc_15m_bearish = roc_15m < -threshold_15m
@@ -1009,7 +1028,7 @@ class AdaptiveCryptoSignals:
                         if roc_3m_bearish or roc_15m_bearish:
                             result.update({
                                 'should_exit': True,
-                                'exit_reason': f"ROC reversal: 3m={roc_3m:.2f}, 15m={roc_15m:.2f} (PnL: {pnl_pct:.2f}%)",
+                                'exit_reason': f"ROC bearish: 3m={roc_3m:.2f}, 15m={roc_15m:.2f} (PnL: {pnl_pct:.2f}%)",
                                 'exit_urgency': 'normal'
                             })
                     elif position_side == 'short':
@@ -1019,7 +1038,7 @@ class AdaptiveCryptoSignals:
                         if roc_3m_bullish or roc_15m_bullish:
                             result.update({
                                 'should_exit': True,
-                                'exit_reason': f"ROC reversal: 3m={roc_3m:.2f}, 15m={roc_15m:.2f} (PnL: {pnl_pct:.2f}%)",
+                                'exit_reason': f"ROC bullish: 3m={roc_3m:.2f}, 15m={roc_15m:.2f} (PnL: {pnl_pct:.2f}%)",
                                 'exit_urgency': 'normal'
                             })
             
