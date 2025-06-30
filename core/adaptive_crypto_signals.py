@@ -967,7 +967,7 @@ class AdaptiveCryptoSignals:
                     roc_3m_bearish = roc_3m < -threshold_3m
                     roc_15m_bearish = roc_15m < -threshold_15m
                     
-                    if roc_3m_bearish or roc_15m_bearish:
+                    if roc_3m_bearish and roc_15m_bearish:
                         result.update({
                             'should_exit': True,
                             'exit_reason': f"ROC bearish: 3m={roc_3m:.2f}, 15m={roc_15m:.2f} (PnL: {pnl_pct:.2f}%)",
@@ -977,7 +977,7 @@ class AdaptiveCryptoSignals:
                     roc_3m_bullish = roc_3m > threshold_3m
                     roc_15m_bullish = roc_15m > threshold_15m
                     
-                    if roc_3m_bullish or roc_15m_bullish:
+                    if roc_3m_bullish and roc_15m_bullish:
                         result.update({
                             'should_exit': True,
                             'exit_reason': f"ROC bullish: 3m={roc_3m:.2f}, 15m={roc_15m:.2f} (PnL: {pnl_pct:.2f}%)",
