@@ -55,7 +55,7 @@ def setup_logging():
     root_logger.addHandler(file_handler)
     root_logger.addHandler(console_handler)
 
-def get_symbol_data_info(exchange: Exchange, symbol: str, timeframe: str = '5m', limit: int = 300) -> Dict:
+def get_symbol_data_info(exchange: Exchange, symbol: str, timeframe: str = '15m', limit: int = 300) -> Dict:
     """FIXED: Get recent data for current regime analysis (reduced from 1400 to 300)"""
     try:
         # FIXED: Use only recent data for current momentum analysis
@@ -74,7 +74,12 @@ def get_symbol_data_info(exchange: Exchange, symbol: str, timeframe: str = '5m',
         df_clean = df.dropna()
         
         # FIXED: Calculate current market regime indicators
-        recent_volatility = df_clean['close'].pct_change().std() * 100
+        if len(df_clean) >= 10:
+            # Calculate recent 5-candle average absolute movement
+            recent_changes = df_clean['close'].pct_change().tail(5).abs() * 100
+            recent_volatility = recent_changes.mean()
+        else:
+            recent_volatility = 0
         price_trend = ((df_clean['close'].iloc[-1] - df_clean['close'].iloc[-50]) / df_clean['close'].iloc[-50]) * 100 if len(df_clean) >= 50 else 0
         
         return {

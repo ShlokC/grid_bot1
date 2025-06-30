@@ -425,7 +425,7 @@ class Exchange:
             for symbol in available_symbols:
                 try:
                     # Use 15-minute timeframe for analysis
-                    ohlcv_data = self.get_ohlcv(symbol, timeframe='15m', limit=candles_needed)
+                    ohlcv_data = self.get_ohlcv(symbol, timeframe='15m', limit=1400)
                     
                     if not ohlcv_data or len(ohlcv_data) < 15:
                         continue
@@ -608,7 +608,7 @@ class Exchange:
             last_candle_move = activity_data['last_candle_movement']
             
             # Adjusted thresholds for 15m intervals (expect larger moves)
-            if recent_change < 0.3 and last_candle_move < 0.1:  # Increased from 0.1 and 0.02
+            if recent_change >= 0.05 or last_candle_move >= 0.02:  # Increased from 0.1 and 0.02
                 self.logger.debug(f"{activity_data['symbol']}: Filtered - completely stagnant (15m)")
                 return False
             
