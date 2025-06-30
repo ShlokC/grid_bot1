@@ -783,12 +783,13 @@ class SignalStrategy:
                 has_position = self._has_active_position()
                 effective_running = has_position or self.running
                 
-                # Get strategy display name
+                # Get strategy display name (updated with ROC multi-timeframe)
                 strategy_names = {
                     'qqe_supertrend_fixed': 'QQE+ST (Current)',
                     'qqe_supertrend_fast': 'QQE+ST (Fast)', 
                     'rsi_macd': 'RSI+MACD',
-                    'tsi_vwap': 'TSI+VWAP'
+                    'tsi_vwap': 'TSI+VWAP',
+                    'roc_multi_timeframe': 'ROC Multi-TF'
                 }
                 strategy_display = strategy_names.get(self.strategy_type, self.strategy_type)
                 

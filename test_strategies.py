@@ -144,32 +144,42 @@ class IntelligentVectorBTTester:
         self.commission = 0.00075
         self.leverage = 20.0
         
-        # FIXED: Focused parameter ranges for current crypto momentum
+        # FIXED: Focused parameter ranges for current crypto momentum (updated with ROC)
         self.strategies = {
             'qqe_supertrend': {
                 'name': 'QQE + Supertrend',
                 'params': {
-                    'qqe_length': [8, 10, 12],          # Reduced from 5 values to 3
-                    'qqe_smooth': [3, 5],               # Reduced from 5 values to 2
-                    'st_length': [6, 10, 12],           # Reduced from 5 values to 3
-                    'st_multiplier': [2.2, 2.6, 3.0]   # Reduced from 5 values to 3
+                    'qqe_length': [8, 10, 12],
+                    'qqe_smooth': [3, 5],
+                    'st_length': [6, 10, 12],
+                    'st_multiplier': [2.2, 2.6, 3.0]
                 }
             },
             'rsi_macd': {
                 'name': 'RSI + MACD',
                 'params': {
-                    'rsi_length': [12, 14, 16],         # Reduced from 6 values to 3
-                    'macd_fast': [10, 12],              # Reduced from 4 values to 2
-                    'macd_slow': [24, 26],              # Reduced from 4 values to 2
-                    'macd_signal': [8, 9]               # Reduced from 5 values to 2
+                    'rsi_length': [12, 14, 16],
+                    'macd_fast': [10, 12],
+                    'macd_slow': [24, 26],
+                    'macd_signal': [8, 9]
                 }
             },
             'tsi_vwap': {
                 'name': 'TSI + VWAP',
                 'params': {
-                    'tsi_fast': [6, 8],                 # Reduced from 4 values to 2
-                    'tsi_slow': [15, 21],               # Reduced from 5 values to 2
-                    'tsi_signal': [4, 6]                # Reduced from 5 values to 2
+                    'tsi_fast': [6, 8],
+                    'tsi_slow': [15, 21],
+                    'tsi_signal': [4, 6]
+                }
+            },
+            'roc_multi_timeframe': {
+                'name': 'ROC Multi-timeframe',
+                'params': {
+                    'roc_3m_length': [8, 10, 12],
+                    'roc_15m_length': [8, 10, 12],
+                    'roc_3m_threshold': [0.8, 1.0, 1.5],
+                    'roc_15m_threshold': [1.5, 2.0, 2.5],
+                    'roc_alignment_factor': [0.3, 0.5, 0.7]
                 }
             }
         }
@@ -190,10 +200,11 @@ class IntelligentVectorBTTester:
                 results = self._optimize_rsi_macd(recent_data, symbol, strategy_config)
             elif strategy_name == 'tsi_vwap':
                 results = self._optimize_tsi_vwap(recent_data, symbol, strategy_config)
+            elif strategy_name == 'roc_multi_timeframe':
+                results = self._optimize_roc_multi_timeframe(recent_data, symbol, strategy_config)
             
             # FIXED: Filter results for current momentum effectiveness
             if results:
-                # Keep only top 10 results for current regime
                 results = results[:10]
                 self.logger.info(f"Current regime results: {len(results)} optimized for recent momentum")
             else:
@@ -205,6 +216,125 @@ class IntelligentVectorBTTester:
             self.logger.error(f"Error in current regime optimization {strategy_name} on {symbol}: {e}")
             return []
     
+    def _optimize_roc_multi_timeframe(self, data: pd.DataFrame, symbol: str, config: Dict) -> List[Dict]:
+        """ROC Multi-timeframe optimization"""
+        results = []
+        
+        param_combinations = [
+            (r3l, r15l, r3t, r15t, raf) 
+            for r3l in config['params']['roc_3m_length']
+            for r15l in config['params']['roc_15m_length']
+            for r3t in config['params']['roc_3m_threshold']
+            for r15t in config['params']['roc_15m_threshold']
+            for raf in config['params']['roc_alignment_factor']
+        ]
+        
+        batch_results = self._process_roc_multi_timeframe_batch(data, symbol, param_combinations)
+        results.extend(batch_results)
+        
+        return results
+    def _process_roc_multi_timeframe_batch(self, data: pd.DataFrame, symbol: str, param_batch: List) -> List[Dict]:
+        """Process ROC multi-timeframe with current momentum focus"""
+        batch_results = []
+        
+        for r3l, r15l, r3t, r15t, raf in param_batch:
+            try:
+                # Calculate 3m ROC
+                roc_3m = ta.roc(data['close'], length=r3l)
+                if roc_3m is None or len(roc_3m.dropna()) < 10:
+                    continue
+                
+                # Simulate 15m by resampling
+                data_15m = data.iloc[::5].copy()
+                if len(data_15m) < r15l + 5:
+                    continue
+                    
+                roc_15m = ta.roc(data_15m['close'], length=r15l)
+                if roc_15m is None or len(roc_15m.dropna()) < 5:
+                    continue
+                
+                # Align timeframes for signal generation
+                aligned_data = self._align_timeframes_for_signals(data, roc_3m, roc_15m, r3t, r15t, raf)
+                
+                if aligned_data is None:
+                    continue
+                
+                long_entries, long_exits, short_entries, short_exits = aligned_data
+                
+                # Run VectorBT simulation
+                pf = vbt.Portfolio.from_signals(
+                    data['close'],
+                    long_entries, long_exits,
+                    short_entries, short_exits,
+                    init_cash=self.initial_cash,
+                    fees=self.commission,
+                    freq='3min'
+                )
+                
+                # Extract statistics
+                stats = pf.stats()
+                result = self._extract_portfolio_stats(stats, symbol, 'roc_multi_timeframe',
+                                                     f"ROC_3m({r3l},{r3t}), ROC_15m({r15l},{r15t}), Align({raf})",
+                                                     {'roc_3m_length': r3l, 'roc_15m_length': r15l,
+                                                      'roc_3m_threshold': r3t, 'roc_15m_threshold': r15t,
+                                                      'roc_alignment_factor': raf})
+                
+                if result and result.get('total_trades', 0) >= 3:
+                    batch_results.append(result)
+                    
+            except Exception as e:
+                self.logger.debug(f"Error processing ROC params ({r3l},{r15l},{r3t},{r15t},{raf}): {e}")
+                continue
+        
+        return batch_results
+    def _align_timeframes_for_signals(self, data: pd.DataFrame, roc_3m: pd.Series, 
+                                    roc_15m: pd.Series, r3t: float, r15t: float, raf: float) -> Optional[Tuple]:
+        """Align multi-timeframe ROC signals"""
+        try:
+            # Create boolean arrays for signals
+            long_entries = pd.Series(False, index=data.index)
+            short_entries = pd.Series(False, index=data.index)
+            long_exits = pd.Series(False, index=data.index)
+            short_exits = pd.Series(False, index=data.index)
+            
+            # Process each point where we have ROC data
+            for i in range(len(roc_3m)):
+                if pd.isna(roc_3m.iloc[i]):
+                    continue
+                
+                # Find corresponding 15m ROC value (every 5th point)
+                roc_15m_idx = i // 5
+                if roc_15m_idx >= len(roc_15m) or pd.isna(roc_15m.iloc[roc_15m_idx]):
+                    continue
+                
+                current_roc_3m = roc_3m.iloc[i]
+                current_roc_15m = roc_15m.iloc[roc_15m_idx]
+                
+                # Multi-timeframe logic
+                roc_3m_bullish = current_roc_3m > r3t
+                roc_15m_bullish = current_roc_15m > r15t
+                roc_3m_bearish = current_roc_3m < -r3t
+                roc_15m_bearish = current_roc_15m < -r15t
+                
+                alignment_strength = abs(current_roc_3m * current_roc_15m) * raf
+                
+                # Generate entry signals
+                if roc_3m_bullish and roc_15m_bullish and alignment_strength > 1.0:
+                    long_entries.iloc[i] = True
+                elif roc_3m_bearish and roc_15m_bearish and alignment_strength > 1.0:
+                    short_entries.iloc[i] = True
+                
+                # Generate exit signals (timeframe divergence)
+                if (roc_3m_bearish or roc_15m_bearish) and alignment_strength > 0.5:
+                    long_exits.iloc[i] = True
+                if (roc_3m_bullish or roc_15m_bullish) and alignment_strength > 0.5:
+                    short_exits.iloc[i] = True
+            
+            return long_entries, long_exits, short_entries, short_exits
+            
+        except Exception as e:
+            self.logger.debug(f"Error aligning timeframes: {e}")
+            return None
     def _optimize_qqe_supertrend(self, data: pd.DataFrame, symbol: str, config: Dict) -> List[Dict]:
         """FIXED: QQE + Supertrend with current momentum focus"""
         results = []

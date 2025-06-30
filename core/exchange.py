@@ -408,10 +408,10 @@ class Exchange:
             List of dictionaries containing symbol and current activity data
         """
         try:
-            # Get enough candles for analysis (10 extra for calculations)
-            candles_needed = int(timeframe_minutes / 3) + 10
+            # Calculate candles needed for 15-minute intervals
+            candles_needed = int(timeframe_minutes / 15) + 10
             
-            self.logger.info(f"Analyzing CURRENT activity for top {limit} symbols (small crypto optimized)")
+            self.logger.info(f"Analyzing CURRENT activity for top {limit} symbols (15m timeframe optimized)")
             
             available_symbols = self.get_available_symbols()
             if not available_symbols:
@@ -424,12 +424,13 @@ class Exchange:
             
             for symbol in available_symbols:
                 try:
-                    ohlcv_data = self.get_ohlcv(symbol, timeframe='3m', limit=candles_needed)
+                    # Use 15-minute timeframe for analysis
+                    ohlcv_data = self.get_ohlcv(symbol, timeframe='15m', limit=candles_needed)
                     
                     if not ohlcv_data or len(ohlcv_data) < 15:
                         continue
                     
-                    # Calculate CURRENT activity score (recent 15 minutes heavily weighted)
+                    # Calculate CURRENT activity score (recent analysis with 15m intervals)
                     activity_data = self._calculate_current_activity(ohlcv_data, symbol)
                     
                     if activity_data is None:
@@ -463,10 +464,10 @@ class Exchange:
             symbol_activities.sort(key=lambda x: x['activity_score'], reverse=True)
             top_symbols = symbol_activities[:limit]
             
-            # Enhanced logging for small crypto context with filtering info
+            # Enhanced logging for crypto context with filtering info
             filtered_count = processed_count - len(symbol_activities)
             self.logger.info(f"Filtered out {filtered_count} inactive/sideways symbols")
-            self.logger.info(f"Top {len(top_symbols)} CURRENTLY active symbols (small crypto analysis):")
+            self.logger.info(f"Top {len(top_symbols)} CURRENTLY active symbols (15m analysis):")
             for i, data in enumerate(top_symbols, 1):
                 symbol = data['symbol']
                 score = data['activity_score']
@@ -475,7 +476,7 @@ class Exchange:
                 volume_spike = data['volume_spike_factor']
                 last_candle = data['last_candle_movement']
                 
-                direction = "📈" if recent_change > 0 else "📉"
+                direction = "UP" if recent_change > 0 else "DOWN"
                 self.logger.info(f"  {i}. {symbol}: {direction} Score:{score:.1f} "
                             f"(Recent:{recent_change:+.2f}% Mom:{momentum:.1f} Vol:{volume_spike:.1f}x LastCandle:{last_candle:.2f}%)")
             
@@ -486,7 +487,7 @@ class Exchange:
             return []
     def _calculate_current_activity(self, ohlcv_data: List, symbol: str) -> Optional[Dict]:
         """
-        Calculate CURRENT activity score with heavy recency bias for small crypto.
+        Calculate CURRENT activity score with heavy recency bias for crypto using 15m intervals.
         Focuses on what's happening RIGHT NOW, not historical moves.
         """
         try:
@@ -503,19 +504,19 @@ class Exchange:
             if current_price <= 0:
                 return None
             
-            # 1. RECENT MOMENTUM (last 5 candles vs previous 5)
-            recent_5_avg = sum(prices[-5:]) / 5
-            prev_5_avg = sum(prices[-10:-5]) / 5
-            momentum_score = ((recent_5_avg - prev_5_avg) / prev_5_avg * 100) if prev_5_avg > 0 else 0
+            # 1. RECENT MOMENTUM (last 3 candles vs previous 3 for 15m intervals)
+            recent_3_avg = sum(prices[-3:]) / 3
+            prev_3_avg = sum(prices[-6:-3]) / 3
+            momentum_score = ((recent_3_avg - prev_3_avg) / prev_3_avg * 100) if prev_3_avg > 0 else 0
             
-            # 2. IMMEDIATE CHANGE (last 3 candles)
-            if len(prices) >= 3:
-                immediate_start = prices[-3]
+            # 2. IMMEDIATE CHANGE (last 2 candles for 15m intervals)
+            if len(prices) >= 2:
+                immediate_start = prices[-2]
                 recent_change_pct = ((current_price - immediate_start) / immediate_start * 100) if immediate_start > 0 else 0
             else:
                 recent_change_pct = 0
             
-            # 3. VOLATILITY SPIKE (recent vs historical)
+            # 3. VOLATILITY SPIKE (recent vs historical for 15m intervals)
             recent_volatilities = []
             historical_volatilities = []
             
@@ -523,9 +524,9 @@ class Exchange:
             for i in range(len(ohlcv_data)):
                 if highs[i] > 0 and lows[i] > 0 and prices[i] > 0:
                     volatility = ((highs[i] - lows[i]) / prices[i]) * 100
-                    if i >= len(ohlcv_data) - 5:  # Last 5 candles
+                    if i >= len(ohlcv_data) - 3:  # Last 3 candles (45 minutes)
                         recent_volatilities.append(volatility)
-                    elif i < len(ohlcv_data) - 10:  # Earlier candles
+                    elif i < len(ohlcv_data) - 6:  # Earlier candles
                         historical_volatilities.append(volatility)
             
             recent_vol_avg = sum(recent_volatilities) / len(recent_volatilities) if recent_volatilities else 0
@@ -533,23 +534,22 @@ class Exchange:
             
             volatility_spike = (recent_vol_avg / historical_vol_avg) if historical_vol_avg > 0 else 1.0
             
-            # 4. VOLUME SPIKE (recent vs average)
-            recent_volume_avg = sum(volumes[-5:]) / 5
-            historical_volume_avg = sum(volumes[:-5]) / len(volumes[:-5]) if len(volumes) > 5 else recent_volume_avg
+            # 4. VOLUME SPIKE (recent vs average for 15m intervals)
+            recent_volume_avg = sum(volumes[-3:]) / 3  # Last 3 candles
+            historical_volume_avg = sum(volumes[:-3]) / len(volumes[:-3]) if len(volumes) > 3 else recent_volume_avg
             
             volume_spike_factor = (recent_volume_avg / historical_volume_avg) if historical_volume_avg > 0 else 1.0
             
-            # 5. TREND CONSISTENCY (are recent moves in same direction?)
+            # 5. TREND CONSISTENCY (are recent moves in same direction for 15m)
             recent_changes = []
-            for i in range(len(prices) - 5, len(prices)):
+            for i in range(len(prices) - 3, len(prices)):  # Last 3 candles
                 if i > 0 and prices[i-1] > 0:
                     change = (prices[i] - prices[i-1]) / prices[i-1]
                     recent_changes.append(1 if change > 0 else -1 if change < 0 else 0)
             
             trend_consistency = abs(sum(recent_changes)) / len(recent_changes) if recent_changes else 0
             
-            # 6. COMPOSITE ACTIVITY SCORE (heavily weighted towards recent activity)
-            # Small crypto optimized weights
+            # 6. COMPOSITE ACTIVITY SCORE (heavily weighted towards recent activity for 15m)
             base_activity = abs(recent_change_pct) * 2.0  # Recent change is most important
             momentum_boost = abs(momentum_score) * 1.5    # Momentum amplifies score
             volatility_boost = min(volatility_spike * 0.5, 2.0)  # Cap volatility boost
@@ -558,34 +558,34 @@ class Exchange:
             
             activity_score = base_activity + momentum_boost + volatility_boost + volume_boost + consistency_boost
             
-            # 7. ENHANCED RECENCY PENALTY (aggressive filtering for sideways symbols)
+            # 7. ENHANCED RECENCY PENALTY (aggressive filtering for sideways symbols with 15m)
             last_candle_change = abs((prices[-1] - prices[-2]) / prices[-2] * 100) if len(prices) >= 2 and prices[-2] > 0 else 0
             
-            # Multiple penalty layers for stagnant symbols
-            if last_candle_change < 0.05:  # Less than 0.05% in last candle
+            # Adjusted thresholds for 15m intervals (larger moves expected)
+            if last_candle_change < 0.2:  # Less than 0.2% in last 15m candle
                 activity_score *= 0.2  # Severe penalty for completely stagnant
-            elif last_candle_change < 0.1:  # Less than 0.1% in last candle  
+            elif last_candle_change < 0.5:  # Less than 0.5% in last 15m candle  
                 activity_score *= 0.4  # Heavy penalty for minimal movement
-            elif last_candle_change < 0.2:  # Less than 0.2% in last candle
+            elif last_candle_change < 1.0:  # Less than 1.0% in last 15m candle
                 activity_score *= 0.7  # Moderate penalty for low movement
             
-            # Additional penalty for consistently low recent movement
-            if abs(recent_change_pct) < 0.2:  # Very small recent change
+            # Additional penalty for consistently low recent movement (adjusted for 15m)
+            if abs(recent_change_pct) < 0.5:  # Very small recent change for 15m
                 activity_score *= 0.3  # Extra penalty for sideways action
             
             # Penalty for negative momentum during low activity
-            if abs(momentum_score) < 1.0 and abs(recent_change_pct) < 0.5:
+            if abs(momentum_score) < 2.0 and abs(recent_change_pct) < 1.0:  # Adjusted for 15m
                 activity_score *= 0.5  # Penalty for no momentum + small moves
             
-            # 8. Calculate reference price change for display
-            reference_price = prices[-(min(10, len(prices)))]  # 10 candles ago or earliest available
+            # 8. Calculate reference price change for display (adjusted for 15m)
+            reference_price = prices[-(min(6, len(prices)))]  # 6 candles ago (90 minutes)
             price_change_pct = ((current_price - reference_price) / reference_price * 100) if reference_price > 0 else 0
             
             return {
                 'symbol': symbol,
                 'activity_score': activity_score,
-                'recent_change_pct': recent_change_pct,  # Last 3 candles
-                'momentum_score': momentum_score,        # 5 vs 5 candle comparison
+                'recent_change_pct': recent_change_pct,  # Last 2 candles (30 minutes)
+                'momentum_score': momentum_score,        # 3 vs 3 candle comparison
                 'volume_spike_factor': volume_spike_factor,
                 'volatility_spike': volatility_spike,
                 'trend_consistency': trend_consistency,
@@ -593,7 +593,7 @@ class Exchange:
                 'current_price': current_price,
                 'price_change_pct': price_change_pct,    # For backward compatibility
                 'abs_change_pct': abs(price_change_pct), # For backward compatibility
-                'timeframe_minutes': min(30, len(ohlcv_data) * 3)
+                'timeframe_minutes': min(30, len(ohlcv_data) * 15)  # Updated for 15m intervals
             }
             
         except Exception as e:
@@ -601,18 +601,18 @@ class Exchange:
             return None
     def _is_truly_active(self, activity_data: Dict) -> bool:
         """
-        Simple filter - only reject completely dead symbols.
+        Filter for truly active symbols using 15m timeframe thresholds.
         """
         try:
             recent_change = abs(activity_data['recent_change_pct'])
             last_candle_move = activity_data['last_candle_movement']
             
-            # Only filter out completely stagnant symbols
-            if recent_change < 0.1 and last_candle_move < 0.02:
-                self.logger.debug(f"{activity_data['symbol']}: Filtered - completely stagnant")
+            # Adjusted thresholds for 15m intervals (expect larger moves)
+            if recent_change < 0.3 and last_candle_move < 0.1:  # Increased from 0.1 and 0.02
+                self.logger.debug(f"{activity_data['symbol']}: Filtered - completely stagnant (15m)")
                 return False
             
-            self.logger.debug(f"{activity_data['symbol']}: PASSED")
+            self.logger.debug(f"{activity_data['symbol']}: PASSED (15m)")
             return True
             
         except Exception as e:
@@ -620,7 +620,7 @@ class Exchange:
             return False
     def get_top_gainers_losers(self, limit: int = 5, timeframe_minutes: int = 30) -> Dict[str, List[Dict]]:
         """
-        Get separate lists of top gainers and top losers using 3-minute candles over specified timeframe.
+        Get separate lists of top gainers and top losers using 15-minute candles over specified timeframe.
         
         Args:
             limit: Number of top gainers and losers to return each
@@ -630,7 +630,7 @@ class Exchange:
             Dictionary with 'gainers' and 'losers' keys containing lists of symbol data
         """
         try:
-            # Get top active symbols with larger sample for filtering
+            # Get top active symbols with larger sample for filtering (now using 15m timeframe)
             active_symbols = self.get_top_active_symbols(limit=limit * 4, timeframe_minutes=timeframe_minutes)
             
             if not active_symbols:
@@ -651,7 +651,7 @@ class Exchange:
                 'losers': losers[:limit]
             }
             
-            self.logger.info(f"Found {len(result['gainers'])} top gainers and {len(result['losers'])} top losers over {timeframe_minutes}m")
+            self.logger.info(f"Found {len(result['gainers'])} top gainers and {len(result['losers'])} top losers over {timeframe_minutes}m (15m timeframe)")
             
             return result
             
