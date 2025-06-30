@@ -28,7 +28,7 @@ except ImportError:
 class SignalParameters:
     """Parameters for trading signals with optimization tracking"""
     
-    strategy_type: str = 'qqe_supertrend_fixed'
+    strategy_type: str = 'roc_multi_timeframe'
     
     # QQE parameters
     qqe_length: int = 12
@@ -1320,7 +1320,7 @@ class AdaptiveCryptoSignals:
         
         return status
 
-def integrate_adaptive_crypto_signals(strategy_instance, config_file: str = None, strategy_type: str = 'qqe_supertrend_fixed'):
+def integrate_adaptive_crypto_signals(strategy_instance, config_file: str = None, strategy_type: str = 'roc_multi_timeframe'):
     """Integration with current regime optimization"""
     if config_file is None:
         config_file = os.path.join(os.getcwd(), "data", "crypto_signal_configs.json")

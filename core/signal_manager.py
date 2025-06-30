@@ -163,7 +163,7 @@ class SignalManager:
         except Exception:
             return False
     
-    def create_strategy(self, symbol: str, auto_created: bool = True, strategy_type: str = 'qqe_supertrend_fixed') -> str:
+    def create_strategy(self, symbol: str, auto_created: bool = True, strategy_type: str = 'roc_multi_timeframe') -> str:
         """Create a new signal strategy for a symbol with specified strategy type."""
         try:
             # Validate limits

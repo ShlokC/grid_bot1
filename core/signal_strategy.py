@@ -23,7 +23,7 @@ class SignalStrategy:
              strategy_id: str,
              position_size_usd: float = 1.0,
              leverage: float = 20.0,
-             strategy_type: str = 'qqe_supertrend_fixed'):
+             strategy_type: str = 'roc_multi_timeframe'):
         """Initialize signal strategy with specified strategy type."""
         
         self.logger = logging.getLogger(__name__)
