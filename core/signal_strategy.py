@@ -401,10 +401,10 @@ class SignalStrategy:
                     #     if tp_order and 'id' in tp_order: self.logger.info(f"[{self.symbol}] 🎯 TAKE PROFIT placed: {tp_order['id']}")
                     # except Exception as e: self.logger.error(f"[{self.symbol}] ❌ Failed TP order: {e}")
                     
-                    try:
-                        sl_order = self.exchange.create_stop_order(self.symbol, sl_side, amount, sl_price, order_type='stop_market')
-                        if sl_order and 'id' in sl_order: self.logger.info(f"[{self.symbol}] 🛡️ STOP LOSS placed: {sl_order['id']}")
-                    except Exception as e: self.logger.error(f"[{self.symbol}] ❌ Failed SL order: {e}")
+                    # try:
+                    #     sl_order = self.exchange.create_stop_order(self.symbol, sl_side, amount, sl_price, order_type='stop_market')
+                    #     if sl_order and 'id' in sl_order: self.logger.info(f"[{self.symbol}] 🛡️ STOP LOSS placed: {sl_order['id']}")
+                    # except Exception as e: self.logger.error(f"[{self.symbol}] ❌ Failed SL order: {e}")
             else:
                 self.logger.error(f"[{self.symbol}] ❌ Order execution failed or no valid ID returned.")
                 
