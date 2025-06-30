@@ -623,10 +623,21 @@ class AdaptiveCryptoSignals:
                 self.optimization_in_progress = False
             return False
 
-    def _generate_signal_with_indicators(self, ohlcv_data: list, params) -> Tuple[str, Dict]:
+    def _generate_signal_with_indicators(self, ohlcv_data, params) -> Tuple[str, Dict]:
         """FIXED: Generate signal using current regime optimized parameters"""
         try:
-            df = pd.DataFrame(ohlcv_data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            # FIXED: Handle multi-timeframe data for ROC strategy
+            if isinstance(ohlcv_data, dict) and '3m' in ohlcv_data and '15m' in ohlcv_data:
+                # For ROC multi-timeframe, pass the dict directly
+                if self.strategy_type == 'roc_multi_timeframe':
+                    return self._roc_multi_timeframe_signal_with_indicators(ohlcv_data, params)
+                else:
+                    # For other strategies, use 3m data
+                    df = pd.DataFrame(ohlcv_data['3m'], columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            else:
+                # Original single timeframe data
+                df = pd.DataFrame(ohlcv_data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            
             for col in ['open', 'high', 'low', 'close', 'volume']:
                 df[col] = df[col].astype(float)
             
@@ -640,8 +651,7 @@ class AdaptiveCryptoSignals:
                 return self._rsi_macd_signal_with_indicators(df, params)
             elif self.strategy_type == 'tsi_vwap':
                 return self._tsi_vwap_signal_with_indicators(df, params)
-            elif self.strategy_type == 'roc_multi_timeframe':
-                return self._roc_multi_timeframe_signal_with_indicators(df, params)
+            # ROC is handled above for multi-timeframe data
             
             return 'none', {}
             
