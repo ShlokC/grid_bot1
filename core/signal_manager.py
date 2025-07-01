@@ -90,10 +90,10 @@ class SignalManager:
             self.logger.error(f"Error loading strategies: {e}")
     
     def _auto_manage_active_strategies(self):
-        """FIXED: Auto-create and manage strategies with safe dictionary operations."""
+        """FIXED: Auto-manage strategies - NEVER stop strategies with active positions."""
         try:
             # Force fresh data from exchange instead of cached data
-            self.logger.info("🔄 Getting fresh top 10 active symbols from exchange...")
+            self.logger.info("Getting fresh top 10 active symbols from exchange...")
             fresh_symbols = self.exchange.get_top_active_symbols(limit=10)
             
             if not fresh_symbols:
@@ -101,13 +101,14 @@ class SignalManager:
                 return
             
             top_symbols = [symbol['symbol'] for symbol in fresh_symbols]
-            self.logger.info(f"🎯 Auto-managing fresh top 10: {top_symbols}")
+            self.logger.info(f"Auto-managing fresh top 10: {top_symbols}")
             
             # FIXED: Create snapshots to avoid iteration errors during modification
             strategies_snapshot = dict(self.strategies)
-            current_running = set()
+            current_active_symbols = set()
             strategies_to_remove = []
             
+            # Check existing strategies against top active symbols
             for strategy_id, strategy in strategies_snapshot.items():
                 # Check if strategy still exists
                 if strategy_id not in self.strategies:
@@ -116,52 +117,69 @@ class SignalManager:
                 symbol = strategy.original_symbol
                 
                 if symbol in top_symbols:
-                    # Symbol is in top 10 - keep it
+                    # Symbol is in top 10 - keep it and ensure it's running
                     if not strategy.running:
                         self.start_strategy(strategy_id)
-                        self.logger.info(f"🚀 Started strategy for top symbol: {symbol}")
-                    current_running.add(symbol)
+                        self.logger.info(f"Started strategy for top active symbol: {symbol}")
+                    current_active_symbols.add(symbol)
                 else:
-                    # Symbol not in top 10 - check for position
+                    # Symbol not in top 10 - check for position before any action
                     has_position = self._check_strategy_has_position(strategy)
                     if not has_position:
-                        # No position, mark for removal
+                        # No position and not active - safe to remove
                         strategies_to_remove.append(strategy_id)
-                        self.logger.info(f"🗑️ Marking {symbol} for removal (not in top 10, no position)")
+                        self.logger.info(f"Marking {symbol} for removal (not active, no position)")
+                    else:
+                        # CRITICAL FIX: Has position - NEVER stop it, just log
+                        self.logger.info(f"Keeping {symbol} strategy (has position but not in top active)")
+                        # DO NOT call strategy.stop_strategy() - let it keep running for exit evaluation
+                        current_active_symbols.add(symbol)  # Keep it as "active" for position management
             
-            # FIXED: Remove old strategies safely
+            # Remove inactive strategies safely (only those without positions)
             for strategy_id in strategies_to_remove:
                 if strategy_id in self.strategies:  # Double-check it still exists
                     self.stop_strategy(strategy_id)
                     self.delete_strategy(strategy_id)
+                    self.logger.info(f"Deleted inactive strategy: {strategy_id}")
             
-            # Create missing strategies for top 10
+            # Create missing strategies for top active symbols
             for symbol in top_symbols:
-                if symbol not in current_running:
-                    strategy_id = self.create_strategy(symbol, auto_created=True)
+                if symbol not in current_active_symbols:
+                    strategy_id = self.create_strategy(symbol, auto_created=True, strategy_type='roc_multi_timeframe')
                     if strategy_id:
                         self.start_strategy(strategy_id)
-                        self.logger.info(f"🆕 Created and started: {symbol}")
+                        self.logger.info(f"Created and started strategy for: {symbol}")
             
             # Update cached data with fresh data
             self.active_symbols_data['top_active'] = fresh_symbols
             self.active_symbols_data['last_updated'] = time.time()
+            
+            # Log final state
+            total_strategies = len(self.strategies)
+            running_strategies = sum(1 for s in self.strategies.values() if s.running)
+            self.logger.info(f"Auto-management complete: {running_strategies}/{total_strategies} strategies running")
                             
         except Exception as e:
-            self.logger.error(f"❌ Error in auto-manage strategies: {e}")
+            self.logger.error(f"Error in auto-manage strategies: {e}")
 
     def _check_strategy_has_position(self, strategy) -> bool:
-        """Check if strategy has active position."""
+        """FIXED: Robust position check for strategy."""
         try:
             positions = self.exchange.get_positions(strategy.symbol)
             for pos in positions:
-                if pos.get('info', {}).get('symbol', '') == strategy.symbol:
+                pos_symbol = pos.get('info', {}).get('symbol', '').upper()
+                our_symbol = strategy.symbol.upper()
+                
+                if pos_symbol == our_symbol:
                     size = float(pos.get('contracts', 0))
-                    if abs(size) >= 0.001:
+                    if abs(size) >= 0.001:  # Has meaningful position
+                        self.logger.debug(f"Position found for {our_symbol}: {size:.6f}")
                         return True
+            
             return False
-        except Exception:
-            return False
+        except Exception as e:
+            self.logger.error(f"Error checking position for {strategy.symbol}: {e}")
+            return False  # Assume no position on error
     
     def create_strategy(self, symbol: str, auto_created: bool = True, strategy_type: str = 'roc_multi_timeframe') -> str:
         """Create a new signal strategy for a symbol with specified strategy type."""
@@ -253,7 +271,7 @@ class SignalManager:
             return False
     
     def get_all_strategies_status(self) -> List[Dict]:
-        """FIXED: Get status of all strategies without dictionary iteration errors."""
+        """FIXED: Get status and update ALL strategies with positions."""
         try:
             # Ensure monitor is running
             running_strategies = sum(1 for strategy in self.strategies.values() if strategy.running)
@@ -271,7 +289,17 @@ class SignalManager:
                     if strategy_id not in self.strategies:
                         continue
                     
-                    if strategy.running:
+                    # CRITICAL FIX: Update if running OR has position
+                    should_update = strategy.running
+                    
+                    if not should_update:
+                        # Check if strategy has active position
+                        has_position = self._check_strategy_has_position(strategy)
+                        if has_position:
+                            should_update = True
+                            self.logger.debug(f"Status update for {strategy.symbol} (has position but not running)")
+                    
+                    if should_update:
                         strategy.update_strategy()
                         self.data_store.save_grid(strategy_id, strategy.get_status())
                     
@@ -314,10 +342,12 @@ class SignalManager:
             self.logger.error(f"Error ensuring monitor running: {e}")
     
     def _monitor_strategies(self):
-        """FIXED: Monitor strategies with safe iteration."""
-        self.logger.info("🔍 Auto-strategy monitor thread started")
+        """FIXED: Monitor ALL strategies with positions, regardless of running status."""
+        self.logger.info("Monitor started - Will update ALL strategies with positions")
         
         cycle_count = 0
+        last_active_symbols_sync = 0
+        
         try:
             while self.running:
                 cycle_count += 1
@@ -325,23 +355,46 @@ class SignalManager:
                 # Update active symbols data first
                 try:
                     self._update_active_symbols_if_needed()
-                    # Auto-manage strategies every 10 cycles (50 seconds)
-                    if cycle_count % 10 == 1:
+                    
+                    # Immediate sync when active symbols are updated
+                    current_active_update = self.active_symbols_data.get('last_updated', 0)
+                    if current_active_update > last_active_symbols_sync:
+                        self.logger.info(f"Active symbols updated - immediate strategy sync")
                         self._auto_manage_active_strategies()
+                        last_active_symbols_sync = current_active_update
+                    
                 except Exception as e:
                     self.logger.error(f"Error updating active symbols: {e}")
                 
-                # FIXED: Get active strategies with snapshot to avoid iteration errors
+                # FIXED: Update ALL strategies with positions OR running status
                 try:
                     strategies_snapshot = dict(self.strategies)
-                    active_strategies = [(sid, strategy) for sid, strategy in strategies_snapshot.items() 
-                                       if sid in self.strategies and strategy.running]
+                    strategies_to_update = []
+                    
+                    for strategy_id, strategy in strategies_snapshot.items():
+                        if strategy_id not in self.strategies:  # Strategy was deleted
+                            continue
+                        
+                        # CRITICAL FIX: Update if running OR has position
+                        should_update = strategy.running
+                        
+                        if not should_update:
+                            # Check if strategy has active position
+                            has_position = self._check_strategy_has_position(strategy)
+                            if has_position:
+                                should_update = True
+                                self.logger.debug(f"Updating {strategy.symbol} (has position but not running)")
+                        
+                        if should_update:
+                            strategies_to_update.append((strategy_id, strategy))
                     
                     if cycle_count % 10 == 1:
-                        self.logger.info(f"🔍 Monitor cycle #{cycle_count}: {len(active_strategies)} active strategies")
+                        running_count = sum(1 for _, s in strategies_to_update if s.running)
+                        position_count = len(strategies_to_update) - running_count
+                        self.logger.info(f"Monitor cycle #{cycle_count}: {running_count} running + {position_count} with positions = {len(strategies_to_update)} total")
                     
-                    # Update strategies
-                    for strategy_id, strategy in active_strategies:
+                    # Update all strategies that need updating
+                    for strategy_id, strategy in strategies_to_update:
                         try:
                             # Double-check strategy still exists
                             if strategy_id not in self.strategies:
@@ -360,7 +413,7 @@ class SignalManager:
         except Exception as e:
             self.logger.error(f"Critical error in monitor: {e}")
         finally:
-            self.logger.warning("🔍 Strategy monitor stopped")
+            self.logger.warning("Strategy monitor stopped")
     def test_all_strategies_setup(self) -> bool:
         """Test trading setup for all active strategies."""
         try:
@@ -389,13 +442,13 @@ class SignalManager:
             self.logger.error(f"Error testing all strategies setup: {e}")
             return False
     def _update_active_symbols_if_needed(self):
-        """FIXED: Update active symbols with real-time volume spike detection."""
+        """FIXED: Update active symbols with faster sync for real-time strategy management."""
         try:
             current_time = time.time()
             last_update = self.active_symbols_data.get('last_updated', 0)
             
-            # FIXED: Reduced update interval for real-time detection (30 seconds instead of minutes)
-            if current_time - last_update < 30:  # Update every 30 seconds for real-time
+            # FIXED: Reduced update interval for better responsiveness (15 seconds instead of 30)
+            if current_time - last_update < 15:  # Update every 15 seconds for real-time
                 return
             
             self.logger.info("Updating active symbols data (1m real-time volume spike detection)")
@@ -447,11 +500,18 @@ class SignalManager:
     def force_update_active_symbols(self) -> bool:
         """Force update of active symbols data."""
         try:
+            self.logger.info("Force syncing strategies with active symbols...")
+            
+            # Force active symbols update
             self.active_symbols_data['last_updated'] = 0
             self._update_active_symbols_if_needed()
-            return len(self.active_symbols_data.get('top_active', [])) > 0
+            
+            # Force strategy management
+            self._auto_manage_active_strategies()
+            
+            return True
         except Exception as e:
-            self.logger.error(f"Error force updating active symbols: {e}")
+            self.logger.error(f"Error force syncing: {e}")
             return False
     
     def stop_all_strategies(self):

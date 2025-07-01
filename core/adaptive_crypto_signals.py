@@ -53,10 +53,10 @@ class SignalParameters:
     tsi_signal: int = 6
     
     # ROC Multi-timeframe parameters
-    roc_3m_length: int = 10
-    roc_15m_length: int = 10
+    roc_3m_length: int = 5
+    roc_15m_length: int = 20
     roc_3m_threshold: float = 1.0
-    roc_15m_threshold: float = 2.0
+    roc_15m_threshold: float = 0.5
     roc_alignment_factor: float = 0.5
     
     # Performance tracking
@@ -560,13 +560,13 @@ class AdaptiveCryptoSignals:
         try:
             with self.optimization_lock:
                 if self.optimization_in_progress:
-                    self.logger.info(f"PRE-ORDER OPTIMIZATION: Already in progress, using existing parameters")
+                    # self.logger.info(f"PRE-ORDER OPTIMIZATION: Already in progress, using existing parameters")
                     return False
                 self.optimization_in_progress = True
             
             try:
                 start_time = time.time()
-                self.logger.info(f"PRE-ORDER OPTIMIZATION: Starting synchronous optimization for {self.symbol}")
+                # self.logger.info(f"PRE-ORDER OPTIMIZATION: Starting synchronous optimization for {self.symbol}")
                 
                 current_data = ohlcv_data.copy()
                 
@@ -583,18 +583,18 @@ class AdaptiveCryptoSignals:
                             self._params_snapshot = copy.deepcopy(self.params)
                         
                         optimization_time = time.time() - start_time
-                        self.logger.info(f"PRE-ORDER OPTIMIZATION: Parameters updated in {optimization_time:.2f}s")
-                        self.logger.info(f"PRE-ORDER OPTIMIZATION: Accuracy {old_accuracy:.1f}% -> {best_score:.1f}%")
+                        # self.logger.info(f"PRE-ORDER OPTIMIZATION: Parameters updated in {optimization_time:.2f}s")
+                        # self.logger.info(f"PRE-ORDER OPTIMIZATION: Accuracy {old_accuracy:.1f}% -> {best_score:.1f}%")
                         
                         self.last_optimization = time.time()
                         return True
                     else:
                         optimization_time = time.time() - start_time
-                        self.logger.info(f"PRE-ORDER OPTIMIZATION: No improvement found in {optimization_time:.2f}s")
+                        # self.logger.info(f"PRE-ORDER OPTIMIZATION: No improvement found in {optimization_time:.2f}s")
                         self.last_optimization = time.time()
                         return False
                 else:
-                    self.logger.warning(f"PRE-ORDER OPTIMIZATION: Insufficient data ({len(current_data)} candles)")
+                    # self.logger.warning(f"PRE-ORDER OPTIMIZATION: Insufficient data ({len(current_data)} candles)")
                     return False
                     
             except Exception as e:
@@ -811,7 +811,7 @@ class AdaptiveCryptoSignals:
             return 'none', {}
 
     def _roc_multi_timeframe_signal_with_indicators(self, data_input, params) -> Tuple[str, Dict]:
-        """FIXED: Multi-timeframe ROC signal with clear logic and proper error handling"""
+        """FIXED: Multi-timeframe ROC with DIVERGENCE logic for reversal detection after spikes"""
         try:
             if isinstance(data_input, dict):
                 # New format with separate timeframes
@@ -863,30 +863,66 @@ class AdaptiveCryptoSignals:
             if pd.isna(current_roc_3m) or pd.isna(current_roc_15m):
                 return 'none', {}
             
+            # Need at least 6 points for 5-candle lookback
+            lookback_period = min(10, len(roc_3m) - 1)
+            if lookback_period < 1:
+                return 'none', {}
+            
             # Store indicators for exit evaluation
             indicators = {
                 'roc_3m': float(current_roc_3m),
                 'roc_15m': float(current_roc_15m),
                 'roc_3m_threshold': float(params.roc_3m_threshold),
                 'roc_15m_threshold': float(params.roc_15m_threshold),
-                'alignment_factor': float(params.roc_alignment_factor),
                 'current_price': float(df_3m['close'].iloc[-1])
             }
             
-            # FIXED: Simple bullish/bearish logic - both timeframes must agree
-            roc_3m_bullish = current_roc_3m > params.roc_3m_threshold
-            roc_15m_bullish = current_roc_15m > params.roc_15m_threshold
-            roc_3m_bearish = current_roc_3m < -params.roc_3m_threshold
-            roc_15m_bearish = current_roc_15m < -params.roc_15m_threshold
+            # FIXED: DIVERGENCE LOGIC with 5-candle lookback like QQE pattern
             
-            # Calculate alignment strength for additional confirmation
-            alignment_strength = abs(current_roc_3m * current_roc_15m) * params.roc_alignment_factor
-            indicators['alignment_strength'] = float(alignment_strength)
+            # Current states
+            roc_3m_currently_bullish = current_roc_3m > params.roc_3m_threshold
+            roc_3m_currently_bearish = current_roc_3m < -params.roc_3m_threshold
+            roc_15m_currently_bullish = current_roc_15m > params.roc_15m_threshold
+            roc_15m_currently_bearish = current_roc_15m < -params.roc_15m_threshold
             
-            # FIXED: Clear entry signals - both timeframes must agree with minimum alignment
-            if roc_3m_bullish and roc_15m_bullish and alignment_strength > 0.5:
+            # Check if 3m RECENTLY turned bullish (current bullish + any of last 5 was bearish)
+            roc_3m_recently_turned_bullish = False
+            if roc_3m_currently_bullish:
+                for i in range(1, lookback_period + 1):
+                    roc_3m_past = roc_3m.iloc[-1-i]
+                    if not pd.isna(roc_3m_past) and roc_3m_past < -params.roc_3m_threshold:
+                        roc_3m_recently_turned_bullish = True
+                        break
+            
+            # Check if 3m RECENTLY turned bearish (current bearish + any of last 5 was bullish)
+            roc_3m_recently_turned_bearish = False
+            if roc_3m_currently_bearish:
+                for i in range(1, lookback_period + 1):
+                    roc_3m_past = roc_3m.iloc[-1-i]
+                    if not pd.isna(roc_3m_past) and roc_3m_past > params.roc_3m_threshold:
+                        roc_3m_recently_turned_bearish = True
+                        break
+            
+            indicators['roc_3m_recently_turned_bullish'] = roc_3m_recently_turned_bullish
+            indicators['roc_3m_recently_turned_bearish'] = roc_3m_recently_turned_bearish
+            indicators['roc_15m_currently_bullish'] = roc_15m_currently_bullish
+            indicators['roc_15m_currently_bearish'] = roc_15m_currently_bearish
+            # DIVERGENCE SIGNALS FOR REVERSAL DETECTION (with 5-candle lookback):
+            # BUY: 3m recently turned bullish while 15m is bearish (catch bottom)
+            divergence_buy_signal = (roc_3m_recently_turned_bullish and roc_15m_currently_bearish)
+            
+            # SELL: 3m recently turned bearish while 15m is bullish (catch top)
+            divergence_sell_signal = (roc_3m_recently_turned_bearish and roc_15m_currently_bullish)
+            
+            indicators['divergence_buy_signal'] = divergence_buy_signal
+            indicators['divergence_sell_signal'] = divergence_sell_signal
+            
+            # Return divergence signals
+            if divergence_buy_signal:
+                self.logger.debug(f"ROC DIVERGENCE BUY: 3m recently turned bullish ({current_roc_3m:.2f}) while 15m bearish ({current_roc_15m:.2f})")
                 return 'buy', indicators
-            elif roc_3m_bearish and roc_15m_bearish and alignment_strength > 0.5:
+            elif divergence_sell_signal:
+                self.logger.debug(f"ROC DIVERGENCE SELL: 3m recently turned bearish ({current_roc_3m:.2f}) while 15m bullish ({current_roc_15m:.2f})")
                 return 'sell', indicators
             
             return 'none', indicators
@@ -896,7 +932,7 @@ class AdaptiveCryptoSignals:
             return 'none', {}
 
     def evaluate_exit_conditions(self, position_side: str, entry_price: float, current_price: float) -> Dict:
-        """Current regime exit evaluation using optimized parameters"""
+        """UPDATED: Exit evaluation with fresh indicator support - signature unchanged."""
         try:
             result = {'should_exit': False, 'exit_reason': '', 'exit_urgency': 'none'}
             
@@ -920,16 +956,14 @@ class AdaptiveCryptoSignals:
                 })
                 return result
 
-            # PRIORITY 3: Technical signal-based exits
+            # PRIORITY 3: Technical signal-based exits (now with fresh indicators)
             try:
-                with self._indicator_lock:
-                    indicators = self._last_calculated_indicators.copy() if self._last_calculated_indicators else {}
-                
-                if indicators:
-                    signal_exit = self._check_technical_exit_conditions(position_side, indicators, pnl_pct)
-                    if signal_exit['should_exit']:
-                        return signal_exit
-                        
+                # NOTE: _check_technical_exit_conditions now calculates fresh indicators internally
+                # Pass empty dict - fresh indicators will be calculated inside the method
+                signal_exit = self._check_technical_exit_conditions(position_side, {}, pnl_pct)
+                if signal_exit['should_exit']:
+                    return signal_exit
+                    
             except Exception as e:
                 self.logger.error(f"Technical exit check error: {e}")
 
@@ -950,42 +984,109 @@ class AdaptiveCryptoSignals:
             self.logger.error(f"Exit evaluation error: {e}")
             return {'should_exit': False, 'exit_reason': 'Error', 'exit_urgency': 'none'}
 
+    def _get_fresh_exit_indicators(self) -> Dict:
+        """Get fresh indicators specifically for exit evaluation - bypasses entry signal cooldown."""
+        try:
+            # Access exchange through the integration pattern
+            if not hasattr(self, '_exchange_ref'):
+                self.logger.debug("No exchange reference available for fresh exit indicators")
+                return {}
+            
+            exchange = self._exchange_ref
+            
+            # Get fresh OHLCV data based on strategy type
+            if self.strategy_type == 'roc_multi_timeframe':
+                # Multi-timeframe data for ROC strategy
+                ohlcv_3m = exchange.get_ohlcv(self.symbol, timeframe='3m', limit=100)
+                ohlcv_15m = exchange.get_ohlcv(self.symbol, timeframe='15m', limit=50)
+                
+                if not ohlcv_3m or len(ohlcv_3m) < 50 or not ohlcv_15m or len(ohlcv_15m) < 20:
+                    return {}
+                
+                ohlcv_data = {
+                    '3m': ohlcv_3m,
+                    '15m': ohlcv_15m
+                }
+            else:
+                # Single timeframe for other strategies
+                ohlcv_data = exchange.get_ohlcv(self.symbol, timeframe='3m', limit=200)
+                if not ohlcv_data or len(ohlcv_data) < 50:
+                    return {}
+            
+            # Use thread-safe parameter snapshot
+            with self._snapshot_lock:
+                current_params = copy.deepcopy(self._params_snapshot)
+            
+            # Generate fresh indicators using existing method (bypasses cooldown)
+            signal, fresh_indicators = self._generate_signal_with_indicators(ohlcv_data, current_params)
+            
+            if fresh_indicators:
+                self.logger.debug(f"Fresh exit indicators calculated for {self.strategy_type}")
+                return fresh_indicators
+            
+            return {}
+            
+        except Exception as e:
+            self.logger.error(f"Error calculating fresh exit indicators: {e}")
+            return {}
+
     def _check_technical_exit_conditions(self, position_side: str, indicators: Dict, pnl_pct: float) -> Dict:
-        """FIXED: Technical exit conditions based on strategy type"""
+        """FIXED: Technical exit conditions with fresh indicators for all strategy types."""
         try:
             result = {'should_exit': False, 'exit_reason': '', 'exit_urgency': 'none'}
             
+            # CRITICAL FIX: Get fresh indicators for exit evaluation
+            fresh_indicators = self._get_fresh_exit_indicators()
+            if fresh_indicators:
+                indicators = fresh_indicators  # Use fresh instead of stale
+                self.logger.debug(f"Using fresh indicators for {self.strategy_type} exit evaluation")
+            else:
+                self.logger.debug(f"Using fallback indicators for {self.strategy_type} exit evaluation")
+            
+            # Strategy-specific exit logic with fresh indicators
             if self.strategy_type == 'roc_multi_timeframe':
-                # ROC Multi-timeframe exits
+                # ROC Multi-timeframe exits with fresh indicators
                 roc_3m = indicators.get('roc_3m', 0)
                 roc_15m = indicators.get('roc_15m', 0)
                 threshold_3m = indicators.get('roc_3m_threshold', 1.0)
                 threshold_15m = indicators.get('roc_15m_threshold', 2.0)
                 
-                # Exit on either timeframe turning opposite
+                # Check for divergence exit signals using fresh "recently turned" flags
+                roc_3m_recently_turned_bearish = indicators.get('roc_3m_recently_turned_bearish', False)
+                roc_3m_recently_turned_bullish = indicators.get('roc_3m_recently_turned_bullish', False)
+                
                 if position_side == 'long':
+                    # Exit long when 3m recently turned bearish (fast exit on reversal)
+                    # OR when both timeframes become bearish (strong reversal)
                     roc_3m_bearish = roc_3m < -threshold_3m
                     roc_15m_bearish = roc_15m < -threshold_15m
+                    both_bearish = roc_3m_bearish and roc_15m_bearish
                     
-                    if roc_3m_bearish and roc_15m_bearish:
+                    if roc_3m_recently_turned_bearish or both_bearish:
+                        exit_reason = "3m recently turned bearish" if roc_3m_recently_turned_bearish else "both timeframes bearish"
                         result.update({
                             'should_exit': True,
-                            'exit_reason': f"ROC bearish: 3m={roc_3m:.2f}, 15m={roc_15m:.2f} (PnL: {pnl_pct:.2f}%)",
+                            'exit_reason': f"ROC divergence exit: {exit_reason} (3m:{roc_3m:.2f}, 15m:{roc_15m:.2f}, PnL:{pnl_pct:.2f}%)",
                             'exit_urgency': 'normal'
                         })
+                        
                 elif position_side == 'short':
+                    # Exit short when 3m recently turned bullish (fast exit on reversal)
+                    # OR when both timeframes become bullish (strong reversal)
                     roc_3m_bullish = roc_3m > threshold_3m
                     roc_15m_bullish = roc_15m > threshold_15m
+                    both_bullish = roc_3m_bullish and roc_15m_bullish
                     
-                    if roc_3m_bullish and roc_15m_bullish:
+                    if roc_3m_recently_turned_bullish or both_bullish:
+                        exit_reason = "3m recently turned bullish" if roc_3m_recently_turned_bullish else "both timeframes bullish"
                         result.update({
                             'should_exit': True,
-                            'exit_reason': f"ROC bullish: 3m={roc_3m:.2f}, 15m={roc_15m:.2f} (PnL: {pnl_pct:.2f}%)",
+                            'exit_reason': f"ROC divergence exit: {exit_reason} (3m:{roc_3m:.2f}, 15m:{roc_15m:.2f}, PnL:{pnl_pct:.2f}%)",
                             'exit_urgency': 'normal'
                         })
             
-            # Add similar logic for other strategy types as needed
             elif self.strategy_type == 'tsi_vwap':
+                # TSI + VWAP exits with fresh indicators
                 tsi_line = indicators.get('tsi_line', 0)
                 tsi_signal = indicators.get('tsi_signal', 0)
                 current_price = indicators.get('current_price', 0)
@@ -995,14 +1096,60 @@ class AdaptiveCryptoSignals:
                     if tsi_line < tsi_signal or current_price < vwap:
                         result.update({
                             'should_exit': True,
-                            'exit_reason': f"TSI reversal or price below VWAP (PnL: {pnl_pct:.2f}%)",
+                            'exit_reason': f"TSI reversal or price below VWAP (TSI:{tsi_line:.2f}<{tsi_signal:.2f}, Price:${current_price:.6f}<VWAP:${vwap:.6f}, PnL:{pnl_pct:.2f}%)",
                             'exit_urgency': 'normal'
                         })
                 elif position_side == 'short':
                     if tsi_line > tsi_signal or current_price > vwap:
                         result.update({
                             'should_exit': True,
-                            'exit_reason': f"TSI reversal or price above VWAP (PnL: {pnl_pct:.2f}%)",
+                            'exit_reason': f"TSI reversal or price above VWAP (TSI:{tsi_line:.2f}>{tsi_signal:.2f}, Price:${current_price:.6f}>VWAP:${vwap:.6f}, PnL:{pnl_pct:.2f}%)",
+                            'exit_urgency': 'normal'
+                        })
+            
+            elif self.strategy_type == 'rsi_macd':
+                # RSI + MACD exits with fresh indicators
+                rsi = indicators.get('rsi', 50)
+                macd_line = indicators.get('macd_line', 0)
+                macd_signal = indicators.get('macd_signal', 0)
+                
+                if position_side == 'long':
+                    # Exit long if RSI overbought or MACD turns bearish
+                    if rsi > 70 or macd_line < macd_signal:
+                        result.update({
+                            'should_exit': True,
+                            'exit_reason': f"RSI overbought or MACD bearish (RSI:{rsi:.1f}, MACD:{macd_line:.4f}<{macd_signal:.4f}, PnL:{pnl_pct:.2f}%)",
+                            'exit_urgency': 'normal'
+                        })
+                elif position_side == 'short':
+                    # Exit short if RSI oversold or MACD turns bullish
+                    if rsi < 30 or macd_line > macd_signal:
+                        result.update({
+                            'should_exit': True,
+                            'exit_reason': f"RSI oversold or MACD bullish (RSI:{rsi:.1f}, MACD:{macd_line:.4f}>{macd_signal:.4f}, PnL:{pnl_pct:.2f}%)",
+                            'exit_urgency': 'normal'
+                        })
+            
+            elif self.strategy_type in ['qqe_supertrend_fixed', 'qqe_supertrend_fast']:
+                # QQE + Supertrend exits with fresh indicators
+                qqe_value = indicators.get('qqe_value', 0)
+                qqe_signal = indicators.get('qqe_signal', 0)
+                st_direction = indicators.get('st_direction', 0)
+                
+                if position_side == 'long':
+                    # Exit long if QQE turns bearish or Supertrend turns negative
+                    if qqe_value <= qqe_signal or st_direction == -1:
+                        result.update({
+                            'should_exit': True,
+                            'exit_reason': f"QQE bearish or ST negative (QQE:{qqe_value:.2f}<={qqe_signal:.2f}, ST:{st_direction}, PnL:{pnl_pct:.2f}%)",
+                            'exit_urgency': 'normal'
+                        })
+                elif position_side == 'short':
+                    # Exit short if QQE turns bullish or Supertrend turns positive
+                    if qqe_value > qqe_signal or st_direction == 1:
+                        result.update({
+                            'should_exit': True,
+                            'exit_reason': f"QQE bullish or ST positive (QQE:{qqe_value:.2f}>{qqe_signal:.2f}, ST:{st_direction}, PnL:{pnl_pct:.2f}%)",
                             'exit_urgency': 'normal'
                         })
             
@@ -1328,11 +1475,11 @@ def integrate_adaptive_crypto_signals(strategy_instance, config_file: str = None
     strategy_instance.get_signal_status = crypto_sigs.get_system_status
     strategy_instance._crypto_signal_system = crypto_sigs
     
-    strategy_instance.logger.info(f"CURRENT REGIME {strategy_type} signals integrated:")
-    strategy_instance.logger.info(f"  - Pre-order optimization: enabled")
-    strategy_instance.logger.info(f"  - Current regime parameters: focused ranges")
-    strategy_instance.logger.info(f"  - Emergency SL: 1.5% loss")
-    strategy_instance.logger.info(f"  - Take Profit: 2.0% gain")
-    strategy_instance.logger.info(f"  - Technical exits: {strategy_type} signal reversals")
+    # strategy_instance.logger.info(f"CURRENT REGIME {strategy_type} signals integrated:")
+    # strategy_instance.logger.info(f"  - Pre-order optimization: enabled")
+    # strategy_instance.logger.info(f"  - Current regime parameters: focused ranges")
+    # strategy_instance.logger.info(f"  - Emergency SL: 1.5% loss")
+    # strategy_instance.logger.info(f"  - Take Profit: 2.0% gain")
+    # strategy_instance.logger.info(f"  - Technical exits: {strategy_type} signal reversals")
     
     return crypto_sigs

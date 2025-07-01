@@ -104,7 +104,7 @@ class SignalStrategy:
             if self.running:
                 return True
             
-            self.logger.info(f"🚀 Starting Signal Strategy: {self.symbol}")
+            # self.logger.info(f"🚀 Starting Signal Strategy: {self.symbol}")
             
             # Cancel any existing orders but don't place new ones
             try:
