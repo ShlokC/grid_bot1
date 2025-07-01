@@ -395,23 +395,16 @@ class Exchange:
             if "stop" in str(e).lower() or "unsupported" in str(e).lower():
                 self.logger.warning(f"⚠️ Stop orders may not be supported on this exchange")
             raise
-    def get_top_active_symbols(self, limit: int = 5, timeframe_minutes: int = 30) -> List[Dict]:
+    def get_top_active_symbols(self, limit: int = 5, timeframe_minutes: int = 5) -> List[Dict]:
         """
-        Get top most CURRENTLY active symbols based on recent momentum, volume, and volatility.
-        Designed specifically for small crypto detection with heavy recency bias.
-        
-        Args:
-            limit: Number of top symbols to return (default: 5)
-            timeframe_minutes: Minutes of data to analyze (default: 30)
-            
-        Returns:
-            List of dictionaries containing symbol and current activity data
+        Get top most CURRENTLY active symbols using real-time volume spike detection.
+        FIXED: Uses 1-5 minute timeframes with volume spike + price velocity detection.
         """
         try:
-            # Calculate candles needed for 15-minute intervals
-            candles_needed = int(timeframe_minutes / 15) + 10
+            # FIXED: Use 1-minute intervals for small crypto detection
+            candles_needed = max(timeframe_minutes + 20, 40)  # Minimum 40 candles for baseline
             
-            self.logger.info(f"Analyzing CURRENT activity for top {limit} symbols (15m timeframe optimized)")
+            self.logger.info(f"Analyzing CURRENT activity for top {limit} symbols (1m real-time detection)")
             
             available_symbols = self.get_available_symbols()
             if not available_symbols:
@@ -424,20 +417,20 @@ class Exchange:
             
             for symbol in available_symbols:
                 try:
-                    # Use 15-minute timeframe for analysis
-                    ohlcv_data = self.get_ohlcv(symbol, timeframe='15m', limit=1400)
+                    # FIXED: Use 1-minute timeframe for real-time detection
+                    ohlcv_data = self.get_ohlcv(symbol, timeframe='1m', limit=candles_needed)
                     
-                    if not ohlcv_data or len(ohlcv_data) < 15:
+                    if not ohlcv_data or len(ohlcv_data) < 20:
                         continue
                     
-                    # Calculate CURRENT activity score (recent analysis with 15m intervals)
-                    activity_data = self._calculate_current_activity(ohlcv_data, symbol)
+                    # FIXED: Simple volume spike + price velocity detection
+                    activity_data = self._detect_volume_spike_activity(ohlcv_data, symbol, timeframe_minutes)
                     
                     if activity_data is None:
                         continue
                     
-                    # STRICT FILTERING: Only truly active symbols
-                    if not self._is_truly_active(activity_data):
+                    # FIXED: Real filtering based on volume spike detection
+                    if not self._has_real_activity(activity_data):
                         continue
                     
                     symbol_activities.append(activity_data)
@@ -452,39 +445,141 @@ class Exchange:
                     continue
             
             if not symbol_activities:
-                self.logger.warning("No currently active symbols found - market may be in low activity period")
-                self.logger.warning("Consider lowering activity thresholds if this persists")
+                self.logger.warning("No active symbols found - market may be in low activity period")
                 return []
             
             if len(symbol_activities) < limit:
-                self.logger.info(f"Only found {len(symbol_activities)} truly active symbols out of {processed_count} analyzed")
-                self.logger.info("This indicates most symbols are currently sideways/inactive")
+                self.logger.info(f"Only found {len(symbol_activities)} active symbols out of {processed_count} analyzed")
             
-            # Sort by current activity score (heavily weights recent movement)
+            # Sort by activity score (volume spike + price velocity)
             symbol_activities.sort(key=lambda x: x['activity_score'], reverse=True)
             top_symbols = symbol_activities[:limit]
             
-            # Enhanced logging for crypto context with filtering info
-            filtered_count = processed_count - len(symbol_activities)
-            self.logger.info(f"Filtered out {filtered_count} inactive/sideways symbols")
-            self.logger.info(f"Top {len(top_symbols)} CURRENTLY active symbols (15m analysis):")
+            # Log results
+            self.logger.info(f"Top {len(top_symbols)} ACTIVE symbols (1m real-time):")
             for i, data in enumerate(top_symbols, 1):
                 symbol = data['symbol']
                 score = data['activity_score']
-                recent_change = data['recent_change_pct']
-                momentum = data['momentum_score']
+                price_velocity = data['price_velocity_pct']
                 volume_spike = data['volume_spike_factor']
-                last_candle = data['last_candle_movement']
                 
-                direction = "UP" if recent_change > 0 else "DOWN"
+                direction = "UP" if price_velocity > 0 else "DOWN"
                 self.logger.info(f"  {i}. {symbol}: {direction} Score:{score:.1f} "
-                            f"(Recent:{recent_change:+.2f}% Mom:{momentum:.1f} Vol:{volume_spike:.1f}x LastCandle:{last_candle:.2f}%)")
+                            f"(Velocity:{price_velocity:+.2f}% Vol:{volume_spike:.1f}x)")
             
             return top_symbols
             
         except Exception as e:
-            self.logger.error(f"Error getting currently active symbols: {e}")
+            self.logger.error(f"Error getting active symbols: {e}")
             return []
+
+    def _detect_volume_spike_activity(self, ohlcv_data: List, symbol: str, timeframe_minutes: int) -> Optional[Dict]:
+        """
+        FIXED: Simple volume spike + price velocity detection for real-time crypto analysis.
+        Uses industry standard: 20-period SMA baseline + volume spike detection.
+        """
+        try:
+            if len(ohlcv_data) < 20:
+                return None
+            
+            # Extract data
+            prices = [float(candle[4]) for candle in ohlcv_data]  # Close prices
+            volumes = [float(candle[5]) for candle in ohlcv_data]  # Volumes
+            
+            current_price = prices[-1]
+            if current_price <= 0:
+                return None
+            
+            # 1. VOLUME SPIKE DETECTION (20-period SMA baseline)
+            recent_volume_window = min(timeframe_minutes, 5)  # Max 5 minutes for recent
+            historical_window = 20  # Industry standard baseline
+            
+            recent_volume = sum(volumes[-recent_volume_window:]) / recent_volume_window
+            historical_volume = sum(volumes[-historical_window:-recent_volume_window]) / (historical_window - recent_volume_window)
+            
+            volume_spike_factor = (recent_volume / historical_volume) if historical_volume > 0 else 1.0
+            
+            # 2. PRICE VELOCITY (simple percentage change over timeframe)
+            start_idx = max(0, len(prices) - timeframe_minutes - 1)
+            start_price = prices[start_idx] if start_idx < len(prices) else prices[0]
+            price_velocity_pct = ((current_price - start_price) / start_price * 100) if start_price > 0 else 0
+            
+            # 3. IMMEDIATE MOMENTUM (last minute change)
+            immediate_change_pct = 0
+            if len(prices) >= 2 and prices[-2] > 0:
+                immediate_change_pct = ((current_price - prices[-2]) / prices[-2] * 100)
+            
+            # 4. SIMPLE ACTIVITY SCORE (volume spike + price velocity)
+            # Volume spike weight: 60%, Price velocity weight: 40%
+            volume_score = max(0, (volume_spike_factor - 1.0) * 30)  # Bonus points for volume above baseline
+            velocity_score = abs(price_velocity_pct) * 2.0  # Points for price movement
+            immediate_score = abs(immediate_change_pct) * 5.0  # High weight for immediate action
+            
+            activity_score = volume_score + velocity_score + immediate_score
+            
+            # 5. BREAKOUT DETECTION (simple high/low break)
+            lookback_period = min(15, len(prices) - 1)
+            recent_high = max(prices[-lookback_period:-1]) if lookback_period > 0 else current_price
+            recent_low = min(prices[-lookback_period:-1]) if lookback_period > 0 else current_price
+            
+            breakout_signal = ""
+            if current_price > recent_high * 1.001:  # 0.1% above recent high
+                breakout_signal = "BREAKOUT_UP"
+                activity_score *= 1.5  # Bonus for breakouts
+            elif current_price < recent_low * 0.999:  # 0.1% below recent low
+                breakout_signal = "BREAKOUT_DOWN"
+                activity_score *= 1.5  # Bonus for breakouts
+            
+            return {
+                'symbol': symbol,
+                'activity_score': round(activity_score, 2),
+                'price_velocity_pct': round(price_velocity_pct, 3),
+                'immediate_change_pct': round(immediate_change_pct, 3),
+                'volume_spike_factor': round(volume_spike_factor, 2),
+                'breakout_signal': breakout_signal,
+                'current_price': current_price,
+                'price_change_pct': price_velocity_pct,  # For backward compatibility
+                'timeframe_minutes': timeframe_minutes
+            }
+            
+        except Exception as e:
+            self.logger.debug(f"Error detecting activity for {symbol}: {e}")
+            return None
+
+    def _has_real_activity(self, activity_data: Dict) -> bool:
+        """
+        FIXED: Real activity filtering based on volume spike + price movement.
+        Uses meaningful thresholds for 1-minute crypto detection.
+        """
+        try:
+            volume_spike = activity_data['volume_spike_factor']
+            price_velocity = abs(activity_data['price_velocity_pct'])
+            immediate_change = abs(activity_data['immediate_change_pct'])
+            
+            # Volume spike threshold: minimum 1.5x normal volume
+            has_volume_activity = volume_spike >= 1.5
+            
+            # Price movement thresholds for 1-minute detection
+            has_price_activity = (
+                price_velocity >= 0.3 or  # 0.3% move over timeframe
+                immediate_change >= 0.1   # 0.1% move in last minute
+            )
+            
+            # Must have BOTH volume spike AND price movement
+            is_active = has_volume_activity and has_price_activity
+            
+            if is_active:
+                self.logger.debug(f"{activity_data['symbol']}: ACTIVE - Vol:{volume_spike:.1f}x, "
+                                f"Velocity:{price_velocity:.2f}%, Immediate:{immediate_change:.2f}%")
+            else:
+                self.logger.debug(f"{activity_data['symbol']}: FILTERED - Vol:{volume_spike:.1f}x, "
+                                f"Velocity:{price_velocity:.2f}%, Immediate:{immediate_change:.2f}%")
+            
+            return is_active
+            
+        except Exception as e:
+            self.logger.debug(f"Error in activity filter: {e}")
+            return False
     def _calculate_current_activity(self, ohlcv_data: List, symbol: str) -> Optional[Dict]:
         """
         Calculate CURRENT activity score with heavy recency bias for crypto using 15m intervals.
@@ -618,40 +713,42 @@ class Exchange:
         except Exception as e:
             self.logger.debug(f"Error in activity filter: {e}")
             return False
-    def get_top_gainers_losers(self, limit: int = 5, timeframe_minutes: int = 30) -> Dict[str, List[Dict]]:
+    def get_top_gainers_losers(self, limit: int = 5, timeframe_minutes: int = 5) -> Dict[str, List[Dict]]:
         """
-        Get separate lists of top gainers and top losers using 15-minute candles over specified timeframe.
+        FIXED: Get separate lists of top gainers and losers using 1-minute candles.
+        Now optimized for real-time small crypto detection.
         
         Args:
             limit: Number of top gainers and losers to return each
-            timeframe_minutes: Minutes to look back for change calculation (default: 30)
+            timeframe_minutes: Minutes to look back for change calculation (default: 5)
             
         Returns:
             Dictionary with 'gainers' and 'losers' keys containing lists of symbol data
         """
         try:
-            # Get top active symbols with larger sample for filtering (now using 15m timeframe)
-            active_symbols = self.get_top_active_symbols(limit=limit * 4, timeframe_minutes=timeframe_minutes)
+            # FIXED: Get active symbols with real-time detection (larger sample for filtering)
+            active_symbols = self.get_top_active_symbols(limit=limit * 6, timeframe_minutes=timeframe_minutes)
             
             if not active_symbols:
                 return {'gainers': [], 'losers': []}
             
-            # Separate gainers and losers
-            gainers = [s for s in active_symbols if s['price_change_pct'] > 0]
-            losers = [s for s in active_symbols if s['price_change_pct'] < 0]
+            # Separate gainers and losers based on price velocity
+            gainers = [s for s in active_symbols if s['price_velocity_pct'] > 0]
+            losers = [s for s in active_symbols if s['price_velocity_pct'] < 0]
             
             # Sort gainers by highest positive change
-            gainers.sort(key=lambda x: x['price_change_pct'], reverse=True)
+            gainers.sort(key=lambda x: x['price_velocity_pct'], reverse=True)
             
             # Sort losers by highest negative change (most negative)
-            losers.sort(key=lambda x: x['price_change_pct'])
+            losers.sort(key=lambda x: x['price_velocity_pct'])
             
             result = {
                 'gainers': gainers[:limit],
                 'losers': losers[:limit]
             }
             
-            self.logger.info(f"Found {len(result['gainers'])} top gainers and {len(result['losers'])} top losers over {timeframe_minutes}m (15m timeframe)")
+            self.logger.info(f"Found {len(result['gainers'])} top gainers and {len(result['losers'])} "
+                            f"top losers over {timeframe_minutes}m (1m real-time detection)")
             
             return result
             

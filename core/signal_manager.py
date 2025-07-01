@@ -389,36 +389,47 @@ class SignalManager:
             self.logger.error(f"Error testing all strategies setup: {e}")
             return False
     def _update_active_symbols_if_needed(self):
-        """Update active symbols data periodically."""
+        """FIXED: Update active symbols with real-time volume spike detection."""
         try:
             current_time = time.time()
-            if current_time - self.active_symbols_data.get('last_updated', 0) < self.active_symbols_update_interval:
+            last_update = self.active_symbols_data.get('last_updated', 0)
+            
+            # FIXED: Reduced update interval for real-time detection (30 seconds instead of minutes)
+            if current_time - last_update < 30:  # Update every 30 seconds for real-time
                 return
             
-            # Get market data
-            top_active = self.exchange.get_top_active_symbols(limit=10)
-            gainers_losers = self.exchange.get_top_gainers_losers(limit=5)
+            self.logger.info("Updating active symbols data (1m real-time volume spike detection)")
             
+            # FIXED: Use 5-minute timeframe for better small crypto detection
+            top_active = self.exchange.get_top_active_symbols(limit=10, timeframe_minutes=5)
+            gainers_losers = self.exchange.get_top_gainers_losers(limit=5, timeframe_minutes=5)
+            
+            # Update stored data
             self.active_symbols_data = {
                 'top_active': top_active,
                 'gainers': gainers_losers.get('gainers', []),
                 'losers': gainers_losers.get('losers', []),
                 'last_updated': current_time,
-                'timeframe': '24hr'
+                'timeframe': '5min'  # FIXED: Reflect actual timeframe
             }
             
+            self.logger.info(f"Active symbols updated (5min real-time): {len(top_active)} active, "
+                            f"{len(gainers_losers.get('gainers', []))} gainers, "
+                            f"{len(gainers_losers.get('losers', []))} losers")
+            
         except Exception as e:
-            self.logger.error(f"Error updating active symbols: {e}")
+            self.logger.error(f"Error updating active symbols data: {e}")
     
     def get_active_symbols_data(self) -> Dict:
-        """Get active symbols data."""
+        """FIXED: Get current active symbols data with correct timeframe info."""
         try:
+            # Return a copy to prevent external modification
             return {
                 'top_active': self.active_symbols_data.get('top_active', []).copy(),
                 'gainers': self.active_symbols_data.get('gainers', []).copy(),
                 'losers': self.active_symbols_data.get('losers', []).copy(),
                 'last_updated': self.active_symbols_data.get('last_updated', 0),
-                'timeframe': '24hr',
+                'timeframe': self.active_symbols_data.get('timeframe', '5min'),  # FIXED: Real timeframe
                 'last_updated_formatted': time.strftime('%H:%M:%S', 
                     time.localtime(self.active_symbols_data.get('last_updated', 0)))
             }
@@ -429,7 +440,7 @@ class SignalManager:
                 'gainers': [],
                 'losers': [],
                 'last_updated': 0,
-                'timeframe': '24hr',
+                'timeframe': '5min',
                 'last_updated_formatted': 'Never'
             }
     
