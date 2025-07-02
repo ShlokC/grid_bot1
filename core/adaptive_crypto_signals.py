@@ -926,10 +926,10 @@ class AdaptiveCryptoSignals:
             
             # DIVERGENCE SIGNALS FOR REVERSAL DETECTION (with 5-candle lookback):
             # BUY: 3m recently turned bearish while 15m is bullish (catch bottom) + GREEN CANDLE
-            divergence_buy_signal = (roc_3m_recently_turned_bearish and roc_15m_currently_bullish and is_green_candle)
+            divergence_buy_signal = (roc_3m_currently_bullish and is_green_candle)
             
             # SELL: 3m recently turned bullish while 15m is bearish (catch top) + RED CANDLE  
-            divergence_sell_signal = (roc_3m_recently_turned_bullish and roc_15m_currently_bearish and is_red_candle)
+            divergence_sell_signal = (roc_3m_currently_bearish and is_red_candle)
             
             indicators['divergence_buy_signal'] = divergence_buy_signal
             indicators['divergence_sell_signal'] = divergence_sell_signal
@@ -1085,7 +1085,7 @@ class AdaptiveCryptoSignals:
                     roc_15m_bearish = roc_15m < -threshold_15m
                     both_bearish = roc_3m_bearish and roc_15m_bearish
                     
-                    if roc_15m_bearish or both_bearish:
+                    if roc_3m_bearish or both_bearish:
                         exit_reason = "3m recently turned bearish" if roc_3m_recently_turned_bearish else "both timeframes bearish"
                         result.update({
                             'should_exit': True,
@@ -1100,7 +1100,7 @@ class AdaptiveCryptoSignals:
                     roc_15m_bullish = roc_15m > threshold_15m
                     both_bullish = roc_3m_bullish and roc_15m_bullish
                     
-                    if roc_15m_bullish or both_bullish:
+                    if roc_3m_bearish or both_bullish:
                         exit_reason = "3m recently turned bullish" if roc_3m_recently_turned_bullish else "both timeframes bullish"
                         result.update({
                             'should_exit': True,

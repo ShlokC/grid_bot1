@@ -25,7 +25,7 @@ class SignalManager:
         # Simple limits
         self.max_concurrent_strategies = 20  # Increased since strategies are smaller
         self.position_size_usd = 1.0  # Fixed $1 per strategy
-        self.leverage = 10.0  # Fixed 10x leverage
+        self.leverage = 20.0  # Fixed 10x leverage
         
         # Monitor thread
         self.monitor_thread = None
