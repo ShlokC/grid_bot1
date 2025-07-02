@@ -811,7 +811,7 @@ class AdaptiveCryptoSignals:
             return 'none', {}
 
     def _roc_multi_timeframe_signal_with_indicators(self, data_input, params) -> Tuple[str, Dict]:
-        """FIXED: Multi-timeframe ROC with DIVERGENCE logic for reversal detection after spikes"""
+        """FIXED: Multi-timeframe ROC with DIVERGENCE logic for reversal detection after spikes + Candle Color Validation"""
         try:
             if isinstance(data_input, dict):
                 # New format with separate timeframes
@@ -863,18 +863,34 @@ class AdaptiveCryptoSignals:
             if pd.isna(current_roc_3m) or pd.isna(current_roc_15m):
                 return 'none', {}
             
+            # CANDLE COLOR CHECK: Get current 3m candle open/close prices
+            current_open = df_3m['open'].iloc[-1]
+            current_close = df_3m['close'].iloc[-1]
+            
+            # Validate candle data
+            if pd.isna(current_open) or pd.isna(current_close) or current_open <= 0 or current_close <= 0:
+                return 'none', {}
+                
+            # Determine candle color
+            is_green_candle = current_close > current_open  # Green = bullish
+            is_red_candle = current_close < current_open    # Red = bearish
+            
             # Need at least 6 points for 5-candle lookback
             lookback_period = min(6, len(roc_3m) - 1)
             if lookback_period < 1:
                 return 'none', {}
             
-            # Store indicators for exit evaluation
+            # Store indicators for exit evaluation (including candle color info)
             indicators = {
                 'roc_3m': float(current_roc_3m),
                 'roc_15m': float(current_roc_15m),
                 'roc_3m_threshold': float(params.roc_3m_threshold),
                 'roc_15m_threshold': float(params.roc_15m_threshold),
-                'current_price': float(df_3m['close'].iloc[-1])
+                'current_price': float(df_3m['close'].iloc[-1]),
+                'current_open': float(current_open),
+                'current_close': float(current_close),
+                'is_green_candle': is_green_candle,
+                'is_red_candle': is_red_candle
             }
             
             # FIXED: DIVERGENCE LOGIC with 5-candle lookback like QQE pattern
@@ -907,23 +923,30 @@ class AdaptiveCryptoSignals:
             indicators['roc_3m_recently_turned_bearish'] = roc_3m_recently_turned_bearish
             indicators['roc_15m_currently_bullish'] = roc_15m_currently_bullish
             indicators['roc_15m_currently_bearish'] = roc_15m_currently_bearish
-            # DIVERGENCE SIGNALS FOR REVERSAL DETECTION (with 5-candle lookback):
-            # BUY: 3m recently turned bullish while 15m is bearish (catch bottom)
-            divergence_buy_signal = (roc_3m_recently_turned_bearish and roc_15m_currently_bullish)
             
-            # SELL: 3m recently turned bearish while 15m is bullish (catch top)
-            divergence_sell_signal = (roc_3m_recently_turned_bullish and roc_15m_currently_bearish)
+            # DIVERGENCE SIGNALS FOR REVERSAL DETECTION (with 5-candle lookback):
+            # BUY: 3m recently turned bearish while 15m is bullish (catch bottom) + GREEN CANDLE
+            divergence_buy_signal = (roc_3m_recently_turned_bearish and roc_15m_currently_bullish and is_green_candle)
+            
+            # SELL: 3m recently turned bullish while 15m is bearish (catch top) + RED CANDLE  
+            divergence_sell_signal = (roc_3m_recently_turned_bullish and roc_15m_currently_bearish and is_red_candle)
             
             indicators['divergence_buy_signal'] = divergence_buy_signal
             indicators['divergence_sell_signal'] = divergence_sell_signal
             
-            # Return divergence signals
+            # Return divergence signals with candle color validation
             if divergence_buy_signal:
-                self.logger.debug(f"ROC DIVERGENCE BUY: 3m recently turned bullish ({current_roc_3m:.2f}) while 15m bearish ({current_roc_15m:.2f})")
+                self.logger.debug(f"ROC DIVERGENCE BUY: 3m recently turned bearish ({current_roc_3m:.2f}) while 15m bullish ({current_roc_15m:.2f}) + GREEN candle (O:{current_open:.6f} C:{current_close:.6f})")
                 return 'buy', indicators
             elif divergence_sell_signal:
-                self.logger.debug(f"ROC DIVERGENCE SELL: 3m recently turned bearish ({current_roc_3m:.2f}) while 15m bullish ({current_roc_15m:.2f})")
+                self.logger.debug(f"ROC DIVERGENCE SELL: 3m recently turned bullish ({current_roc_3m:.2f}) while 15m bearish ({current_roc_15m:.2f}) + RED candle (O:{current_open:.6f} C:{current_close:.6f})")
                 return 'sell', indicators
+            
+            # Log when signals are blocked by candle color
+            if roc_3m_recently_turned_bearish and roc_15m_currently_bullish and not is_green_candle:
+                self.logger.debug(f"ROC BUY signal blocked: RED candle (O:{current_open:.6f} C:{current_close:.6f}) - need GREEN candle")
+            elif roc_3m_recently_turned_bullish and roc_15m_currently_bearish and not is_red_candle:
+                self.logger.debug(f"ROC SELL signal blocked: GREEN candle (O:{current_open:.6f} C:{current_close:.6f}) - need RED candle")
             
             return 'none', indicators
             

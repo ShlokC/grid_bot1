@@ -78,7 +78,7 @@ class GridManager:
                         take_profit_pnl=float(grid_config['take_profit_pnl']),
                         stop_loss_pnl=float(grid_config['stop_loss_pnl']),
                         grid_id=grid_id,
-                        leverage=float(grid_config.get('leverage', 20.0)),
+                        leverage=float(grid_config.get('leverage', 10.0)),
                         enable_grid_adaptation=bool(grid_config.get('enable_grid_adaptation', True))
                     )
                     
@@ -207,7 +207,7 @@ class GridManager:
                    investment: float,
                    take_profit_pnl: float,
                    stop_loss_pnl: float,
-                   leverage: float = 20.0,
+                   leverage: float = 10.0,
                    enable_grid_adaptation: bool = True,
                    enable_samig: bool = False) -> str:
         """Create a new grid strategy."""

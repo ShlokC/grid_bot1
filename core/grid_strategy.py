@@ -36,7 +36,7 @@ class GridStrategy:
                  take_profit_pnl: float,
                  stop_loss_pnl: float,
                  grid_id: str,
-                 leverage: float = 20.0,
+                 leverage: float = 10.0,
                  enable_grid_adaptation: bool = True,
                  enable_samig: bool = False):
         """Initialize simplified grid strategy."""

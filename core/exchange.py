@@ -755,7 +755,7 @@ class Exchange:
         except Exception as e:
             self.logger.error(f"Error getting top gainers/losers: {e}")
             return {'gainers': [], 'losers': []}
-    def setup_symbol_trading_config(self, symbol: str, target_leverage: int = 20) -> bool:
+    def setup_symbol_trading_config(self, symbol: str, target_leverage: int = 10) -> bool:
         """MINIMAL: Setup isolated margin and leverage with correct method names."""
         try:
             symbol_id = self._get_symbol_id(symbol)

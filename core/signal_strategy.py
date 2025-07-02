@@ -22,7 +22,7 @@ class SignalStrategy:
              symbol: str,
              strategy_id: str,
              position_size_usd: float = 1.0,
-             leverage: float = 20.0,
+             leverage: float = 10.0,
              strategy_type: str = 'roc_multi_timeframe'):
         """Initialize signal strategy with specified strategy type."""
         
@@ -173,7 +173,7 @@ class SignalStrategy:
                 
                 # Verify requirements
                 margin_ok = config.get('margin_type') == 'ISOLATED'
-                leverage_ok = config.get('leverage') == 20
+                leverage_ok = config.get('leverage') == 10
                 
                 if margin_ok and leverage_ok:
                     self.logger.info(f"✅ {self.symbol} correctly configured for trading")
