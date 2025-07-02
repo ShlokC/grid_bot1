@@ -755,15 +755,16 @@ class Exchange:
         except Exception as e:
             self.logger.error(f"Error getting top gainers/losers: {e}")
             return {'gainers': [], 'losers': []}
-    def setup_symbol_trading_config(self, symbol: str, target_leverage: int = 10) -> bool:
-        """MINIMAL: Setup isolated margin and leverage with correct method names."""
+    def setup_symbol_trading_config(self, symbol: str, target_leverage: int) -> bool:
+        """Complete trading setup for symbol with proper error handling."""
         try:
             symbol_id = self._get_symbol_id(symbol)
             self.logger.info(f"🔧 Setting up {symbol} ({symbol_id}) for {target_leverage}x trading")
             
             # Step 1: Set margin type to ISOLATED
             try:
-                self.exchange.fapiPrivate_post_margintype({
+                # FIXED: Use correct method name
+                self.exchange.fapiPrivatePostMarginType({
                     'symbol': symbol_id,
                     'marginType': 'ISOLATED'
                 })
@@ -773,11 +774,12 @@ class Exchange:
                     self.logger.info(f"✅ {symbol_id} already ISOLATED")
                 else:
                     self.logger.warning(f"⚠️ Margin setup failed for {symbol_id}: {e}")
-                    # Continue anyway
+                    # Continue anyway - this is the original error you were seeing
             
-            # Step 2: Set leverage (FIXED: correct method name)
+            # Step 2: Set leverage
             try:
-                self.exchange.fapiprivate_post_leverage({  # FIXED: lowercase 'p'
+                # FIXED: Use correct method name (lowercase 'p')
+                self.exchange.fapiprivate_post_leverage({
                     'symbol': symbol_id,
                     'leverage': target_leverage
                 })
@@ -793,7 +795,7 @@ class Exchange:
             
         except Exception as e:
             self.logger.error(f"❌ Setup error for {symbol}: {e}")
-            return True  # FIXED: Return True to allow trading even if setup fails
+            return True  # Return True to allow trading even if setup fails
     def get_symbol_trading_config(self, symbol: str) -> Dict:
         """Get current trading configuration for a symbol."""
         try:
@@ -851,8 +853,8 @@ class Exchange:
                 self.logger.warning(f"⚠️ Could not check current margin mode for {internal_symbol}: {e}")
                 # Continue with setting isolated margin anyway
             
-            # Set margin mode to ISOLATED
-            response = self.exchange.fapiPrivate_post_margintype({
+            # FIXED: Correct method name with proper capitalization
+            response = self.exchange.fapiPrivatePostMarginType({
                 'symbol': internal_symbol,
                 'marginType': 'ISOLATED'
             })
@@ -899,8 +901,8 @@ class Exchange:
                 self.logger.warning(f"⚠️ Could not check current leverage for {internal_symbol}: {e}")
                 # Continue with setting leverage anyway
             
-            # Set leverage
-            response = self.exchange.fapiPrivate_post_leverage({
+            # FIXED: Correct method name (lowercase 'p' in the middle)
+            response = self.exchange.fapiprivate_post_leverage({
                 'symbol': internal_symbol,
                 'leverage': target_leverage
             })
