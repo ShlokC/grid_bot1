@@ -55,7 +55,7 @@ class SignalParameters:
     # ROC Multi-timeframe parameters
     roc_3m_length: int = 5
     roc_15m_length: int = 20
-    roc_3m_threshold: float = 1.0
+    roc_3m_threshold: float = 0.5
     roc_15m_threshold: float = 0.5
     roc_alignment_factor: float = 0.5
     
@@ -842,7 +842,7 @@ class AdaptiveCryptoSignals:
                     return 'none', {}
             
             # Ensure we have enough data
-            min_3m_required = max(params.roc_3m_length, 10)
+            min_3m_required = max(params.roc_3m_length, 5)
             min_15m_required = max(params.roc_15m_length, 5)
             
             if len(df_3m) < min_3m_required or len(df_15m) < min_15m_required:
@@ -864,7 +864,7 @@ class AdaptiveCryptoSignals:
                 return 'none', {}
             
             # Need at least 6 points for 5-candle lookback
-            lookback_period = min(10, len(roc_3m) - 1)
+            lookback_period = min(6, len(roc_3m) - 1)
             if lookback_period < 1:
                 return 'none', {}
             
@@ -909,10 +909,10 @@ class AdaptiveCryptoSignals:
             indicators['roc_15m_currently_bearish'] = roc_15m_currently_bearish
             # DIVERGENCE SIGNALS FOR REVERSAL DETECTION (with 5-candle lookback):
             # BUY: 3m recently turned bullish while 15m is bearish (catch bottom)
-            divergence_buy_signal = (roc_3m_recently_turned_bullish and roc_15m_currently_bearish)
+            divergence_buy_signal = (roc_3m_recently_turned_bearish and roc_15m_currently_bullish)
             
             # SELL: 3m recently turned bearish while 15m is bullish (catch top)
-            divergence_sell_signal = (roc_3m_recently_turned_bearish and roc_15m_currently_bullish)
+            divergence_sell_signal = (roc_3m_recently_turned_bullish and roc_15m_currently_bearish)
             
             indicators['divergence_buy_signal'] = divergence_buy_signal
             indicators['divergence_sell_signal'] = divergence_sell_signal
@@ -948,13 +948,13 @@ class AdaptiveCryptoSignals:
                 return result
 
             # PRIORITY 2: Take profit
-            if pnl_pct > 2.0:
-                result.update({
-                    'should_exit': True,
-                    'exit_reason': f"Take Profit: {pnl_pct:.2f}% gain",
-                    'exit_urgency': 'normal'
-                })
-                return result
+            # if pnl_pct > 2.0:
+            #     result.update({
+            #         'should_exit': True,
+            #         'exit_reason': f"Take Profit: {pnl_pct:.2f}% gain",
+            #         'exit_urgency': 'normal'
+            #     })
+            #     return result
 
             # PRIORITY 3: Technical signal-based exits (now with fresh indicators)
             try:
@@ -1062,7 +1062,7 @@ class AdaptiveCryptoSignals:
                     roc_15m_bearish = roc_15m < -threshold_15m
                     both_bearish = roc_3m_bearish and roc_15m_bearish
                     
-                    if roc_3m_recently_turned_bearish or both_bearish:
+                    if roc_15m_bearish or both_bearish:
                         exit_reason = "3m recently turned bearish" if roc_3m_recently_turned_bearish else "both timeframes bearish"
                         result.update({
                             'should_exit': True,
@@ -1077,7 +1077,7 @@ class AdaptiveCryptoSignals:
                     roc_15m_bullish = roc_15m > threshold_15m
                     both_bullish = roc_3m_bullish and roc_15m_bullish
                     
-                    if roc_3m_recently_turned_bullish or both_bullish:
+                    if roc_15m_bullish or both_bullish:
                         exit_reason = "3m recently turned bullish" if roc_3m_recently_turned_bullish else "both timeframes bullish"
                         result.update({
                             'should_exit': True,
