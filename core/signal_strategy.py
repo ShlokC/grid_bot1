@@ -18,20 +18,22 @@ class SignalStrategy:
     """
     
     def __init__(self, 
-             exchange: Exchange, 
-             symbol: str,
-             strategy_id: str,
-             position_size_usd: float = 1.0,
-             leverage: float = 20.0,
-             strategy_type: str = 'roc_multi_timeframe'):
-        """Initialize signal strategy with specified strategy type."""
+                 exchange: Exchange, 
+                 symbol: str,
+                 strategy_id: str,
+                 position_size_usd: float = 1.0,
+                 leverage: float = 10.0,
+                 strategy_type: str = 'roc_multi_timeframe',
+                 enable_llm: bool = True):  # Add this parameter
+        """Initialize signal strategy with LLM support."""
         
         self.logger = logging.getLogger(__name__)
         self.exchange = exchange
         self.original_symbol = symbol
         self.symbol = exchange._get_symbol_id(symbol) if hasattr(exchange, '_get_symbol_id') else symbol
         self.strategy_id = strategy_id
-        self.strategy_type = strategy_type  # Store strategy type
+        self.strategy_type = strategy_type
+        self.enable_llm = enable_llm  # Store LLM setting
         
         # Fixed parameters (simplified)
         self.position_size_usd = position_size_usd
@@ -50,16 +52,17 @@ class SignalStrategy:
         
         # Threading
         self.update_lock = threading.Lock()
-        # Order tracking for duplicate detection
         self._last_order_time = 0
         self._order_attempts = []
         
         self.logger.info(f"✅ Centralized order management initialized for {symbol}")
         
-        # Integrate signal system with strategy type
-        integrate_adaptive_crypto_signals(self, strategy_type=strategy_type)
+        # Integrate signal system with strategy type and LLM setting
+        integrate_adaptive_crypto_signals(self, strategy_type=strategy_type, enable_llm=enable_llm)
         
-        self.logger.info(f"Signal Strategy initialized: {symbol}, Size: ${position_size_usd}, Leverage: {leverage}x, Strategy: {strategy_type}")
+        llm_status = "with LLM fusion" if enable_llm else "traditional only"
+        self.logger.info(f"Signal Strategy initialized: {symbol}, Size: ${position_size_usd}, "
+                        f"Leverage: {leverage}x, Strategy: {strategy_type}, {llm_status}")
     def _fetch_market_info(self):
         """Fetch market precision and limits."""
         try:

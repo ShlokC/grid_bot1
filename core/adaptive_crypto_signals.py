@@ -7,6 +7,7 @@ import logging
 import time
 import os
 import threading
+import ollama
 from typing import Dict, Optional, Tuple
 from collections import deque
 import copy
@@ -17,7 +18,7 @@ import numpy as np
 import pandas as pd
 import pandas_ta as ta
 from dataclasses import dataclass
-
+from .llm_signal_fusion import get_llm_fusion, LLMConfig
 try:
     import optuna
     OPTUNA_AVAILABLE = True
@@ -411,7 +412,7 @@ class IntegratedWinRateOptimizer:
 class AdaptiveCryptoSignals:
     """FIXED: Current regime adaptive signals with pre-order optimization"""
     
-    def __init__(self, symbol: str, config_file: str = "data/crypto_signal_configs.json", strategy_type: str = 'qqe_supertrend_fixed'):
+    def __init__(self, symbol: str, config_file: str = "data/crypto_signal_configs.json", strategy_type: str = 'qqe_supertrend_fixed', enable_llm: bool = True):
         self.logger = logging.getLogger(f"{__name__}.{symbol}")
         self.symbol = symbol
         self.config_file = config_file
@@ -456,9 +457,21 @@ class AdaptiveCryptoSignals:
         self._cache_timestamp = 0
         self._cache_validity = 180
         self._max_cache_size = 200
+        # Initialize LLM fusion
+        self.enable_llm = enable_llm
+        self._llm_config = self._load_llm_config()
+        self._llm_enabled = self._llm_config.get('enabled', False)
         
         self.logger.info(f"CURRENT REGIME: Adaptive Crypto Signals for {strategy_type} on {symbol}")
-
+    def _load_llm_config(self) -> dict:
+        """Load LLM configuration from main config.json"""
+        try:
+            with open('config.json', 'r') as f:
+                config = json.load(f)
+                return config.get('llm', {})
+        except Exception as e:
+            self.logger.warning(f"Could not load LLM config: {e}")
+            return {'enabled': False}
     def get_technical_direction(self, exchange) -> str:
         """FIXED: Multi-timeframe signal generation for ROC strategy"""
         try:
@@ -611,21 +624,240 @@ class AdaptiveCryptoSignals:
             return False
 
     def _generate_signal_with_indicators(self, ohlcv_data, params) -> Tuple[str, Dict]:
-        """FIXED: Generate signal using current regime optimized parameters with proper multi-timeframe handling"""
+        """ENHANCED: Generate signal with optional LLM analysis (EXISTING METHOD MODIFIED)"""
         try:
-            # FIXED: Handle multi-timeframe data for ROC strategy
+            # STEP 1: Get traditional signal using existing logic (UNCHANGED)
             if isinstance(ohlcv_data, dict) and '3m' in ohlcv_data and '15m' in ohlcv_data:
-                # For ROC multi-timeframe, pass the dict directly
                 if self.strategy_type == 'roc_multi_timeframe':
-                    return self._roc_multi_timeframe_signal_with_indicators(ohlcv_data, params)
+                    traditional_signal, indicators = self._roc_multi_timeframe_signal_with_indicators(ohlcv_data, params)
                 else:
-                    # For other strategies, use 3m data
                     df = pd.DataFrame(ohlcv_data['3m'], columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+                    for col in ['open', 'high', 'low', 'close', 'volume']:
+                        df[col] = df[col].astype(float)
+                    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+                    df = df.set_index('timestamp')
+                    traditional_signal, indicators = self._get_strategy_signal(df, params)
+            else:
+                df = pd.DataFrame(ohlcv_data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+                for col in ['open', 'high', 'low', 'close', 'volume']:
+                    df[col] = df[col].astype(float)
+                df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+                df = df.set_index('timestamp')
+                traditional_signal, indicators = self._get_strategy_signal(df, params)
+            
+            # STEP 2: If LLM enabled, enhance the signal (EMBEDDED LLM LOGIC)
+            if self._llm_enabled and traditional_signal in ['buy', 'sell']:
+                try:
+                    # Extract current price
+                    if isinstance(ohlcv_data, dict) and '3m' in ohlcv_data:
+                        current_price = float(ohlcv_data['3m'][-1][4])
+                    else:
+                        current_price = float(ohlcv_data[-1][4])
+                    
+                    # Minimal prompt with existing indicators
+                    prompt = f"""Trading signal for {self.symbol} at ${current_price:.2f}:
+
+SIGNAL: {traditional_signal.upper()}
+RSI: {indicators.get('rsi', 'N/A')}
+MACD: {'Bull' if indicators.get('macd_line', 0) > indicators.get('macd_signal', 0) else 'Bear'}
+Supertrend: {'Bull' if indicators.get('st_direction', 0) == 1 else 'Bear'}
+
+Confirm: buy, sell, or none"""
+                    
+                    start_time = time.time()
+                    response = ollama.chat(
+                        model=self._llm_config.get('model', 'qwen3:0.6b'),
+                        messages=[{'role': 'user', 'content': prompt}],
+                        options={
+                            'temperature': self._llm_config.get('temperature', 0.1),
+                            'num_predict': self._llm_config.get('max_tokens', 64)
+                        }
+                    )
+                    
+                    inference_time = (time.time() - start_time) * 1000
+                    if inference_time < self._llm_config.get('timeout_ms', 150):
+                        llm_signal = response['message']['content'].strip().lower()
+                        if llm_signal in ['buy', 'sell', 'none']:
+                            if llm_signal != traditional_signal:
+                                self.logger.debug(f"LLM: {traditional_signal} -> {llm_signal} ({inference_time:.0f}ms)")
+                                indicators['llm_enhanced'] = True
+                                indicators['original_signal'] = traditional_signal
+                                return llm_signal, indicators
+                            else:
+                                self.logger.debug(f"LLM confirmed {traditional_signal} ({inference_time:.0f}ms)")
+                    
+                except Exception as e:
+                    self.logger.debug(f"LLM failed: {e}")
+                    pass
+            
+            # STEP 3: Return traditional signal (EXISTING BEHAVIOR)
+            indicators['llm_enhanced'] = False
+            return traditional_signal, indicators
+            
+        except Exception as e:
+            self.logger.error(f"Error in _generate_signal_with_indicators: {e}")
+            return 'none', {}
+    # Add this new method to collect all traditional signals
+    def _get_all_traditional_signals(self, ohlcv_data, params) -> Dict:
+        """Collect signals from all available strategies and indicators"""
+        
+        # Handle multi-timeframe data for ROC strategy
+        if isinstance(ohlcv_data, dict) and '3m' in ohlcv_data and '15m' in ohlcv_data:
+            if self.strategy_type == 'roc_multi_timeframe':
+                primary_signal, primary_indicators = self._roc_multi_timeframe_signal_with_indicators(ohlcv_data, params)
+            else:
+                df = pd.DataFrame(ohlcv_data['3m'], columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+                for col in ['open', 'high', 'low', 'close', 'volume']:
+                    df[col] = df[col].astype(float)
+                df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+                df = df.set_index('timestamp')
+                primary_signal, primary_indicators = self._get_strategy_signal(df, params)
+        else:
+            # Single timeframe data
+            df = pd.DataFrame(ohlcv_data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            for col in ['open', 'high', 'low', 'close', 'volume']:
+                df[col] = df[col].astype(float)
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+            df = df.set_index('timestamp')
+            primary_signal, primary_indicators = self._get_strategy_signal(df, params)
+        
+        # Collect all strategy signals
+        all_signals = primary_indicators.copy()
+        
+        # Add primary strategy signal
+        all_signals[f'{self.strategy_type}_signal'] = primary_signal
+        
+        # Get additional strategy signals for fusion
+        try:
+            if self.strategy_type != 'qqe_supertrend_fixed':
+                qqe_signal, qqe_indicators = self._qqe_supertrend_signal_with_indicators(df, params)
+                all_signals['qqe_supertrend_signal'] = qqe_signal
+                all_signals.update(qqe_indicators)
+            
+            if self.strategy_type != 'rsi_macd':
+                rsi_macd_signal, rsi_macd_indicators = self._rsi_macd_signal_with_indicators(df, params)
+                all_signals['rsi_macd_signal'] = rsi_macd_signal
+                all_signals.update(rsi_macd_indicators)
+            
+            if self.strategy_type != 'tsi_vwap':
+                tsi_vwap_signal, tsi_vwap_indicators = self._tsi_vwap_signal_with_indicators(df, params)
+                all_signals['tsi_vwap_signal'] = tsi_vwap_signal
+                all_signals.update(tsi_vwap_indicators)
+                
+        except Exception as e:
+            self.logger.debug(f"Some additional signals unavailable: {e}")
+        
+        return all_signals
+
+
+    # Add this new method to get strategy signal based on type
+    def _get_strategy_signal(self, df: pd.DataFrame, params) -> Tuple[str, Dict]:
+        """Get signal based on strategy type"""
+        if self.strategy_type == 'qqe_supertrend_fixed':
+            return self._qqe_supertrend_signal_with_indicators(df, params)
+        elif self.strategy_type == 'qqe_supertrend_fast':
+            return self._qqe_supertrend_fast_signal_with_indicators(df, params)
+        elif self.strategy_type == 'rsi_macd':
+            return self._rsi_macd_signal_with_indicators(df, params)
+        elif self.strategy_type == 'tsi_vwap':
+            return self._tsi_vwap_signal_with_indicators(df, params)
+        else:
+            self.logger.warning(f"Unknown strategy type: {self.strategy_type}")
+            return 'none', {}
+
+
+    # Add this new method to prepare market data for LLM
+    def _prepare_market_data(self, ohlcv_data) -> Dict:
+        """Prepare market data for LLM analysis"""
+        
+        try:
+            # Handle multi-timeframe data
+            if isinstance(ohlcv_data, dict) and '3m' in ohlcv_data:
+                df_3m = pd.DataFrame(ohlcv_data['3m'], columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+                df_3m['close'] = df_3m['close'].astype(float)
+                df_3m['volume'] = df_3m['volume'].astype(float)
+                
+                current_price = float(df_3m.iloc[-1]['close'])
+                
+                # Calculate 24h change (assuming 3m candles, 480 candles = 24h)
+                if len(df_3m) >= 480:
+                    price_24h_ago = float(df_3m.iloc[-480]['close'])
+                    price_change_24h = ((current_price - price_24h_ago) / price_24h_ago) * 100
+                else:
+                    price_change_24h = 0.0
+                
+                # Volume trend analysis
+                recent_volume = df_3m['volume'].tail(10).mean()
+                historical_volume = df_3m['volume'].iloc[-50:-10].mean() if len(df_3m) >= 50 else recent_volume
+                
+                if recent_volume > historical_volume * 1.2:
+                    volume_trend = 'increasing'
+                elif recent_volume < historical_volume * 0.8:
+                    volume_trend = 'decreasing'
+                else:
+                    volume_trend = 'neutral'
+                    
             else:
                 # Single timeframe data
                 df = pd.DataFrame(ohlcv_data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+                df['close'] = df['close'].astype(float)
+                df['volume'] = df['volume'].astype(float)
+                
+                current_price = float(df.iloc[-1]['close'])
+                
+                if len(df) >= 480:
+                    price_24h_ago = float(df.iloc[-480]['close'])
+                    price_change_24h = ((current_price - price_24h_ago) / price_24h_ago) * 100
+                else:
+                    price_change_24h = 0.0
+                
+                recent_volume = df['volume'].tail(10).mean()
+                historical_volume = df['volume'].iloc[-50:-10].mean() if len(df) >= 50 else recent_volume
+                
+                if recent_volume > historical_volume * 1.2:
+                    volume_trend = 'increasing'
+                elif recent_volume < historical_volume * 0.8:
+                    volume_trend = 'decreasing'
+                else:
+                    volume_trend = 'neutral'
             
-            # Convert data types for single timeframe strategies
+            return {
+                'current_price': current_price,
+                'price_change_24h': price_change_24h,
+                'volume_trend': volume_trend,
+                'symbol': self.symbol,
+                'strategy_type': self.strategy_type
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Error preparing market data: {e}")
+            return {
+                'current_price': 0.0,
+                'price_change_24h': 0.0,
+                'volume_trend': 'neutral',
+                'symbol': self.symbol,
+                'strategy_type': self.strategy_type
+            }
+
+
+    # Add this method to get primary strategy signal (fallback)
+    def _get_primary_strategy_signal(self, ohlcv_data, params) -> Tuple[str, Dict]:
+        """Get signal from primary strategy (original behavior)"""
+        
+        # FIXED: Handle multi-timeframe data for ROC strategy
+        if isinstance(ohlcv_data, dict) and '3m' in ohlcv_data and '15m' in ohlcv_data:
+            # For ROC multi-timeframe, pass the dict directly
+            if self.strategy_type == 'roc_multi_timeframe':
+                return self._roc_multi_timeframe_signal_with_indicators(ohlcv_data, params)
+            else:
+                # For other strategies, use 3m data
+                df = pd.DataFrame(ohlcv_data['3m'], columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        else:
+            # Single timeframe data
+            df = pd.DataFrame(ohlcv_data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        
+        # Convert data types for single timeframe strategies
+        if not self.strategy_type == 'roc_multi_timeframe':
             for col in ['open', 'high', 'low', 'close', 'volume']:
                 df[col] = df[col].astype(float)
             
@@ -644,11 +876,6 @@ class AdaptiveCryptoSignals:
             else:
                 self.logger.warning(f"Unknown strategy type: {self.strategy_type}")
                 return 'none', {}
-            
-        except Exception as e:
-            self.logger.error(f"Error in _generate_signal_with_indicators: {e}")
-            return 'none', {}
-
     def _qqe_supertrend_signal_with_indicators(self, df: pd.DataFrame, params) -> Tuple[str, Dict]:
         """QQE + Supertrend signal with indicators for exit evaluation"""
         try:
@@ -1100,7 +1327,7 @@ class AdaptiveCryptoSignals:
                     roc_15m_bullish = roc_15m > threshold_15m
                     both_bullish = roc_3m_bullish and roc_15m_bullish
                     
-                    if roc_3m_bearish or both_bullish:
+                    if roc_3m_bullish or both_bullish:
                         exit_reason = "3m recently turned bullish" if roc_3m_recently_turned_bullish else "both timeframes bullish"
                         result.update({
                             'should_exit': True,
@@ -1484,25 +1711,27 @@ class AdaptiveCryptoSignals:
         
         return status
 
-def integrate_adaptive_crypto_signals(strategy_instance, config_file: str = None, strategy_type: str = 'roc_multi_timeframe'):
-    """Integration with current regime optimization"""
-    if config_file is None:
-        config_file = os.path.join(os.getcwd(), "data", "crypto_signal_configs.json")
+def integrate_adaptive_crypto_signals(strategy_instance, strategy_type: str = 'roc_multi_timeframe', enable_llm: bool = True):
+    """
+    Integrate adaptive crypto signals into a strategy instance with LLM support
+    """
     
-    strategy_instance.logger.info(f"Integrating CURRENT REGIME {strategy_type} signals with pre-order optimization")
-    base_sym = getattr(strategy_instance, 'original_symbol', strategy_instance.symbol)
+    # Create adaptive signals instance with LLM setting
+    signals = AdaptiveCryptoSignals(
+        symbol=strategy_instance.symbol, 
+        strategy_type=strategy_type,
+        enable_llm=enable_llm  # Pass LLM setting
+    )
     
-    crypto_sigs = AdaptiveCryptoSignals(symbol=base_sym, config_file=config_file, strategy_type=strategy_type)
+    # Set exchange reference for real-time data
+    signals._exchange_ref = strategy_instance.exchange
     
-    strategy_instance._get_technical_direction = lambda: crypto_sigs.get_technical_direction(strategy_instance.exchange)
-    strategy_instance.get_signal_status = crypto_sigs.get_system_status
-    strategy_instance._crypto_signal_system = crypto_sigs
+    # Add to strategy instance
+    strategy_instance.adaptive_signals = signals
+    strategy_instance.get_technical_direction = signals.get_technical_direction
+    strategy_instance.evaluate_exit_conditions = signals.evaluate_exit_conditions
+    strategy_instance.get_signal_performance_summary = signals.get_signal_performance_summary
     
-    # strategy_instance.logger.info(f"CURRENT REGIME {strategy_type} signals integrated:")
-    # strategy_instance.logger.info(f"  - Pre-order optimization: enabled")
-    # strategy_instance.logger.info(f"  - Current regime parameters: focused ranges")
-    # strategy_instance.logger.info(f"  - Emergency SL: 1.5% loss")
-    # strategy_instance.logger.info(f"  - Take Profit: 2.0% gain")
-    # strategy_instance.logger.info(f"  - Technical exits: {strategy_type} signal reversals")
-    
-    return crypto_sigs
+    logging.getLogger(__name__).info(
+        f"✅ Adaptive signals integrated: {strategy_type} {'with LLM' if enable_llm else 'traditional'}"
+    )

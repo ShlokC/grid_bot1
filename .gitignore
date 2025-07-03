@@ -43,3 +43,4 @@ vectorbt_results/
 
 winrate_optimization_results/crypto_optimized_results_20250626_124753.csv
 winrate_optimization_results/enhanced_and_or_results_20250626_132556.csv
+core/config.json
