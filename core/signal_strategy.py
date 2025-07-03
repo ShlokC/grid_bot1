@@ -6,6 +6,11 @@ Replaces the misleading "Grid" implementation with clear signal-based trading.
 import logging
 import time
 import threading
+import numpy as _np
+_np.NaN = _np.nan
+import numpy as np
+import pandas as pd
+import pandas_ta as ta
 from typing import Dict, Any, Optional
 from core.exchange import Exchange
 from core.adaptive_crypto_signals import integrate_adaptive_crypto_signals
@@ -428,6 +433,153 @@ class SignalStrategy:
         
         precision = self.amount_precision
         return float(f"{amount:.{precision}f}")
+    def _get_technical_direction(self) -> str:
+        """FIXED: Fast-response TSI for small crypto momentum"""
+        direction = 'none'
+        
+        try:
+            # Get OHLCV data - FIXED: Use 3m for faster signals
+            ohlcv_data = self.exchange.get_ohlcv(self.symbol, timeframe='3m', limit=100)
+            
+            if not ohlcv_data or len(ohlcv_data) < 50:
+                self.logger.warning("Insufficient OHLCV data for TSI analysis")
+                return 'none'
+            
+            # Convert to DataFrame
+            df = pd.DataFrame(ohlcv_data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            df['close'] = df['close'].astype(float)
+            
+            # FIXED: Faster TSI parameters for small crypto momentum
+            tsi_result = ta.tsi(df['close'], slow=15, fast=8, signal=6)
+            
+            if tsi_result is None or len(tsi_result.dropna()) < 10:
+                self.logger.warning("Failed to calculate TSI or insufficient data")
+                return 'none'
+            
+            # Clean TSI data
+            tsi_clean = tsi_result.dropna()
+            
+            if len(tsi_clean.columns) >= 2:
+                tsi_line = tsi_clean.iloc[:, 0]
+                tsi_signal = tsi_clean.iloc[:, 1]
+            else:
+                self.logger.warning("TSI result doesn't have expected columns")
+                return 'none'
+            
+            if len(tsi_line) < 8:
+                return 'none'
+            
+            # Get current values
+            current_price = float(df['close'].iloc[-1])
+            latest_tsi = tsi_line.iloc[-1]
+            latest_tsi_signal = tsi_signal.iloc[-1]
+            prev_tsi = tsi_line.iloc[-2]
+            
+            # FIXED: More aggressive thresholds for small crypto
+            # Standard TSI levels: +25 overbought, -25 oversold
+            # Adjusted for small crypto volatility
+            OVERBOUGHT_LEVEL = 20.0
+            OVERSOLD_LEVEL = -20.0
+            
+            # FIXED: Simple, fast momentum detection
+            tsi_momentum = latest_tsi - prev_tsi
+            tsi_crossover = latest_tsi - latest_tsi_signal
+            prev_crossover = tsi_line.iloc[-2] - tsi_signal.iloc[-2]
+            
+            # FIXED: Primary signal = crossover (remove double conditions)
+            bullish_crossover = (latest_tsi > latest_tsi_signal and prev_crossover <= 0)
+            bearish_crossover = (latest_tsi < latest_tsi_signal and prev_crossover >= 0)
+            
+            # FIXED: Momentum confirmation (not requirement)
+            momentum_bullish = tsi_momentum > 0
+            momentum_bearish = tsi_momentum < 0
+            
+            # FIXED: Dynamic strength based on recent volatility (not median)
+            recent_tsi = tsi_line.tail(10)  # Shorter window for small crypto
+            tsi_range = recent_tsi.max() - recent_tsi.min()
+            min_strength = max(2.0, tsi_range * 0.3)  # Minimum strength threshold
+            
+            current_strength = abs(latest_tsi)
+            has_strength = current_strength >= min_strength
+            
+            # FIXED: Much shorter persistence for small crypto (15-30 seconds max)
+            last_signal = getattr(self, '_last_signal', 'none')
+            last_signal_time = getattr(self, '_last_signal_time', 0)
+            current_time = time.time()
+            
+            # FIXED: Adaptive persistence based on market conditions
+            if latest_tsi > OVERBOUGHT_LEVEL or latest_tsi < OVERSOLD_LEVEL:
+                # Near extremes: allow faster reversals
+                min_persistence = 10  # 10 seconds
+            else:
+                # Normal range: slightly longer
+                min_persistence = 20  # 20 seconds
+            
+            signal_too_recent = (current_time - last_signal_time) < min_persistence
+            
+            # FIXED: Overbought/Oversold Protection
+            at_overbought = latest_tsi >= OVERBOUGHT_LEVEL
+            at_oversold = latest_tsi <= OVERSOLD_LEVEL
+            
+            # SIGNAL LOGIC - FIXED: Fast and responsive
+            
+            # 1. STRONG BUY: Oversold bounce with bullish momentum
+            if (at_oversold and momentum_bullish and latest_tsi > latest_tsi_signal):
+                if last_signal != 'buy' or not signal_too_recent:
+                    direction = 'buy'
+                    self._last_signal = 'buy'
+                    self._last_signal_time = current_time
+                    self.logger.info(f"🚀 OVERSOLD BOUNCE BUY: TSI={latest_tsi:.2f} Price=${current_price:.6f}")
+                    
+            # 2. STRONG SELL: Overbought reversal with bearish momentum  
+            elif (at_overbought and momentum_bearish and latest_tsi < latest_tsi_signal):
+                if last_signal != 'sell' or not signal_too_recent:
+                    direction = 'sell'
+                    self._last_signal = 'sell'
+                    self._last_signal_time = current_time
+                    self.logger.info(f"📉 OVERBOUGHT REVERSAL SELL: TSI={latest_tsi:.2f} Price=${current_price:.6f}")
+                    
+            # 3. BULLISH CROSSOVER: Fresh momentum up
+            elif (bullish_crossover and has_strength and not at_overbought):
+                if last_signal != 'buy' or not signal_too_recent:
+                    direction = 'buy'
+                    self._last_signal = 'buy'
+                    self._last_signal_time = current_time
+                    self.logger.info(f"📈 BULLISH CROSS BUY: TSI={latest_tsi:.2f}>{latest_tsi_signal:.2f} Price=${current_price:.6f}")
+                    
+            # 4. BEARISH CROSSOVER: Fresh momentum down
+            elif (bearish_crossover and has_strength and not at_oversold):
+                if last_signal != 'sell' or not signal_too_recent:
+                    direction = 'sell'
+                    self._last_signal = 'sell'
+                    self._last_signal_time = current_time
+                    self.logger.info(f"📉 BEARISH CROSS SELL: TSI={latest_tsi:.2f}<{latest_tsi_signal:.2f} Price=${current_price:.6f}")
+                    
+            # 5. MOMENTUM CONTINUATION: Strong trending
+            elif (latest_tsi > latest_tsi_signal and momentum_bullish and current_strength > min_strength * 1.5):
+                if last_signal != 'buy' or not signal_too_recent:
+                    direction = 'buy'
+                    self._last_signal = 'buy'
+                    self._last_signal_time = current_time
+                    self.logger.info(f"⚡ MOMENTUM BUY: TSI={latest_tsi:.2f} Strength={current_strength:.2f}")
+                    
+            elif (latest_tsi < latest_tsi_signal and momentum_bearish and current_strength > min_strength * 1.5):
+                if last_signal != 'sell' or not signal_too_recent:
+                    direction = 'sell'
+                    self._last_signal = 'sell'
+                    self._last_signal_time = current_time
+                    self.logger.info(f"⚡ MOMENTUM SELL: TSI={latest_tsi:.2f} Strength={current_strength:.2f}")
+            
+            # 6. HOLD PREVIOUS SIGNAL: No clear new direction
+            else:
+                direction = 'none'
+                self.logger.debug(f"⚠️ NO CLEAR SIGNAL: TSI={latest_tsi:.2f} Signal={latest_tsi_signal:.2f} Momentum={tsi_momentum:.2f}")
+                
+        except Exception as e:
+            self.logger.error(f"Error in FIXED TSI analysis: {e}")
+            direction = 'none'
+        
+        return direction
     # def _check_position_and_signals(self):
     #     """FIXED: Single position fetch to prevent race condition duplicates."""
     #     try:

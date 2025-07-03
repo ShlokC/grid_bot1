@@ -18,7 +18,7 @@ import numpy as np
 import pandas as pd
 import pandas_ta as ta
 from dataclasses import dataclass
-from .llm_signal_fusion import get_llm_fusion, LLMConfig
+# from llm_signal_fusion import get_llm_fusion, LLMConfig
 try:
     import optuna
     OPTUNA_AVAILABLE = True
@@ -679,12 +679,12 @@ Confirm: buy, sell, or none"""
                         llm_signal = response['message']['content'].strip().lower()
                         if llm_signal in ['buy', 'sell', 'none']:
                             if llm_signal != traditional_signal:
-                                self.logger.debug(f"LLM: {traditional_signal} -> {llm_signal} ({inference_time:.0f}ms)")
+                                self.logger.info(f"LLM: {traditional_signal} -> {llm_signal} ({inference_time:.0f}ms)")
                                 indicators['llm_enhanced'] = True
                                 indicators['original_signal'] = traditional_signal
                                 return llm_signal, indicators
                             else:
-                                self.logger.debug(f"LLM confirmed {traditional_signal} ({inference_time:.0f}ms)")
+                                self.logger.info(f"LLM confirmed {traditional_signal} ({inference_time:.0f}ms)")
                     
                 except Exception as e:
                     self.logger.debug(f"LLM failed: {e}")
@@ -749,7 +749,70 @@ Confirm: buy, sell, or none"""
         
         return all_signals
 
-
+    def get_signal_performance_summary(self) -> Dict:
+        """Get performance summary for the signal system"""
+        try:
+            # Calculate performance metrics from signal history
+            total_signals = len(self.signal_performance)
+            
+            if total_signals == 0:
+                return {
+                    'total_signals': 0,
+                    'accuracy': 0.0,
+                    'winning_signals': 0,
+                    'losing_signals': 0,
+                    'average_return': 0.0,
+                    'last_signal': 'none',
+                    'last_signal_time': 0,
+                    'strategy_type': self.strategy_type,
+                    'symbol': self.symbol
+                }
+            
+            # Count evaluated signals
+            evaluated_signals = [s for s in self.signal_performance if s.get('evaluated', False)]
+            winning_signals = sum(1 for s in evaluated_signals if s.get('correct', False))
+            losing_signals = len(evaluated_signals) - winning_signals
+            
+            # Calculate accuracy
+            accuracy = (winning_signals / len(evaluated_signals) * 100) if evaluated_signals else 0.0
+            
+            # Calculate average return if available
+            returns = [s.get('price_change_pct', 0) for s in evaluated_signals if s.get('price_change_pct') is not None]
+            average_return = sum(returns) / len(returns) if returns else 0.0
+            
+            return {
+                'total_signals': total_signals,
+                'evaluated_signals': len(evaluated_signals),
+                'accuracy': round(accuracy, 2),
+                'winning_signals': winning_signals,
+                'losing_signals': losing_signals,
+                'average_return': round(average_return, 4),
+                'last_signal': self.last_signal,
+                'last_signal_time': self.last_signal_time,
+                'strategy_type': self.strategy_type,
+                'symbol': self.symbol,
+                'current_params': {
+                    'qqe_length': getattr(self.params, 'qqe_length', 12),
+                    'supertrend_period': getattr(self.params, 'supertrend_period', 10),
+                    'rsi_length': getattr(self.params, 'rsi_length', 14),
+                    'strategy_type': self.strategy_type
+                }
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Error in get_signal_performance_summary: {e}")
+            return {
+                'total_signals': 0,
+                'accuracy': 0.0,
+                'winning_signals': 0,
+                'losing_signals': 0,
+                'average_return': 0.0,
+                'last_signal': 'none',
+                'last_signal_time': 0,
+                'strategy_type': self.strategy_type,
+                'symbol': self.symbol,
+                'error': str(e)
+            }
     # Add this new method to get strategy signal based on type
     def _get_strategy_signal(self, df: pd.DataFrame, params) -> Tuple[str, Dict]:
         """Get signal based on strategy type"""
