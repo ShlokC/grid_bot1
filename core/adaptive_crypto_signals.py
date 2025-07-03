@@ -624,7 +624,7 @@ class AdaptiveCryptoSignals:
             return False
     
     def _generate_signal_with_indicators(self, ohlcv_data, params) -> Tuple[str, Dict]:
-        """ENHANCED: Generate signal with Chain-of-Thought LLM analysis"""
+        """ENHANCED: Generate signal with Chain-of-Thought LLM analysis - Let LLM do the analysis"""
         try:
             # STEP 1: Get traditional signal using existing logic (UNCHANGED)
             if isinstance(ohlcv_data, dict) and '3m' in ohlcv_data and '15m' in ohlcv_data:
@@ -645,87 +645,70 @@ class AdaptiveCryptoSignals:
                 df = df.set_index('timestamp')
                 traditional_signal, indicators = self._get_strategy_signal(df, params)
             
-            # STEP 2: ENHANCED LLM Chain-of-Thought Analysis
+            # STEP 2: LLM Chain-of-Thought Analysis with RAW DATA
             if self._llm_enabled and traditional_signal in ['buy', 'sell']:
                 try:
-                    # Extract price data for pattern analysis
+                    # Get raw OHLCV data for LLM analysis
                     if isinstance(ohlcv_data, dict) and '3m' in ohlcv_data:
-                        current_data = ohlcv_data['3m']
-                        tf_context = "3m/15m multi-timeframe"
+                        raw_data = ohlcv_data['3m']
                     else:
-                        current_data = ohlcv_data
-                        tf_context = "3m single timeframe"
+                        raw_data = ohlcv_data
                     
-                    # Get recent price action (last 20 candles for pattern recognition)
-                    recent_candles = current_data[-20:] if len(current_data) >= 20 else current_data
-                    current_price = float(recent_candles[-1][4])
-                    prev_price = float(recent_candles[-2][4]) if len(recent_candles) >= 2 else current_price
+                    # Use last 50 candles for analysis (sufficient for patterns, support/resistance)
+                    analysis_candles = raw_data[-50:] if len(raw_data) >= 50 else raw_data
                     
-                    # Build Chain-of-Thought prompt with OHLCV patterns + indicators
-                    price_action = self._format_price_action(recent_candles[-5:])  # Last 5 candles
+                    if len(analysis_candles) < 20:
+                        return traditional_signal, indicators
                     
+                    # Format raw OHLCV data for LLM
+                    ohlcv_text = self._format_ohlcv_for_llm(analysis_candles)
+                    current_price = float(analysis_candles[-1][4])
+                    
+                    # Simple, direct prompt - let LLM do ALL the analysis
                     cot_prompt = f"""/think
 
-    # Technical Analysis for {self.symbol} - Chain of Thought
+    # Technical Analysis for {self.symbol}
 
-    ## Step 1: Price Action Analysis
-    Current Price: ${current_price:.6f}
-    Previous Price: ${prev_price:.6f}
-    Price Change: {((current_price - prev_price) / prev_price * 100):+.2f}%
-    Timeframe: {tf_context}
+    ## Current Situation
+    Price: ${current_price:.6f}
+    Traditional Signal: {traditional_signal.upper()}
+    RSI: {indicators.get('rsi', 'N/A')}
+    MACD: {indicators.get('macd_line', 0):.4f} vs {indicators.get('macd_signal', 0):.4f}
+    Supertrend: {"Bullish" if indicators.get('st_direction', 0) == 1 else "Bearish"}
 
-    Recent 5 Candles (OHLCV):
-    {price_action}
+    ## Recent OHLCV Data (last 30 candles)
+    Format: [Open, High, Low, Close, Volume]
+    {ohlcv_text}
 
-    ## Step 2: Technical Indicators Analysis
-    - RSI: {indicators.get('rsi', 'N/A')} (Overbought >70, Oversold <30)
-    - MACD: {indicators.get('macd_line', 0):.4f} vs Signal: {indicators.get('macd_signal', 0):.4f}
-    - Supertrend: {"Bullish" if indicators.get('st_direction', 0) == 1 else "Bearish"}
-    - Traditional Signal: {traditional_signal.upper()}
+    ## Your Analysis Task
+    Analyze the raw OHLCV data above and determine:
 
-    ## Step 3: Pattern Recognition
-    Analyze the recent candles for:
-    1. Support/Resistance levels from the OHLCV data
-    2. Candlestick patterns (doji, hammers, engulfing)
-    3. Volume vs price relationship
-    4. Trend direction and momentum
+    1. **Support/Resistance**: Look at the price levels where price bounced multiple times
+    2. **Candlestick Patterns**: Identify any doji, hammers, engulfing patterns from the OHLCV
+    3. **Volume Analysis**: Check if volume increases/decreases with price moves
+    4. **Trend & Momentum**: What's the overall direction and strength?
+    5. **Divergences**: Do you see any price vs indicator conflicts?
 
-    ## Step 4: Divergence Analysis
-    Check for divergences between:
-    - Price action vs MACD momentum
-    - Price highs/lows vs RSI levels
-    - Volume confirmation of price moves
+    ## Decision
+    Based on your analysis of the raw data, should the {traditional_signal.upper()} signal be:
+    - CONFIRMED (keep the signal)
+    - CHANGED (to buy/sell/none)  
+    - REJECTED (wait for better setup)
 
-    ## Step 5: Risk Assessment
-    Consider:
-    - Is price near support/resistance?
-    - Are indicators aligned or conflicting?
-    - What's the market context (trending/ranging)?
-
-    ## Step 6: Final Decision
-    Based on the above analysis, determine if the traditional {traditional_signal.upper()} signal should be:
-    - CONFIRMED (same signal)
-    - MODIFIED (different signal)
-    - REJECTED (wait/none)
-
-    Provide your reasoning and final signal.
-
-    IMPORTANT: Respond with JSON format:
-    {{"signal": "buy/sell/none", "confidence": 0.0-1.0, "reasoning": "brief explanation"}}"""
+    Respond in JSON: {{"signal": "buy/sell/none", "confidence": 0.8, "reasoning": "your analysis"}}"""
 
                     start_time = time.time()
                     
-                    # Use Qwen3 thinking mode parameters
+                    # Call LLM with Qwen3 thinking mode
                     response = ollama.chat(
                         model=self._llm_config.get('model', 'qwen3:0.6b'),
                         messages=[{'role': 'user', 'content': cot_prompt}],
                         format='json',
                         options={
-                            'temperature': 0.6,      # Qwen3 thinking mode
-                            'top_p': 0.95,
+                            'temperature': 0.6,
+                            'top_p': 0.95, 
                             'top_k': 20,
-                            'num_predict': 512,      # Enough for detailed analysis
-                            'stop': ['Human:', 'User:']
+                            'num_predict': 512
                         }
                     )
                     
@@ -734,89 +717,63 @@ class AdaptiveCryptoSignals:
                     # Parse LLM response
                     try:
                         import json
-                        llm_result = json.loads(response['message']['content'])
-                        llm_signal = llm_result.get('signal', 'none').lower()
-                        llm_confidence = float(llm_result.get('confidence', 0.0))
-                        llm_reasoning = llm_result.get('reasoning', 'No reasoning provided')
+                        result = json.loads(response['message']['content'])
+                        llm_signal = result.get('signal', 'none').lower()
+                        llm_confidence = float(result.get('confidence', 0.0))
+                        llm_reasoning = result.get('reasoning', '')
                         
-                        # Validate and apply LLM enhancement
                         if llm_signal in ['buy', 'sell', 'none'] and 0.0 <= llm_confidence <= 1.0:
-                            # Log the analysis
                             if llm_signal != traditional_signal:
-                                self.logger.info(f"LLM CoT: {traditional_signal} -> {llm_signal} "
-                                            f"(conf: {llm_confidence:.2f}, {inference_time:.0f}ms)")
+                                self.logger.info(f"LLM Analysis: {traditional_signal} -> {llm_signal} "
+                                            f"(confidence: {llm_confidence:.2f}, {inference_time:.0f}ms)")
                                 self.logger.info(f"LLM Reasoning: {llm_reasoning}")
                                 
-                                # Enhance indicators with LLM analysis
                                 indicators.update({
                                     'llm_enhanced': True,
                                     'llm_signal': llm_signal,
                                     'llm_confidence': llm_confidence,
                                     'llm_reasoning': llm_reasoning,
-                                    'original_signal': traditional_signal,
-                                    'analysis_type': 'chain_of_thought'
+                                    'original_signal': traditional_signal
                                 })
                                 
                                 return llm_signal, indicators
                             else:
-                                self.logger.info(f"LLM CoT confirmed {traditional_signal} conf: {llm_confidence:.2f}, LLM Reasoning: {llm_reasoning}")
-                                indicators.update({
-                                    'llm_confidence': llm_confidence,
-                                    'llm_reasoning': llm_reasoning,
-                                    'analysis_type': 'chain_of_thought'
-                                })
-                        else:
-                            self.logger.warning(f"Invalid LLM CoT response: signal={llm_signal}, conf={llm_confidence}")
-                            
-                    except json.JSONDecodeError as e:
-                        self.logger.warning(f"LLM CoT JSON parse error: {e}")
-                        # Fallback: extract signal from raw text
-                        content = response['message']['content'].lower()
-                        if 'buy' in content and llm_signal != traditional_signal:
-                            llm_signal = 'buy'
-                            self.logger.info(f"LLM CoT (fallback): {traditional_signal} -> {llm_signal}")
-                            indicators['llm_enhanced'] = True
-                            indicators['original_signal'] = traditional_signal
-                            return llm_signal, indicators
-                        elif 'sell' in content and llm_signal != traditional_signal:
-                            llm_signal = 'sell'
-                            self.logger.info(f"LLM CoT (fallback): {traditional_signal} -> {llm_signal}")
-                            indicators['llm_enhanced'] = True
-                            indicators['original_signal'] = traditional_signal
-                            return llm_signal, indicators
+                                self.logger.info(f"LLM confirmed {traditional_signal} "
+                                            f"(confidence: {llm_confidence:.2f}, {inference_time:.0f}ms)")
+                                indicators['llm_confidence'] = llm_confidence
+                                indicators['llm_reasoning'] = llm_reasoning
                     
+                    except json.JSONDecodeError:
+                        self.logger.warning("LLM JSON parse failed")
+                        
                 except Exception as e:
-                    self.logger.debug(f"LLM CoT failed: {e}")
-                    pass
+                    self.logger.debug(f"LLM analysis failed: {e}")
             
-            # STEP 3: Return traditional signal (EXISTING BEHAVIOR)
+            # STEP 3: Return traditional signal
             indicators['llm_enhanced'] = False
-            indicators['analysis_type'] = 'traditional_only'
             return traditional_signal, indicators
             
         except Exception as e:
             self.logger.error(f"Error in _generate_signal_with_indicators: {e}")
             return 'none', {}
 
-    def _format_price_action(self, candles) -> str:
-        """Format recent candles for LLM analysis"""
+    def _format_ohlcv_for_llm(self, candles) -> str:
+        """Format OHLCV data for LLM analysis - simple and clean"""
         try:
-            formatted = []
-            for i, candle in enumerate(candles):
+            # Show last 30 candles to LLM for pattern recognition
+            recent_candles = candles[-30:] if len(candles) >= 30 else candles
+            
+            formatted_lines = []
+            for i, candle in enumerate(recent_candles):
                 timestamp, open_p, high, low, close, volume = candle
-                body_size = abs(float(close) - float(open_p))
-                body_type = "GREEN" if float(close) > float(open_p) else "RED" if float(close) < float(open_p) else "DOJI"
-                wick_upper = float(high) - max(float(open_p), float(close))
-                wick_lower = min(float(open_p), float(close)) - float(low)
-                
-                formatted.append(
-                    f"Candle {i+1}: O:{float(open_p):.6f} H:{float(high):.6f} L:{float(low):.6f} C:{float(close):.6f} "
-                    f"V:{int(float(volume))} [{body_type}, Body:{body_size:.6f}, Wicks:↑{wick_upper:.6f}/↓{wick_lower:.6f}]"
+                formatted_lines.append(
+                    f"{i+1:2d}: [{float(open_p):8.6f}, {float(high):8.6f}, {float(low):8.6f}, {float(close):8.6f}, {int(float(volume)):8d}]"
                 )
             
-            return "\n".join(formatted)
+            return "\n".join(formatted_lines)
+            
         except Exception as e:
-            return f"Error formatting price action: {e}"
+            return f"Error formatting OHLCV: {e}"
     # Add this new method to collect all traditional signals
     def _get_all_traditional_signals(self, ohlcv_data, params) -> Dict:
         """Collect signals from all available strategies and indicators"""
