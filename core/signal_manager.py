@@ -48,7 +48,7 @@ class SignalManager:
         if running_strategies > 0:
             self._ensure_monitor_running()
         
-        self.logger.info(f"Signal Manager initialized: {len(self.strategies)} strategies loaded")
+        # self.logger.info(f"Signal Manager initialized: {len(self.strategies)} strategies loaded")
     
     def _load_strategies(self):
         """Load existing strategies from data store."""
@@ -84,7 +84,7 @@ class SignalManager:
                 except Exception as e:
                     self.logger.error(f"Error loading strategy {strategy_id}: {e}")
             
-            self.logger.info(f"Loaded {loaded_count} strategies")
+            # self.logger.info(f"Loaded {loaded_count} strategies")
             
         except Exception as e:
             self.logger.error(f"Error loading strategies: {e}")
@@ -93,7 +93,7 @@ class SignalManager:
         """FIXED: Auto-manage strategies - NEVER stop strategies with active positions."""
         try:
             # Force fresh data from exchange instead of cached data
-            self.logger.info("Getting fresh top 10 active symbols from exchange...")
+            # self.logger.info("Getting fresh top 10 active symbols from exchange...")
             fresh_symbols = self.exchange.get_top_active_symbols(limit=10)
             
             if not fresh_symbols:
@@ -101,7 +101,7 @@ class SignalManager:
                 return
             
             top_symbols = [symbol['symbol'] for symbol in fresh_symbols]
-            self.logger.info(f"Auto-managing fresh top 10: {top_symbols}")
+            # self.logger.info(f"Auto-managing fresh top 10: {top_symbols}")
             
             # FIXED: Create snapshots to avoid iteration errors during modification
             strategies_snapshot = dict(self.strategies)
@@ -120,7 +120,7 @@ class SignalManager:
                     # Symbol is in top 10 - keep it and ensure it's running
                     if not strategy.running:
                         self.start_strategy(strategy_id)
-                        self.logger.info(f"Started strategy for top active symbol: {symbol}")
+                        # self.logger.info(f"Started strategy for top active symbol: {symbol}")
                     current_active_symbols.add(symbol)
                 else:
                     # Symbol not in top 10 - check for position before any action
@@ -128,10 +128,10 @@ class SignalManager:
                     if not has_position:
                         # No position and not active - safe to remove
                         strategies_to_remove.append(strategy_id)
-                        self.logger.info(f"Marking {symbol} for removal (not active, no position)")
+                        # self.logger.info(f"Marking {symbol} for removal (not active, no position)")
                     else:
                         # CRITICAL FIX: Has position - NEVER stop it, just log
-                        self.logger.info(f"Keeping {symbol} strategy (has position but not in top active)")
+                        # self.logger.info(f"Keeping {symbol} strategy (has position but not in top active)")
                         # DO NOT call strategy.stop_strategy() - let it keep running for exit evaluation
                         current_active_symbols.add(symbol)  # Keep it as "active" for position management
             
@@ -140,7 +140,7 @@ class SignalManager:
                 if strategy_id in self.strategies:  # Double-check it still exists
                     self.stop_strategy(strategy_id)
                     self.delete_strategy(strategy_id)
-                    self.logger.info(f"Deleted inactive strategy: {strategy_id}")
+                    # self.logger.info(f"Deleted inactive strategy: {strategy_id}")
             
             # Create missing strategies for top active symbols
             for symbol in top_symbols:
@@ -148,7 +148,7 @@ class SignalManager:
                     strategy_id = self.create_strategy(symbol, auto_created=True, strategy_type='roc_multi_timeframe')
                     if strategy_id:
                         self.start_strategy(strategy_id)
-                        self.logger.info(f"Created and started strategy for: {symbol}")
+                        # self.logger.info(f"Created and started strategy for: {symbol}")
             
             # Update cached data with fresh data
             self.active_symbols_data['top_active'] = fresh_symbols
@@ -157,7 +157,7 @@ class SignalManager:
             # Log final state
             total_strategies = len(self.strategies)
             running_strategies = sum(1 for s in self.strategies.values() if s.running)
-            self.logger.info(f"Auto-management complete: {running_strategies}/{total_strategies} strategies running")
+            # self.logger.info(f"Auto-management complete: {running_strategies}/{total_strategies} strategies running")
                             
         except Exception as e:
             self.logger.error(f"Error in auto-manage strategies: {e}")
@@ -213,7 +213,7 @@ class SignalManager:
             # Save to data store
             self.data_store.save_grid(strategy_id, strategy.get_status())  # Reuse existing method
             
-            self.logger.info(f"Created signal strategy: {strategy_id} for {symbol} using {strategy_type}")
+            # self.logger.info(f"Created signal strategy: {strategy_id} for {symbol} using {strategy_type}")
             return strategy_id
             
         except Exception as e:
@@ -336,14 +336,14 @@ class SignalManager:
                 self.running = True
                 self.monitor_thread = threading.Thread(target=self._monitor_strategies, daemon=True)
                 self.monitor_thread.start()
-                self.logger.info("✅ Strategy monitor started")
+                # self.logger.info("✅ Strategy monitor started")
                 
         except Exception as e:
             self.logger.error(f"Error ensuring monitor running: {e}")
     
     def _monitor_strategies(self):
         """FIXED: Monitor ALL strategies with positions, regardless of running status."""
-        self.logger.info("Monitor started - Will update ALL strategies with positions")
+        # self.logger.info("Monitor started - Will update ALL strategies with positions")
         
         cycle_count = 0
         last_active_symbols_sync = 0
@@ -359,7 +359,7 @@ class SignalManager:
                     # Immediate sync when active symbols are updated
                     current_active_update = self.active_symbols_data.get('last_updated', 0)
                     if current_active_update > last_active_symbols_sync:
-                        self.logger.info(f"Active symbols updated - immediate strategy sync")
+                        # self.logger.info(f"Active symbols updated - immediate strategy sync")
                         self._auto_manage_active_strategies()
                         last_active_symbols_sync = current_active_update
                     
@@ -391,7 +391,7 @@ class SignalManager:
                     if cycle_count % 10 == 1:
                         running_count = sum(1 for _, s in strategies_to_update if s.running)
                         position_count = len(strategies_to_update) - running_count
-                        self.logger.info(f"Monitor cycle #{cycle_count}: {running_count} running + {position_count} with positions = {len(strategies_to_update)} total")
+                        # self.logger.info(f"Monitor cycle #{cycle_count}: {running_count} running + {position_count} with positions = {len(strategies_to_update)} total")
                     
                     # Update all strategies that need updating
                     for strategy_id, strategy in strategies_to_update:
@@ -417,7 +417,7 @@ class SignalManager:
     def test_all_strategies_setup(self) -> bool:
         """Test trading setup for all active strategies."""
         try:
-            self.logger.info("🧪 Testing trading setup for all strategies...")
+            # self.logger.info("🧪 Testing trading setup for all strategies...")
             
             success_count = 0
             total_count = 0
@@ -429,10 +429,10 @@ class SignalManager:
             
             success_rate = (success_count / total_count * 100) if total_count > 0 else 0
             
-            self.logger.info(f"📊 Setup test results: {success_count}/{total_count} passed ({success_rate:.1f}%)")
+            # self.logger.info(f"📊 Setup test results: {success_count}/{total_count} passed ({success_rate:.1f}%)")
             
             if success_count == total_count:
-                self.logger.info("🎉 All strategy setups passed!")
+                # self.logger.info("🎉 All strategy setups passed!")
                 return True
             else:
                 self.logger.warning("⚠️ Some strategy setups failed!")
@@ -451,7 +451,7 @@ class SignalManager:
             if current_time - last_update < 15:  # Update every 15 seconds for real-time
                 return
             
-            self.logger.info("Updating active symbols data (1m real-time volume spike detection)")
+            # self.logger.info("Updating active symbols data (1m real-time volume spike detection)")
             
             # FIXED: Use 5-minute timeframe for better small crypto detection
             top_active = self.exchange.get_top_active_symbols(limit=10, timeframe_minutes=5)
@@ -466,9 +466,9 @@ class SignalManager:
                 'timeframe': '5min'  # FIXED: Reflect actual timeframe
             }
             
-            self.logger.info(f"Active symbols updated (5min real-time): {len(top_active)} active, "
-                            f"{len(gainers_losers.get('gainers', []))} gainers, "
-                            f"{len(gainers_losers.get('losers', []))} losers")
+            # self.logger.info(f"Active symbols updated (5min real-time): {len(top_active)} active, "
+            #                 f"{len(gainers_losers.get('gainers', []))} gainers, "
+            #                 f"{len(gainers_losers.get('losers', []))} losers")
             
         except Exception as e:
             self.logger.error(f"Error updating active symbols data: {e}")
@@ -500,7 +500,7 @@ class SignalManager:
     def force_update_active_symbols(self) -> bool:
         """Force update of active symbols data."""
         try:
-            self.logger.info("Force syncing strategies with active symbols...")
+           # self.logger.info("Force syncing strategies with active symbols...")
             
             # Force active symbols update
             self.active_symbols_data['last_updated'] = 0

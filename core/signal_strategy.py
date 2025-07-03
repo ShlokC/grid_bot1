@@ -60,14 +60,14 @@ class SignalStrategy:
         self._last_order_time = 0
         self._order_attempts = []
         
-        self.logger.info(f"✅ Centralized order management initialized for {symbol}")
+        # self.logger.info(f"✅ Centralized order management initialized for {symbol}")
         
         # Integrate signal system with strategy type and LLM setting
         integrate_adaptive_crypto_signals(self, strategy_type=strategy_type, enable_llm=enable_llm)
         
         llm_status = "with LLM fusion" if enable_llm else "traditional only"
-        self.logger.info(f"Signal Strategy initialized: {symbol}, Size: ${position_size_usd}, "
-                        f"Leverage: {leverage}x, Strategy: {strategy_type}, {llm_status}")
+        # self.logger.info(f"Signal Strategy initialized: {symbol}, Size: ${position_size_usd}, "
+        #                 f"Leverage: {leverage}x, Strategy: {strategy_type}, {llm_status}")
     def _fetch_market_info(self):
         """Fetch market precision and limits."""
         try:
@@ -117,14 +117,14 @@ class SignalStrategy:
             # Cancel any existing orders but don't place new ones
             try:
                 cancelled = self.exchange.cancel_all_orders(self.symbol)
-                if cancelled:
-                    self.logger.info(f"Cancelled {len(cancelled)} existing orders")
+                # if cancelled:
+                    # self.logger.info(f"Cancelled {len(cancelled)} existing orders")
                 time.sleep(1)
             except Exception as e:
                 self.logger.warning(f"Failed to cancel existing orders: {e}")
             
             self.running = True
-            self.logger.info(f"✅ Signal Strategy started: {self.symbol}")
+            # self.logger.info(f"✅ Signal Strategy started: {self.symbol}")
             return True
             
         except Exception as e:
@@ -132,7 +132,7 @@ class SignalStrategy:
             return False
     def test_duplicate_prevention(self):
         """Test method to verify no duplicates can occur."""
-        self.logger.info("🧪 Testing duplicate prevention...")
+        # self.logger.info("🧪 Testing duplicate prevention...")
         
         # Store original method
         original_create_order = self.exchange.create_market_order
@@ -154,10 +154,10 @@ class SignalStrategy:
         self.exchange.create_market_order = original_create_order
         
         # Analyze results
-        self.logger.info(f"🧪 Test complete: {len(order_calls)} orders would have been placed")
+        # self.logger.info(f"🧪 Test complete: {len(order_calls)} orders would have been placed")
         
         if len(order_calls) <= 1:
-            self.logger.info("✅ DUPLICATE PREVENTION WORKING: Maximum 1 order per test")
+            # self.logger.info("✅ DUPLICATE PREVENTION WORKING: Maximum 1 order per test")
             return True
         else:
             self.logger.error(f"❌ DUPLICATES DETECTED: {len(order_calls)} orders in rapid test")
@@ -165,7 +165,7 @@ class SignalStrategy:
     def test_trading_setup(self) -> bool:
         """Test trading setup for this strategy's symbol."""
         try:
-            self.logger.info(f"🧪 Testing trading setup for {self.symbol}...")
+            # self.logger.info(f"🧪 Testing trading setup for {self.symbol}...")
             
             # FIXED: Call setup on exchange instance, not self
             success = self.exchange.setup_symbol_trading_config(self.symbol, 20)
@@ -174,17 +174,17 @@ class SignalStrategy:
                 # Get current config to verify
                 config = self.exchange.get_symbol_trading_config(self.symbol)
                 
-                self.logger.info(f"📊 Current config for {self.symbol}:")
-                self.logger.info(f"   Margin Type: {config.get('margin_type', 'UNKNOWN')}")
-                self.logger.info(f"   Leverage: {config.get('leverage', 'UNKNOWN')}x")
-                self.logger.info(f"   Position Size: {config.get('position_size', 0)}")
+                # self.logger.info(f"📊 Current config for {self.symbol}:")
+                # self.logger.info(f"   Margin Type: {config.get('margin_type', 'UNKNOWN')}")
+                # self.logger.info(f"   Leverage: {config.get('leverage', 'UNKNOWN')}x")
+                # self.logger.info(f"   Position Size: {config.get('position_size', 0)}")
                 
                 # Verify requirements
                 margin_ok = config.get('margin_type') == 'ISOLATED'
                 leverage_ok = config.get('leverage') == 20
                 
                 if margin_ok and leverage_ok:
-                    self.logger.info(f"✅ {self.symbol} correctly configured for trading")
+                    # self.logger.info(f"✅ {self.symbol} correctly configured for trading")
                     return True
                 else:
                     self.logger.error(f"❌ {self.symbol} configuration incorrect:")
@@ -225,13 +225,15 @@ class SignalStrategy:
         except Exception as e:
             self.logger.error(f"Error updating strategy: {e}")
     def _get_live_trading_data(self) -> Dict:
-        """FIXED: Single API call to get ALL required data."""
+        """FIXED: Single API call to get ALL required data using adaptive crypto signals."""
         try:
             # Get all data in one batch to prevent inconsistencies
             positions = self.exchange.get_positions(self.symbol)
             open_orders = self.exchange.get_open_orders(self.symbol)
             ticker = self.exchange.get_ticker(self.symbol)
-            tech_signal = self._get_technical_direction()
+            
+            # FIXED: Use adaptive crypto signals system for technical direction
+            tech_signal = self.get_technical_direction(self.exchange)
             
             # Parse position data
             current_position = None
@@ -255,24 +257,26 @@ class SignalStrategy:
             pending_orders = len(symbol_orders)
             
             live_data = {
-            'current_price': float(ticker['last']),
-            'tech_signal': tech_signal,
-            'has_position': current_position is not None,
-            'position_size': position_size,
-            'position_side': position_side,
-            'entry_price': entry_price,
-            'pending_orders': pending_orders,
-            'timestamp': time.time()
+                'current_price': float(ticker['last']),
+                'tech_signal': tech_signal,
+                'has_position': current_position is not None,
+                'position_size': position_size,
+                'position_side': position_side,
+                'entry_price': entry_price,
+                'pending_orders': pending_orders,
+                'timestamp': time.time()
             }
+            
             self.logger.info(f"📊 {self.symbol}: ${live_data['current_price']:.6f} | {live_data['tech_signal'].upper()} | {live_data['position_side'] or 'NO_POS'} {abs(live_data['position_size']):.6f} | Pending:{live_data['pending_orders']}")
-    
+
             return live_data
+            
         except Exception as e:
             self.logger.error(f"Error getting live trading data: {e}")
             return {'tech_signal': 'none', 'has_position': False, 'pending_orders': 0, 'current_price': 0}
 
     def _make_order_decision(self, live_data: Dict) -> Dict:
-        """FIXED: Always check exit when position exists, regardless of pending orders."""
+        """FIXED: Always check exit when position exists, using adaptive signals consistently."""
         try:
             entry_signal = live_data['tech_signal']
             has_position = live_data['has_position']
@@ -283,9 +287,9 @@ class SignalStrategy:
             
             decision = {'action': 'none', 'side': '', 'reason': ''}
             
-            # FIXED: ALWAYS check exit FIRST when position exists - regardless of pending orders!
-            if has_position and hasattr(self, '_crypto_signal_system'):
-                exit_decision = self._crypto_signal_system.evaluate_exit_conditions(
+            # FIXED: ALWAYS check exit FIRST when position exists - using adaptive_signals consistently
+            if has_position and hasattr(self, 'adaptive_signals'):
+                exit_decision = self.adaptive_signals.evaluate_exit_conditions(
                     position_side=position_side,
                     entry_price=position_entry_price,
                     current_price=current_price
@@ -320,7 +324,7 @@ class SignalStrategy:
 
 
     def _execute_single_order(self, decision: Dict, live_data: Dict):
-        """FIXED: Single order execution point with proper TP/SL price calculation."""
+        """FIXED: Single order execution point using adaptive signals consistently."""
         try:
             action = decision['action']
             side = decision['side'] 
@@ -328,18 +332,16 @@ class SignalStrategy:
             current_price = live_data['current_price']
             
             if action not in ['entry', 'exit'] or side not in ['buy', 'sell']:
-                # self.logger.debug(f"[{self.symbol}] No order execution: Action '{action}', Side '{side}'")
                 return
             
             # Calculate amount
             if action == 'entry':
                 amount = self._calculate_position_amount(current_price)
             else:  # exit
-                amount = abs(live_data['position_size']) # Ensure position_size is correctly populated
-                if amount == 0: # Safety check if live_data didn't get position size
+                amount = abs(live_data['position_size'])
+                if amount == 0:
                     self.logger.warning(f"[{self.symbol}] Attempting to exit with zero position size. Aborting exit.")
                     return
-
 
             if amount < self.min_amount:
                 self.logger.warning(f"[{self.symbol}] Amount {amount:.6f} below minimum {self.min_amount}. Order not placed for {action} {side}.")
@@ -351,7 +353,7 @@ class SignalStrategy:
             order = self.exchange.create_market_order(self.symbol, side, amount)
             
             if order and 'id' in order:
-                self._last_order_time = live_data['timestamp'] # Update last order time
+                self._last_order_time = live_data['timestamp']
                 self.total_trades += 1
                 
                 fill_price = float(order.get('average', current_price))
@@ -362,62 +364,16 @@ class SignalStrategy:
                 
                 self.logger.info(f"[{self.symbol}] ✅ {action.upper()} EXECUTED: {side.upper()} {amount:.6f} @ ${fill_price:.6f}. Order ID: {order['id']}")
 
-                # If an entry was made, set the position_entry_time on the adaptive signal system
-                if action == 'entry' and hasattr(self, '_crypto_signal_system'):
-                    self._crypto_signal_system.position_entry_time = live_data['timestamp']
+                # FIXED: Use adaptive_signals consistently for position tracking
+                if action == 'entry' and hasattr(self, 'adaptive_signals'):
+                    self.adaptive_signals.position_entry_time = live_data['timestamp']
                     self.logger.debug(f"[{self.symbol}] Set position_entry_time on adaptive system to: {live_data['timestamp']}")
-                elif action == 'exit' and hasattr(self, '_crypto_signal_system'):
-                     self._crypto_signal_system.position_entry_time = 0 # Reset on exit
-                     self.logger.debug(f"[{self.symbol}] Reset position_entry_time on adaptive system after exit.")
-
-                
-                # Place TP/SL orders for entry positions only
-                if action == 'entry':
-                    # ... (TP/SL placement logic remains the same) ...
-                    # Note: Ensure this TP/SL logic doesn't conflict with exits from AdaptiveCryptoSignals
-                    # One approach is to make the AdaptiveCryptoSignals exits advisory and let these TP/SL be hard stops.
-                    # Or, the strategy only places TP/SL if the adaptive system doesn't have its own "urgent" exit.
-                    # For now, keeping as is, but this interaction needs consideration.
-                    time.sleep(1) 
-                    price_change_needed = 0.5 / amount # Target $0.5 PnL
-                    precision = max(self.price_precision, 6)
+                elif action == 'exit' and hasattr(self, 'adaptive_signals'):
+                    self.adaptive_signals.position_entry_time = 0
+                    self.logger.debug(f"[{self.symbol}] Reset position_entry_time on adaptive system after exit.")
                     
-                    if side == 'buy':
-                        tp_price = round(fill_price + price_change_needed, precision)
-                        sl_price = round(fill_price - price_change_needed, precision)
-                        tp_side, sl_side = 'sell', 'sell'
-                    else: # sell
-                        tp_price = round(fill_price - price_change_needed, precision)
-                        sl_price = round(fill_price + price_change_needed, precision)
-                        tp_side, sl_side = 'buy', 'buy'
-
-                    min_price_diff = fill_price * 0.001 
-                    if abs(tp_price - fill_price) < min_price_diff or abs(sl_price - fill_price) < min_price_diff:
-                        self.logger.warning(f"[{self.symbol}] ⚠️ TP/SL prices too close. TP: ${tp_price:.8f}, SL: ${sl_price:.8f}")
-                        return
-                    
-                    # Validate TP/SL direction (simplified)
-                    if (side == 'buy' and (tp_price <= fill_price or sl_price >= fill_price)) or \
-                       (side == 'sell' and (tp_price >= fill_price or sl_price <= fill_price)):
-                        self.logger.error(f"[{self.symbol}] ❌ Invalid TP/SL direction. Entry: ${fill_price}, TP: ${tp_price}, SL: ${sl_price}")
-                        return
-                        
-                    self.logger.info(f"[{self.symbol}] 📊 Setting TP/SL. Position: {amount:.6f} @ ${fill_price:.8f}. TP: ${tp_price:.8f}, SL: ${sl_price:.8f}")
-                    
-                    # try:
-                    #     tp_order = self.exchange.create_take_profit_market_order(self.symbol, tp_side, amount, tp_price)
-                    #     if tp_order and 'id' in tp_order: self.logger.info(f"[{self.symbol}] 🎯 TAKE PROFIT placed: {tp_order['id']}")
-                    # except Exception as e: self.logger.error(f"[{self.symbol}] ❌ Failed TP order: {e}")
-                    
-                    # try:
-                    #     sl_order = self.exchange.create_stop_order(self.symbol, sl_side, amount, sl_price, order_type='stop_market')
-                    #     if sl_order and 'id' in sl_order: self.logger.info(f"[{self.symbol}] 🛡️ STOP LOSS placed: {sl_order['id']}")
-                    # except Exception as e: self.logger.error(f"[{self.symbol}] ❌ Failed SL order: {e}")
-            else:
-                self.logger.error(f"[{self.symbol}] ❌ Order execution failed or no valid ID returned.")
-                
         except Exception as e:
-            self.logger.error(f"[{self.symbol}] Error executing order: {e}", exc_info=True)
+            self.logger.error(f"[{self.symbol}] Error executing order: {e}")
     def _round_price(self, price: float) -> float:
         """Round price to appropriate precision"""
         if price <= 0:
@@ -433,153 +389,153 @@ class SignalStrategy:
         
         precision = self.amount_precision
         return float(f"{amount:.{precision}f}")
-    def _get_technical_direction(self) -> str:
-        """FIXED: Fast-response TSI for small crypto momentum"""
-        direction = 'none'
+    # def _get_technical_direction(self) -> str:
+    #     """FIXED: Fast-response TSI for small crypto momentum"""
+    #     direction = 'none'
         
-        try:
-            # Get OHLCV data - FIXED: Use 3m for faster signals
-            ohlcv_data = self.exchange.get_ohlcv(self.symbol, timeframe='3m', limit=100)
+    #     try:
+    #         # Get OHLCV data - FIXED: Use 3m for faster signals
+    #         ohlcv_data = self.exchange.get_ohlcv(self.symbol, timeframe='3m', limit=100)
             
-            if not ohlcv_data or len(ohlcv_data) < 50:
-                self.logger.warning("Insufficient OHLCV data for TSI analysis")
-                return 'none'
+    #         if not ohlcv_data or len(ohlcv_data) < 50:
+    #             self.logger.warning("Insufficient OHLCV data for TSI analysis")
+    #             return 'none'
             
-            # Convert to DataFrame
-            df = pd.DataFrame(ohlcv_data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-            df['close'] = df['close'].astype(float)
+    #         # Convert to DataFrame
+    #         df = pd.DataFrame(ohlcv_data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+    #         df['close'] = df['close'].astype(float)
             
-            # FIXED: Faster TSI parameters for small crypto momentum
-            tsi_result = ta.tsi(df['close'], slow=15, fast=8, signal=6)
+    #         # FIXED: Faster TSI parameters for small crypto momentum
+    #         tsi_result = ta.tsi(df['close'], slow=15, fast=8, signal=6)
             
-            if tsi_result is None or len(tsi_result.dropna()) < 10:
-                self.logger.warning("Failed to calculate TSI or insufficient data")
-                return 'none'
+    #         if tsi_result is None or len(tsi_result.dropna()) < 10:
+    #             self.logger.warning("Failed to calculate TSI or insufficient data")
+    #             return 'none'
             
-            # Clean TSI data
-            tsi_clean = tsi_result.dropna()
+    #         # Clean TSI data
+    #         tsi_clean = tsi_result.dropna()
             
-            if len(tsi_clean.columns) >= 2:
-                tsi_line = tsi_clean.iloc[:, 0]
-                tsi_signal = tsi_clean.iloc[:, 1]
-            else:
-                self.logger.warning("TSI result doesn't have expected columns")
-                return 'none'
+    #         if len(tsi_clean.columns) >= 2:
+    #             tsi_line = tsi_clean.iloc[:, 0]
+    #             tsi_signal = tsi_clean.iloc[:, 1]
+    #         else:
+    #             self.logger.warning("TSI result doesn't have expected columns")
+    #             return 'none'
             
-            if len(tsi_line) < 8:
-                return 'none'
+    #         if len(tsi_line) < 8:
+    #             return 'none'
             
-            # Get current values
-            current_price = float(df['close'].iloc[-1])
-            latest_tsi = tsi_line.iloc[-1]
-            latest_tsi_signal = tsi_signal.iloc[-1]
-            prev_tsi = tsi_line.iloc[-2]
+    #         # Get current values
+    #         current_price = float(df['close'].iloc[-1])
+    #         latest_tsi = tsi_line.iloc[-1]
+    #         latest_tsi_signal = tsi_signal.iloc[-1]
+    #         prev_tsi = tsi_line.iloc[-2]
             
-            # FIXED: More aggressive thresholds for small crypto
-            # Standard TSI levels: +25 overbought, -25 oversold
-            # Adjusted for small crypto volatility
-            OVERBOUGHT_LEVEL = 20.0
-            OVERSOLD_LEVEL = -20.0
+    #         # FIXED: More aggressive thresholds for small crypto
+    #         # Standard TSI levels: +25 overbought, -25 oversold
+    #         # Adjusted for small crypto volatility
+    #         OVERBOUGHT_LEVEL = 20.0
+    #         OVERSOLD_LEVEL = -20.0
             
-            # FIXED: Simple, fast momentum detection
-            tsi_momentum = latest_tsi - prev_tsi
-            tsi_crossover = latest_tsi - latest_tsi_signal
-            prev_crossover = tsi_line.iloc[-2] - tsi_signal.iloc[-2]
+    #         # FIXED: Simple, fast momentum detection
+    #         tsi_momentum = latest_tsi - prev_tsi
+    #         tsi_crossover = latest_tsi - latest_tsi_signal
+    #         prev_crossover = tsi_line.iloc[-2] - tsi_signal.iloc[-2]
             
-            # FIXED: Primary signal = crossover (remove double conditions)
-            bullish_crossover = (latest_tsi > latest_tsi_signal and prev_crossover <= 0)
-            bearish_crossover = (latest_tsi < latest_tsi_signal and prev_crossover >= 0)
+    #         # FIXED: Primary signal = crossover (remove double conditions)
+    #         bullish_crossover = (latest_tsi > latest_tsi_signal and prev_crossover <= 0)
+    #         bearish_crossover = (latest_tsi < latest_tsi_signal and prev_crossover >= 0)
             
-            # FIXED: Momentum confirmation (not requirement)
-            momentum_bullish = tsi_momentum > 0
-            momentum_bearish = tsi_momentum < 0
+    #         # FIXED: Momentum confirmation (not requirement)
+    #         momentum_bullish = tsi_momentum > 0
+    #         momentum_bearish = tsi_momentum < 0
             
-            # FIXED: Dynamic strength based on recent volatility (not median)
-            recent_tsi = tsi_line.tail(10)  # Shorter window for small crypto
-            tsi_range = recent_tsi.max() - recent_tsi.min()
-            min_strength = max(2.0, tsi_range * 0.3)  # Minimum strength threshold
+    #         # FIXED: Dynamic strength based on recent volatility (not median)
+    #         recent_tsi = tsi_line.tail(10)  # Shorter window for small crypto
+    #         tsi_range = recent_tsi.max() - recent_tsi.min()
+    #         min_strength = max(2.0, tsi_range * 0.3)  # Minimum strength threshold
             
-            current_strength = abs(latest_tsi)
-            has_strength = current_strength >= min_strength
+    #         current_strength = abs(latest_tsi)
+    #         has_strength = current_strength >= min_strength
             
-            # FIXED: Much shorter persistence for small crypto (15-30 seconds max)
-            last_signal = getattr(self, '_last_signal', 'none')
-            last_signal_time = getattr(self, '_last_signal_time', 0)
-            current_time = time.time()
+    #         # FIXED: Much shorter persistence for small crypto (15-30 seconds max)
+    #         last_signal = getattr(self, '_last_signal', 'none')
+    #         last_signal_time = getattr(self, '_last_signal_time', 0)
+    #         current_time = time.time()
             
-            # FIXED: Adaptive persistence based on market conditions
-            if latest_tsi > OVERBOUGHT_LEVEL or latest_tsi < OVERSOLD_LEVEL:
-                # Near extremes: allow faster reversals
-                min_persistence = 10  # 10 seconds
-            else:
-                # Normal range: slightly longer
-                min_persistence = 20  # 20 seconds
+    #         # FIXED: Adaptive persistence based on market conditions
+    #         if latest_tsi > OVERBOUGHT_LEVEL or latest_tsi < OVERSOLD_LEVEL:
+    #             # Near extremes: allow faster reversals
+    #             min_persistence = 10  # 10 seconds
+    #         else:
+    #             # Normal range: slightly longer
+    #             min_persistence = 20  # 20 seconds
             
-            signal_too_recent = (current_time - last_signal_time) < min_persistence
+    #         signal_too_recent = (current_time - last_signal_time) < min_persistence
             
-            # FIXED: Overbought/Oversold Protection
-            at_overbought = latest_tsi >= OVERBOUGHT_LEVEL
-            at_oversold = latest_tsi <= OVERSOLD_LEVEL
+    #         # FIXED: Overbought/Oversold Protection
+    #         at_overbought = latest_tsi >= OVERBOUGHT_LEVEL
+    #         at_oversold = latest_tsi <= OVERSOLD_LEVEL
             
-            # SIGNAL LOGIC - FIXED: Fast and responsive
+    #         # SIGNAL LOGIC - FIXED: Fast and responsive
             
-            # 1. STRONG BUY: Oversold bounce with bullish momentum
-            if (at_oversold and momentum_bullish and latest_tsi > latest_tsi_signal):
-                if last_signal != 'buy' or not signal_too_recent:
-                    direction = 'buy'
-                    self._last_signal = 'buy'
-                    self._last_signal_time = current_time
-                    self.logger.info(f"🚀 OVERSOLD BOUNCE BUY: TSI={latest_tsi:.2f} Price=${current_price:.6f}")
+    #         # 1. STRONG BUY: Oversold bounce with bullish momentum
+    #         if (at_oversold and momentum_bullish and latest_tsi > latest_tsi_signal):
+    #             if last_signal != 'buy' or not signal_too_recent:
+    #                 direction = 'buy'
+    #                 self._last_signal = 'buy'
+    #                 self._last_signal_time = current_time
+    #                 self.logger.info(f"🚀 OVERSOLD BOUNCE BUY: TSI={latest_tsi:.2f} Price=${current_price:.6f}")
                     
-            # 2. STRONG SELL: Overbought reversal with bearish momentum  
-            elif (at_overbought and momentum_bearish and latest_tsi < latest_tsi_signal):
-                if last_signal != 'sell' or not signal_too_recent:
-                    direction = 'sell'
-                    self._last_signal = 'sell'
-                    self._last_signal_time = current_time
-                    self.logger.info(f"📉 OVERBOUGHT REVERSAL SELL: TSI={latest_tsi:.2f} Price=${current_price:.6f}")
+    #         # 2. STRONG SELL: Overbought reversal with bearish momentum  
+    #         elif (at_overbought and momentum_bearish and latest_tsi < latest_tsi_signal):
+    #             if last_signal != 'sell' or not signal_too_recent:
+    #                 direction = 'sell'
+    #                 self._last_signal = 'sell'
+    #                 self._last_signal_time = current_time
+    #                 self.logger.info(f"📉 OVERBOUGHT REVERSAL SELL: TSI={latest_tsi:.2f} Price=${current_price:.6f}")
                     
-            # 3. BULLISH CROSSOVER: Fresh momentum up
-            elif (bullish_crossover and has_strength and not at_overbought):
-                if last_signal != 'buy' or not signal_too_recent:
-                    direction = 'buy'
-                    self._last_signal = 'buy'
-                    self._last_signal_time = current_time
-                    self.logger.info(f"📈 BULLISH CROSS BUY: TSI={latest_tsi:.2f}>{latest_tsi_signal:.2f} Price=${current_price:.6f}")
+    #         # 3. BULLISH CROSSOVER: Fresh momentum up
+    #         elif (bullish_crossover and has_strength and not at_overbought):
+    #             if last_signal != 'buy' or not signal_too_recent:
+    #                 direction = 'buy'
+    #                 self._last_signal = 'buy'
+    #                 self._last_signal_time = current_time
+    #                 self.logger.info(f"📈 BULLISH CROSS BUY: TSI={latest_tsi:.2f}>{latest_tsi_signal:.2f} Price=${current_price:.6f}")
                     
-            # 4. BEARISH CROSSOVER: Fresh momentum down
-            elif (bearish_crossover and has_strength and not at_oversold):
-                if last_signal != 'sell' or not signal_too_recent:
-                    direction = 'sell'
-                    self._last_signal = 'sell'
-                    self._last_signal_time = current_time
-                    self.logger.info(f"📉 BEARISH CROSS SELL: TSI={latest_tsi:.2f}<{latest_tsi_signal:.2f} Price=${current_price:.6f}")
+    #         # 4. BEARISH CROSSOVER: Fresh momentum down
+    #         elif (bearish_crossover and has_strength and not at_oversold):
+    #             if last_signal != 'sell' or not signal_too_recent:
+    #                 direction = 'sell'
+    #                 self._last_signal = 'sell'
+    #                 self._last_signal_time = current_time
+    #                 self.logger.info(f"📉 BEARISH CROSS SELL: TSI={latest_tsi:.2f}<{latest_tsi_signal:.2f} Price=${current_price:.6f}")
                     
-            # 5. MOMENTUM CONTINUATION: Strong trending
-            elif (latest_tsi > latest_tsi_signal and momentum_bullish and current_strength > min_strength * 1.5):
-                if last_signal != 'buy' or not signal_too_recent:
-                    direction = 'buy'
-                    self._last_signal = 'buy'
-                    self._last_signal_time = current_time
-                    self.logger.info(f"⚡ MOMENTUM BUY: TSI={latest_tsi:.2f} Strength={current_strength:.2f}")
+    #         # 5. MOMENTUM CONTINUATION: Strong trending
+    #         elif (latest_tsi > latest_tsi_signal and momentum_bullish and current_strength > min_strength * 1.5):
+    #             if last_signal != 'buy' or not signal_too_recent:
+    #                 direction = 'buy'
+    #                 self._last_signal = 'buy'
+    #                 self._last_signal_time = current_time
+    #                 self.logger.info(f"⚡ MOMENTUM BUY: TSI={latest_tsi:.2f} Strength={current_strength:.2f}")
                     
-            elif (latest_tsi < latest_tsi_signal and momentum_bearish and current_strength > min_strength * 1.5):
-                if last_signal != 'sell' or not signal_too_recent:
-                    direction = 'sell'
-                    self._last_signal = 'sell'
-                    self._last_signal_time = current_time
-                    self.logger.info(f"⚡ MOMENTUM SELL: TSI={latest_tsi:.2f} Strength={current_strength:.2f}")
+    #         elif (latest_tsi < latest_tsi_signal and momentum_bearish and current_strength > min_strength * 1.5):
+    #             if last_signal != 'sell' or not signal_too_recent:
+    #                 direction = 'sell'
+    #                 self._last_signal = 'sell'
+    #                 self._last_signal_time = current_time
+    #                 self.logger.info(f"⚡ MOMENTUM SELL: TSI={latest_tsi:.2f} Strength={current_strength:.2f}")
             
-            # 6. HOLD PREVIOUS SIGNAL: No clear new direction
-            else:
-                direction = 'none'
-                self.logger.debug(f"⚠️ NO CLEAR SIGNAL: TSI={latest_tsi:.2f} Signal={latest_tsi_signal:.2f} Momentum={tsi_momentum:.2f}")
+    #         # 6. HOLD PREVIOUS SIGNAL: No clear new direction
+    #         else:
+    #             direction = 'none'
+    #             self.logger.debug(f"⚠️ NO CLEAR SIGNAL: TSI={latest_tsi:.2f} Signal={latest_tsi_signal:.2f} Momentum={tsi_momentum:.2f}")
                 
-        except Exception as e:
-            self.logger.error(f"Error in FIXED TSI analysis: {e}")
-            direction = 'none'
+    #     except Exception as e:
+    #         self.logger.error(f"Error in FIXED TSI analysis: {e}")
+    #         direction = 'none'
         
-        return direction
+    #     return direction
     # def _check_position_and_signals(self):
     #     """FIXED: Single position fetch to prevent race condition duplicates."""
     #     try:
@@ -908,13 +864,13 @@ class SignalStrategy:
                 return
             
             self.running = False
-            self.logger.info(f"🛑 Stopping strategy for {self.symbol}")
+            # self.logger.info(f"🛑 Stopping strategy for {self.symbol}")
             
             # Cancel all orders
             try:
                 cancelled = self.exchange.cancel_all_orders(self.symbol)
-                if cancelled:
-                    self.logger.info(f"Cancelled {len(cancelled)} orders for {self.symbol}")
+                #if cancelled:
+                    # self.logger.info(f"Cancelled {len(cancelled)} orders for {self.symbol}")
             except Exception as e:
                 self.logger.error(f"Error cancelling orders for {self.symbol}: {e}")
             
@@ -922,7 +878,7 @@ class SignalStrategy:
             if hasattr(self, '_position_closed_by_signal'):
                 self._position_closed_by_signal = False
             
-            self.logger.info(f"✅ Strategy stopped for {self.symbol}")
+            # self.logger.info(f"✅ Strategy stopped for {self.symbol}")
             
         except Exception as e:
             self.logger.error(f"Error stopping strategy for {self.symbol}: {e}")

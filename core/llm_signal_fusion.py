@@ -25,7 +25,7 @@ def load_llm_config_from_json(config_file: str = 'config.json') -> 'LLMConfig':
                 model_name=llm_settings.get('model_name', 'qwen3:0.6b'),
                 temperature=llm_settings.get('temperature', 0.1),
                 max_tokens=llm_settings.get('max_tokens', 128),
-                timeout_ms=llm_settings.get('timeout_ms', 150),
+                timeout_ms=llm_settings.get('timeout_ms', 6000000),
                 min_confidence=llm_settings.get('min_confidence', 0.6),
                 enabled=llm_settings.get('enabled', True),
                 ollama_host=llm_settings.get('ollama_host', 'localhost:11434'),
@@ -47,7 +47,7 @@ class LLMConfig:
     model_name: str = 'qwen3:0.6b'  # Ultra-fast 0.6B model
     temperature: float = 0.1
     max_tokens: int = 128
-    timeout_ms: int = 150  # Max inference time
+    timeout_ms: int = 60000000  # Max inference time
     min_confidence: float = 0.6
     enabled: bool = True
     ollama_host: str = 'localhost:11434'
