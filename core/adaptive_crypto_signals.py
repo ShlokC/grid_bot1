@@ -665,67 +665,85 @@ class AdaptiveCryptoSignals:
                     current_price = float(analysis_candles[-1][4])
                     
                     # Simple, direct prompt - let LLM do ALL the analysis
-                    cot_prompt = f"""You are a crypto trading expert analyzing small cap tokens for manipulation and genuine signals.
+                    cot_prompt = f"""/think
 
-TRADING SCENARIO:
-Token: {self.symbol}
+You are a cryptocurrency trading expert specializing in small cap token analysis and manipulation detection.
+
+TRADING ANALYSIS TASK: {self.symbol}
 Current Price: ${current_price:.6f}
 Traditional Signal: {traditional_signal.upper()}
 RSI: {indicators.get('rsi', 'N/A')}
 Market Trend: {"BULLISH" if indicators.get('st_direction', 0) == 1 else "BEARISH"}
 
-RECENT OHLCV DATA (last 60 3m candles):
-{self._format_ohlcv_for_llm(analysis_candles[-60:])}
+<price_data>
+Historical OHLCV Data (last 40 candles for comprehensive analysis):
+{self._format_ohlcv_for_llm(analysis_candles[-40:])}
+</price_data>
 
-ANALYSIS TASK:
-Determine if the {traditional_signal.upper()} signal should be confirmed, changed, or rejected based on volume patterns, price action, and small cap manipulation risks.
+<analysis_requirements>
+Your task is to analyze this small cap crypto and determine if the {traditional_signal.upper()} signal should be:
+1. CONFIRMED - Keep the {traditional_signal} signal
+2. CHANGED - Switch to opposite signal (buy->sell or sell->buy)  
+3. REJECTED - Use 'none' due to high risk/uncertainty
 
-Please structure your response using this format:
+Focus on:
+- Volume patterns and manipulation detection
+- Support/resistance levels from historical data
+- Pump/dump cycle identification
+- Whale activity and liquidity analysis
+- Technical signal validation
+</analysis_requirements>
 
-<think>
-Step 1 - Volume Analysis:
-- Examine volume trends in recent candles
-- Check for volume spikes that indicate manipulation vs genuine interest
-- Volume confirmation: Does volume support the price movement?
+<thinking_process>
+Analyze step-by-step:
 
-Step 2 - Price Action Assessment:
-- Identify support/resistance levels from the OHLCV data
-- Look for pump/dump patterns typical in small caps
-- Assess momentum: Is this sustainable or likely reversal?
+1. Historical Context Assessment:
+   - Identify key support/resistance levels from the 40-candle data
+   - Locate recent highs/lows and trend structure
+   - Assess current price position relative to major levels
 
-Step 3 - Small Cap Risk Evaluation:
-- Check for manipulation signs: sudden spikes, thin volume, erratic moves
-- Evaluate if this is genuine market movement or whale activity
-- Risk assessment: Low/Medium/High manipulation probability
+2. Volume Pattern Analysis:
+   - Track volume trends across the dataset
+   - Identify accumulation vs distribution phases
+   - Spot volume spikes and their correlation with price moves
+   - Check current volume against recent patterns
 
-Step 4 - Signal Confidence Calculation:
-Rate each factor (1-10):
-- Volume confirmation strength: _/10
-- Price pattern reliability: _/10
-- Technical signal quality: _/10
-- Manipulation risk (subtract): _/10
+3. Small Cap Manipulation Detection:
+   - Look for sudden vertical price moves with volume spikes (pump patterns)
+   - Identify heavy selling after pumps (dump patterns)
+   - Check for thin volume periods with erratic price action
+   - Assess whale activity through large single-candle movements
 
-Final confidence = (Volume + Pattern + Technical - Manipulation) / 30
+4. Technical Signal Validation:
+   - Evaluate if the {traditional_signal} signal occurs at logical levels
+   - Check for momentum continuation vs exhaustion signs
+   - Assess support/resistance confluence with the signal
 
-Step 5 - Decision Logic:
-Based on analysis:
-- Should I CONFIRM the {traditional_signal} signal?
-- Should I CHANGE to opposite signal?
-- Should I WAIT (use 'none') due to uncertainty?
-</think>
+5. Risk Assessment:
+   - Rate manipulation probability: Low/Medium/High
+   - Evaluate signal reliability based on volume confirmation
+   - Consider liquidity and market structure risks
 
-Based on my systematic analysis, here is my trading recommendation:
+6. Confidence Calculation:
+   Rate each factor (1-10):
+   - Historical pattern clarity: __/10
+   - Volume trend confirmation: __/10
+   - Technical signal strength: __/10
+   - Support/resistance validation: __/10
+   - Manipulation risk (subtract): __/10
+   
+   Confidence = (Pattern + Volume + Technical + S/R - Risk) / 40
+</thinking_process>
 
-Signal: [buy/sell/none]
-Confidence: [0.XX calculated above]
-Reasoning: [Brief summary of key factors from analysis]
-
-Response format: {{"signal": "buy/sell/none", "confidence": 0.XX, "reasoning": "Volume shows [X], price action indicates [Y], manipulation risk is [Z], therefore [decision]"}}"""
+<output_format>
+Provide your analysis as valid JSON only, no additional text:
+{{"signal": "buy/sell/none", "confidence": 0.XX, "reasoning": "Historical analysis: [key findings]. Volume: [trend assessment]. Manipulation risk: [Low/Medium/High]. Key levels: [prices]. Decision: [logic for signal choice]"}}
+</output_format>"""                   
                     start_time = time.time()
                     
                     # Call LLM with Phi4 thinking mode
                     response = ollama.chat(
-                        model=self._llm_config.get('model', 'phi4-mini-reasoning:3.8b'),
+                        model=self._llm_config.get('model', 'qwen3:1.7b'),
                         messages=[{'role': 'user', 'content': cot_prompt}],
                         format='json',
                         options={
@@ -745,7 +763,9 @@ Response format: {{"signal": "buy/sell/none", "confidence": 0.XX, "reasoning": "
                         llm_signal = result.get('signal', 'none').lower()
                         llm_confidence = float(result.get('confidence', 0.0))
                         llm_reasoning = result.get('reasoning', '')
-                        
+                        self.logger.info(f"LLM Analysis: {traditional_signal} -> {llm_signal} "
+                                            f"(confidence: {llm_confidence})")
+                        self.logger.info(f"LLM Reasoning: {llm_reasoning}")
                         if llm_signal in ['buy', 'sell', 'none'] and 0.0 <= llm_confidence <= 1.0:
                             if llm_signal != traditional_signal:
                                 
@@ -756,10 +776,7 @@ Response format: {{"signal": "buy/sell/none", "confidence": 0.XX, "reasoning": "
                                     'llm_confidence': llm_confidence,
                                     'llm_reasoning': llm_reasoning,
                                     'original_signal': traditional_signal
-                                })
-                                self.logger.info(f"LLM Analysis: {traditional_signal} -> {llm_signal} "
-                                            f"(confidence: {llm_confidence:.2f}, {inference_time:.0f}ms)")
-                                self.logger.info(f"LLM Reasoning: {llm_reasoning}")
+                                })                                
                                 return llm_signal, indicators
                             else:
                                 self.logger.info(f"LLM confirmed {traditional_signal} "
