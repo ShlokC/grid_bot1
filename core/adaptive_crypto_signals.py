@@ -1328,7 +1328,7 @@ Provide your final analysis as a single, valid JSON object. Your reasoning must 
             return 'none', {}
 
     def evaluate_exit_conditions(self, position_side: str, entry_price: float, current_price: float) -> Dict:
-        """UPDATED: Exit evaluation with fresh indicator support - signature unchanged."""
+        """UPDATED: Exit evaluation with LLM analysis - same functionality as _generate_signal_with_indicators()"""
         try:
             result = {'should_exit': False, 'exit_reason': '', 'exit_urgency': 'none'}
             
@@ -1343,42 +1343,197 @@ Provide your final analysis as a single, valid JSON object. Your reasoning must 
                 })
                 return result
 
-            # PRIORITY 2: Take profit
-            # if pnl_pct > 2.0:
-            #     result.update({
-            #         'should_exit': True,
-            #         'exit_reason': f"Take Profit: {pnl_pct:.2f}% gain",
-            #         'exit_urgency': 'normal'
-            #     })
-            #     return result
-
-            # PRIORITY 3: Technical signal-based exits (now with fresh indicators)
+            # PRIORITY 2: LLM EXIT ANALYSIS (NEW - same as generate_signal_with_indicators)
             try:
-                # NOTE: _check_technical_exit_conditions now calculates fresh indicators internally
-                # Pass empty dict - fresh indicators will be calculated inside the method
-                signal_exit = self._check_technical_exit_conditions(position_side, {}, pnl_pct)
-                if signal_exit['should_exit']:
-                    return signal_exit
+                # Get fresh OHLCV data for LLM analysis - same logic as _generate_signal_with_indicators
+                if not hasattr(self, '_exchange_ref'):
+                    self.logger.debug("No exchange reference available for LLM exit analysis")
+                    return self._fallback_technical_exit(position_side, entry_price, current_price, pnl_pct)
+                
+                exchange = self._exchange_ref
+                
+                # Get fresh OHLCV data based on strategy type - EXACTLY same as _generate_signal_with_indicators
+                if self.strategy_type == 'roc_multi_timeframe':
+                    ohlcv_3m = exchange.get_ohlcv(self.symbol, timeframe='3m', limit=100)
+                    ohlcv_15m = exchange.get_ohlcv(self.symbol, timeframe='15m', limit=50)
                     
+                    if not ohlcv_3m or len(ohlcv_3m) < 50 or not ohlcv_15m or len(ohlcv_15m) < 20:
+                        return self._fallback_technical_exit(position_side, entry_price, current_price, pnl_pct)
+                    
+                    ohlcv_data = {
+                        '3m': ohlcv_3m,
+                        '15m': ohlcv_15m
+                    }
+                    raw_data = ohlcv_3m
+                else:
+                    ohlcv_data = exchange.get_ohlcv(self.symbol, timeframe='3m', limit=200)
+                    if not ohlcv_data or len(ohlcv_data) < 50:
+                        return self._fallback_technical_exit(position_side, entry_price, current_price, pnl_pct)
+                    raw_data = ohlcv_data
+                
+                # Use thread-safe parameter snapshot - EXACTLY same as _generate_signal_with_indicators
+                with self._snapshot_lock:
+                    current_params = copy.deepcopy(self._params_snapshot)
+                
+                # Get traditional signal for context - EXACTLY same as _generate_signal_with_indicators
+                if isinstance(ohlcv_data, dict) and '3m' in ohlcv_data and '15m' in ohlcv_data:
+                    if self.strategy_type == 'roc_multi_timeframe':
+                        traditional_signal, indicators = self._roc_multi_timeframe_signal_with_indicators(ohlcv_data, current_params)
+                    else:
+                        df = pd.DataFrame(ohlcv_data['3m'], columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+                        for col in ['open', 'high', 'low', 'close', 'volume']:
+                            df[col] = df[col].astype(float)
+                        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+                        df = df.set_index('timestamp')
+                        traditional_signal, indicators = self._get_strategy_signal(df, current_params)
+                else:
+                    df = pd.DataFrame(ohlcv_data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+                    for col in ['open', 'high', 'low', 'close', 'volume']:
+                        df[col] = df[col].astype(float)
+                    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+                    df = df.set_index('timestamp')
+                    traditional_signal, indicators = self._get_strategy_signal(df, current_params)
+                
+                # LLM EXIT ANALYSIS - EXACTLY same structure as _generate_signal_with_indicators but for exits
+                if self._llm_enabled:
+                    try:
+                        # Use last 50 candles for analysis - EXACTLY same as _generate_signal_with_indicators
+                        analysis_candles = raw_data[-50:] if len(raw_data) >= 50 else raw_data
+                        
+                        if len(analysis_candles) >= 20:
+                            # Format raw OHLCV data for LLM - EXACTLY same as _generate_signal_with_indicators
+                            ohlcv_text = self._format_ohlcv_for_llm(analysis_candles)
+                            
+                            # EXIT-SPECIFIC LLM PROMPT - Let LLM do ALL the exit analysis
+                            exit_prompt = f"""/think
+
+You are an expert crypto scalp trader specializing in precise position management. Your primary goal is capital preservation. You are currently in a {position_side.upper()} position and must decide with extreme clarity whether to HOLD or EXIT.
+
+**CRITICAL CONTEXT: This is a {position_side.upper()} position. {'For a LONG, we profit if the price goes UP.' if position_side == 'long' else 'For a SHORT, we profit if the price goes DOWN.'} Your entire analysis must reflect this objective.**
+
+**POSITION ANALYSIS TASK: {self.symbol}**
+*   **Current Position:** {position_side.upper()}
+*   **Entry Price:** ${entry_price:.6f}
+*   **Current Price:** ${current_price:.6f}
+*   **Current PnL:** {pnl_pct:.2f}%
+*   **Contextual Data:** The system's initial indicators show {{"RSI": "{indicators.get('rsi', 'N/A')}", "Trend": "{"BULLISH" if indicators.get('st_direction', 0) == 1 else "BEARISH"}"}}.
+
+**<price_data>**
+Recent OHLCV Data (Analyze the full 40-candle context, but focus on the story told by the last 5-10 candles):
+{self._format_ohlcv_for_llm(analysis_candles[-40:])}
+**</price_data>**
+
+**<exit_analysis_framework>**
+Your task is to critically evaluate whether to **EXIT** this {position_side.upper()} position now or **HOLD**. You must find compelling reasons for both sides before deciding.
+
+**1.  Position Narrative (What's the current story?):**
+    *   Describe the current market narrative and how it affects your {position_side.upper()} position. Is the price action confirming your trade or threatening it?
+
+**2.  The Hold Case vs. The Exit Case (Symmetrical Analysis):**
+    *   **Hold Case (Reasons to STAY IN):** What is the strongest evidence that your original trade thesis is still valid?
+        *   {'For this **LONG** position, look for signs of **continued upward movement** (e.g., bullish candles, breaking resistance, holding support).' if position_side == 'long' else 'For this **SHORT** position, look for signs of **continued downward movement** (e.g., bearish candles, breaking support, failing to rise).'}
+
+    *   **Exit Case (Reasons to GET OUT):** What is the strongest evidence that the trend is reversing **against you**?
+        *   {'For this **LONG** position, look for signs of a **bearish reversal** that threatens your profit (e.g., strong bearish candles, rejection from resistance, breaking key support).' if position_side == 'long' else 'For this **SHORT** position, look for signs of a **bullish reversal** that threatens your profit (e.g., strong bullish candles, bouncing from support, breaking key resistance).'}
+
+**3.  Risk Synthesis and Final Judgement:**
+    *   **Weigh the Evidence:** Compare the cases. Is the evidence for a reversal **against your position** stronger than the evidence for continuation?
+    *   **Dominant Factor:** What is the single most important factor (a specific candle, a level break, a divergence) driving your decision right now?
+    *   **Conviction Score to EXIT (1-10):** How high is your conviction to **exit now**? A score below 7 means the reasons to hold are stronger. A score of 7 or higher means the risk of a reversal is too high to ignore.
+    *   **Final Decision:** Based on your risk-first approach, make the final call: **exit** (close the position) or **hold** (let the trade continue).
+
+**</exit_analysis_framework>**
+
+**<output_format>**
+Provide your final analysis as a single, valid JSON object. Your reasoning must be a concise synthesis of your thought process and demonstrate you understand the position's goal.
+
+{{"action": "exit/hold", "conviction": X.X, "reasoning": "Narrative: My {position_side.upper()} position is currently [in profit/at a loss]. The hold case is supported by [evidence for your trade], but the exit case is stronger because of [evidence against your trade]. The dominant factor is [e.g., 'a strong bullish bounce from support which threatens my SHORT'], so I will [action]."}}
+**</output_format>**"""
+                            
+                            start_time = time.time()
+                            
+                            # Call LLM - EXACTLY same as _generate_signal_with_indicators
+                            response = ollama.chat(
+                                model=self._llm_config.get('model', 'qwen2.5:3b-instruct-q4_K_M'),
+                                messages=[{'role': 'user', 'content': exit_prompt}],
+                                format='json',
+                                options={
+                                    "temperature": 0.1,
+                                    "max_tokens": 120,
+                                    "timeout_ms": 25000,
+                                    "num_ctx": 1536,
+                                    "keep_alive": "15m",
+                                    "use_cache": True
+                                }
+                            )
+                            
+                            inference_time = (time.time() - start_time) * 1000
+                            
+                            # Parse LLM response - EXACTLY same logic as _generate_signal_with_indicators
+                            try:
+                                import json
+                                llm_result = json.loads(response['message']['content'])
+                                llm_action = llm_result.get('action', 'hold').lower()
+                                llm_conviction = float(llm_result.get('conviction', 0.0))
+                                llm_reasoning = llm_result.get('reasoning', '')
+                                
+                                self.logger.info(f"LLM Exit Analysis: {llm_action} (conviction: {llm_conviction:.2f})")
+                                self.logger.info(f"LLM Exit Reasoning: {llm_reasoning}")
+                                
+                                # LLM exit decision takes priority if conviction is high
+                                if llm_action == 'exit' and 0.0 <= llm_conviction <= 10.0:
+                                    result.update({
+                                        'should_exit': True,
+                                        'exit_reason': f"LLM Exit: {llm_reasoning} (conviction: {llm_conviction:.2f})",
+                                        'exit_urgency': 'immediate' if llm_conviction >= 8.0 else 'normal',
+                                        'llm_enhanced': True,
+                                        'llm_conviction': llm_conviction
+                                    })
+                                    return result
+                                elif llm_action == 'hold':
+                                    self.logger.info(f"LLM recommends HOLD (conviction: {llm_conviction:.2f})")
+                                    # Continue to technical analysis
+                                    return result
+                            except json.JSONDecodeError:
+                                self.logger.warning("LLM JSON parse failed in exit analysis")
+                                
+                    except Exception as e:
+                        self.logger.debug(f"LLM exit analysis failed: {e}")
+                
+                # PRIORITY 3: Fall back to technical exit analysis
+                return self._fallback_technical_exit(position_side, entry_price, current_price, pnl_pct)
+                        
             except Exception as e:
-                self.logger.error(f"Technical exit check error: {e}")
-
-            # PRIORITY 4: Time-based exit
-            if self.position_entry_time > 0:
-                position_age_minutes = (time.time() - self.position_entry_time) / 60
-                if position_age_minutes > 60:
-                    result.update({
-                        'should_exit': True,
-                        'exit_reason': f"Time Exit: {position_age_minutes:.0f}min (PnL: {pnl_pct:.2f}%)",
-                        'exit_urgency': 'normal'
-                    })
-                    return result
-
-            return result
-            
+                self.logger.error(f"LLM exit evaluation error: {e}")
+                return self._fallback_technical_exit(position_side, entry_price, current_price, pnl_pct)
         except Exception as e:
-            self.logger.error(f"Exit evaluation error: {e}")
-            return {'should_exit': False, 'exit_reason': 'Error', 'exit_urgency': 'none'}
+            self.logger.error(f"LLM exit evaluation error: {e}")
+            return self._fallback_technical_exit(position_side, entry_price, current_price, pnl_pct)
+    def _fallback_technical_exit(self, position_side: str, entry_price: float, current_price: float, pnl_pct: float) -> Dict:
+        """Fallback technical exit analysis when LLM is not available"""
+        result = {'should_exit': False, 'exit_reason': '', 'exit_urgency': 'none'}
+        
+        # PRIORITY 3: Technical signal-based exits (existing logic)
+        try:
+            signal_exit = self._check_technical_exit_conditions(position_side, {}, pnl_pct)
+            if signal_exit['should_exit']:
+                return signal_exit
+                
+        except Exception as e:
+            self.logger.error(f"Technical exit check error: {e}")
+
+        # PRIORITY 4: Time-based exit (existing logic)
+        if self.position_entry_time > 0:
+            position_age_minutes = (time.time() - self.position_entry_time) / 60
+            if position_age_minutes > 60:
+                result.update({
+                    'should_exit': True,
+                    'exit_reason': f"Time Exit: {position_age_minutes:.0f}min (PnL: {pnl_pct:.2f}%)",
+                    'exit_urgency': 'normal'
+                })
+                return result
+
+        return result
 
     def _get_fresh_exit_indicators(self) -> Dict:
         """Get fresh indicators specifically for exit evaluation - bypasses entry signal cooldown."""
