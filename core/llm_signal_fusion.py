@@ -22,7 +22,7 @@ def load_llm_config_from_json(config_file: str = 'config.json') -> 'LLMConfig':
             llm_settings = config_data.get('llm_config', {})
             
             return LLMConfig(
-                model_name=llm_settings.get('model_name', 'qwen3:1.7b'),
+                model_name=llm_settings.get('model_name', 'qwen2.5:3b-instruct-q4_K_M'),
                 temperature=llm_settings.get('temperature', 0.1),
                 max_tokens=llm_settings.get('max_tokens', 256),
                 timeout_ms=llm_settings.get('timeout_ms', 6000000),
@@ -44,7 +44,7 @@ def load_llm_config_from_json(config_file: str = 'config.json') -> 'LLMConfig':
 @dataclass
 class LLMConfig:
     """Configuration for LLM signal fusion"""
-    model_name: str = 'qwen3:1.7b'  # Ultra-fast 0.6B model
+    model_name: str = 'qwen2.5:3b-instruct-q4_K_M'  # Ultra-fast 0.6B model
     temperature: float = 0.1
     max_tokens: int = 256
     timeout_ms: int = 60000000  # Max inference time

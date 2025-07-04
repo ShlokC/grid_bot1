@@ -667,90 +667,55 @@ class AdaptiveCryptoSignals:
                     # Simple, direct prompt - let LLM do ALL the analysis
                     cot_prompt = f"""/think
 
-You are a cryptocurrency trading expert specializing in small cap token analysis and manipulation detection.
+You are an expert crypto scalp trader specializing in high-probability reversals. You hunt for the climax of pumps to open SHORT positions ('sell') and the capitulation of dumps to open LONG positions ('buy'). Your primary goal is capital preservation. You are extremely risk-averse and only trade when the evidence for an imminent, sharp reversal is overwhelming. Your motto is: "The best trade is often no trade at all."
 
-TRADING ANALYSIS TASK: {self.symbol}
-Current Price: ${current_price:.6f}
-Traditional Signal: {traditional_signal.upper()}
-RSI: {indicators.get('rsi', 'N/A')}
-Market Trend: {"BULLISH" if indicators.get('st_direction', 0) == 1 else "BEARISH"}
+**TRADING ANALYSIS TASK: {self.symbol}**
+*   **Current Price:** ${current_price:.6f}
+*   **Suggested Signal:** {traditional_signal.upper()}
+*   **Contextual Data:** The system's initial indicators show {{"RSI": "{indicators.get('rsi', 'N/A')}", "Trend": "{"BULLISH" if indicators.get('st_direction', 0) == 1 else "BEARISH"}"}}.
 
-<price_data>
-Historical OHLCV Data (last 40 candles for comprehensive analysis):
+**<price_data>**
+Recent OHLCV Data (Analyze the full 40-candle context, but focus on the story told by the last 5-10 candles):
 {self._format_ohlcv_for_llm(analysis_candles[-40:])}
-</price_data>
+**</price_data>**
 
-<analysis_requirements>
-Your task is to analyze this small cap crypto and determine if the {traditional_signal.upper()} signal should be:
-1. CONFIRMED - Keep the {traditional_signal} signal
-2. CHANGED - Switch to opposite signal (buy->sell or sell->buy)  
-3. REJECTED - Use 'none' due to high risk/uncertainty
+**<analytical_framework>**
+Your task is to critically evaluate the suggested signal. Do not simply validate it. Your goal is to find compelling reasons **why the signal might be wrong**. You must be equally skeptical of buying into a potentially exhausted pump and shorting into a potential capitulation dump.
 
-Focus on:
-- Volume patterns and manipulation detection
-- Support/resistance levels from historical data
-- Pump/dump cycle identification
-- Whale activity and liquidity analysis
-- Technical signal validation
-</analysis_requirements>
+**1.  Narrative Assessment (What's the story?):**
+    *   First, describe the current market narrative based on the price action and volume. Examples: "This is a classic parabolic pump showing clear signs of exhaustion," or "This looks like a panic dump hitting a potential support zone with high volume," or "The price is directionless and choppy, indicating a high-risk trap."
 
-<thinking_process>
-Analyze step-by-step:
+**2.  The Bull Case vs. The Bear Case (Symmetrical Analysis):**
+    *   **Bull Case (Reasons to BUY):** What are the strongest arguments for the price to go UP? Look for evidence of a bottoming process or strength. Examples: *long lower wicks*, *high volume at a support level*, *bullish candlestick patterns* (e.g., hammer, engulfing), price reclaiming a key level.
+    *   **Bear Case (Reasons to SELL):** What are the strongest arguments for the price to go DOWN? Look for evidence of a topping process or weakness. Examples: *long upper wicks*, *declining volume on new highs*, *bearish candlestick patterns* (e.g., shooting star), clear rejection from a resistance level.
 
-1. Historical Context Assessment:
-   - Identify key support/resistance levels from the 40-candle data
-   - Locate recent highs/lows and trend structure
-   - Assess current price position relative to major levels
+**3.  Risk Synthesis and Final Judgement:**
+    *   **Weigh the Evidence:** Compare the bull and bear cases. Is the suggested signal entering at a point of strength or a point of potential exhaustion?
+    *   **Dominant Factor:** What is the single most important factor driving your decision right now? (e.g., "Exhaustion volume," "Parabolic price structure," "Clear rejection from resistance," "Strong bounce from support").
+    *   **Conviction Score (1-10):** How high is your conviction? A score below 7 means you should not trade.
+    *   **Final Decision:** Based on your risk-first approach, make the final call: **buy**, **sell**, or **none**. Your ideal trades are a 'sell' at an exhausted peak or a 'buy' at a capitulation bottom. 'None' is your default answer if the risk/reward is unclear or the trend looks dangerously extended.
 
-2. Volume Pattern Analysis:
-   - Track volume trends across the dataset
-   - Identify accumulation vs distribution phases
-   - Spot volume spikes and their correlation with price moves
-   - Check current volume against recent patterns
+**</analytical_framework>**
 
-3. Small Cap Manipulation Detection:
-   - Look for sudden vertical price moves with volume spikes (pump patterns)
-   - Identify heavy selling after pumps (dump patterns)
-   - Check for thin volume periods with erratic price action
-   - Assess whale activity through large single-candle movements
+**<output_format>**
+Provide your final analysis as a single, valid JSON object. Your reasoning must be a concise synthesis of your thought process.
 
-4. Technical Signal Validation:
-   - Evaluate if the {traditional_signal} signal occurs at logical levels
-   - Check for momentum continuation vs exhaustion signs
-   - Assess support/resistance confluence with the signal
-
-5. Risk Assessment:
-   - Rate manipulation probability: Low/Medium/High
-   - Evaluate signal reliability based on volume confirmation
-   - Consider liquidity and market structure risks
-
-6. Confidence Calculation:
-   Rate each factor (1-10):
-   - Historical pattern clarity: __/10
-   - Volume trend confirmation: __/10
-   - Technical signal strength: __/10
-   - Support/resistance validation: __/10
-   - Manipulation risk (subtract): __/10
-   
-   Confidence = (Pattern + Volume + Technical + S/R - Risk) / 40
-</thinking_process>
-
-<output_format>
-Provide your analysis as valid JSON only, no additional text:
-{{"signal": "buy/sell/none", "confidence": 0.XX, "reasoning": "Historical analysis: [key findings]. Volume: [trend assessment]. Manipulation risk: [Low/Medium/High]. Key levels: [prices]. Decision: [logic for signal choice]"}}
-</output_format>"""                   
+{{"signal": "buy/sell/none", "conviction": X.X, "reasoning": "Narrative: [Your market story]. The bull case is [evidence], but the bear case is stronger because [counter-evidence]. The dominant factor is [e.g., 'clear exhaustion on low volume'], suggesting the suggested '{traditional_signal.upper()}' signal is a trap. The risk of a sharp reversal is too high."}}
+**</output_format>**"""
                     start_time = time.time()
                     
                     # Call LLM with Phi4 thinking mode
                     response = ollama.chat(
-                        model=self._llm_config.get('model', 'qwen3:1.7b'),
+                        model=self._llm_config.get('model', 'qwen2.5:3b-instruct-q4_K_M'),
                         messages=[{'role': 'user', 'content': cot_prompt}],
                         format='json',
                         options={
-                            'temperature': 0.6,
-                            'top_p': 0.95, 
-                            'top_k': 40,
-                            'num_predict': 512
+                            "temperature": 0.1,
+                            "max_tokens": 120,
+                            "timeout_ms": 25000,
+                            "num_ctx": 1536,
+                            "keep_alive": "15m",
+                            "use_cache": True
                         }
                     )
                     

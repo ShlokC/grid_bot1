@@ -26,8 +26,8 @@ class SignalStrategy:
                  exchange: Exchange, 
                  symbol: str,
                  strategy_id: str,
-                 position_size_usd: float = 1.0,
-                 leverage: float = 10.0,
+                 position_size_usd: float = 0.5,
+                 leverage: float = 20.0,
                  strategy_type: str = 'roc_multi_timeframe',
                  enable_llm: bool = True):  # Add this parameter
         """Initialize signal strategy with LLM support."""
