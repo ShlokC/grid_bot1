@@ -22,9 +22,9 @@ def load_llm_config_from_json(config_file: str = 'config.json') -> 'LLMConfig':
             llm_settings = config_data.get('llm_config', {})
             
             return LLMConfig(
-                model_name=llm_settings.get('model_name', 'qwen3:0.6b'),
+                model_name=llm_settings.get('model_name', 'phi4-mini-reasoning:3.8b'),
                 temperature=llm_settings.get('temperature', 0.1),
-                max_tokens=llm_settings.get('max_tokens', 128),
+                max_tokens=llm_settings.get('max_tokens', 256),
                 timeout_ms=llm_settings.get('timeout_ms', 6000000),
                 min_confidence=llm_settings.get('min_confidence', 0.6),
                 enabled=llm_settings.get('enabled', True),
@@ -44,9 +44,9 @@ def load_llm_config_from_json(config_file: str = 'config.json') -> 'LLMConfig':
 @dataclass
 class LLMConfig:
     """Configuration for LLM signal fusion"""
-    model_name: str = 'qwen3:0.6b'  # Ultra-fast 0.6B model
+    model_name: str = 'phi4-mini-reasoning:3.8b'  # Ultra-fast 0.6B model
     temperature: float = 0.1
-    max_tokens: int = 128
+    max_tokens: int = 256
     timeout_ms: int = 60000000  # Max inference time
     min_confidence: float = 0.6
     enabled: bool = True
@@ -276,10 +276,10 @@ class LLMSignalFusion:
                 format='json',
                 options={
                     'temperature': self.config.temperature,
-                    'num_ctx': 1024,
+                    'num_ctx': 4096,
                     'num_predict': self.config.max_tokens,
-                    'top_k': 10,
-                    'top_p': 0.9
+                    'top_k': 40,
+                    'top_p': 0.95
                 }
             )
             

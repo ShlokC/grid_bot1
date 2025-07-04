@@ -665,49 +665,73 @@ class AdaptiveCryptoSignals:
                     current_price = float(analysis_candles[-1][4])
                     
                     # Simple, direct prompt - let LLM do ALL the analysis
-                    cot_prompt = f"""/think
+                    cot_prompt = f"""You are a crypto trading expert analyzing small cap tokens for manipulation and genuine signals.
 
-    # Technical Analysis for {self.symbol}
+TRADING SCENARIO:
+Token: {self.symbol}
+Current Price: ${current_price:.6f}
+Traditional Signal: {traditional_signal.upper()}
+RSI: {indicators.get('rsi', 'N/A')}
+Market Trend: {"BULLISH" if indicators.get('st_direction', 0) == 1 else "BEARISH"}
 
-    ## Current Situation
-    Price: ${current_price:.6f}
-    Traditional Signal: {traditional_signal.upper()}
-    RSI: {indicators.get('rsi', 'N/A')}
-    MACD: {indicators.get('macd_line', 0):.4f} vs {indicators.get('macd_signal', 0):.4f}
-    Supertrend: {"Bullish" if indicators.get('st_direction', 0) == 1 else "Bearish"}
+RECENT OHLCV DATA (last 60 3m candles):
+{self._format_ohlcv_for_llm(analysis_candles[-60:])}
 
-    ## Recent OHLCV Data (last 30 candles)
-    Format: [Open, High, Low, Close, Volume]
-    {ohlcv_text}
+ANALYSIS TASK:
+Determine if the {traditional_signal.upper()} signal should be confirmed, changed, or rejected based on volume patterns, price action, and small cap manipulation risks.
 
-    ## Your Analysis Task
-    Analyze the raw OHLCV data above and determine:
+Please structure your response using this format:
 
-    1. **Support/Resistance**: Look at the price levels where price bounced multiple times
-    2. **Candlestick Patterns**: Identify any doji, hammers, engulfing patterns from the OHLCV
-    3. **Volume Analysis**: Check if volume increases/decreases with price moves
-    4. **Trend & Momentum**: What's the overall direction and strength?
-    5. **Divergences**: Do you see any price vs indicator conflicts?
+<think>
+Step 1 - Volume Analysis:
+- Examine volume trends in recent candles
+- Check for volume spikes that indicate manipulation vs genuine interest
+- Volume confirmation: Does volume support the price movement?
 
-    ## Decision
-    Based on your analysis of the raw data, should the {traditional_signal.upper()} signal be:
-    - CONFIRMED (keep the signal)
-    - CHANGED (to buy/sell/none)  
-    - REJECTED (wait for better setup)
+Step 2 - Price Action Assessment:
+- Identify support/resistance levels from the OHLCV data
+- Look for pump/dump patterns typical in small caps
+- Assess momentum: Is this sustainable or likely reversal?
 
-    Respond in JSON: {{"signal": "buy/sell/none", "confidence": 0.8, "reasoning": "your analysis"}}"""
+Step 3 - Small Cap Risk Evaluation:
+- Check for manipulation signs: sudden spikes, thin volume, erratic moves
+- Evaluate if this is genuine market movement or whale activity
+- Risk assessment: Low/Medium/High manipulation probability
 
+Step 4 - Signal Confidence Calculation:
+Rate each factor (1-10):
+- Volume confirmation strength: _/10
+- Price pattern reliability: _/10
+- Technical signal quality: _/10
+- Manipulation risk (subtract): _/10
+
+Final confidence = (Volume + Pattern + Technical - Manipulation) / 30
+
+Step 5 - Decision Logic:
+Based on analysis:
+- Should I CONFIRM the {traditional_signal} signal?
+- Should I CHANGE to opposite signal?
+- Should I WAIT (use 'none') due to uncertainty?
+</think>
+
+Based on my systematic analysis, here is my trading recommendation:
+
+Signal: [buy/sell/none]
+Confidence: [0.XX calculated above]
+Reasoning: [Brief summary of key factors from analysis]
+
+Response format: {{"signal": "buy/sell/none", "confidence": 0.XX, "reasoning": "Volume shows [X], price action indicates [Y], manipulation risk is [Z], therefore [decision]"}}"""
                     start_time = time.time()
                     
-                    # Call LLM with Qwen3 thinking mode
+                    # Call LLM with Phi4 thinking mode
                     response = ollama.chat(
-                        model=self._llm_config.get('model', 'qwen3:0.6b'),
+                        model=self._llm_config.get('model', 'phi4-mini-reasoning:3.8b'),
                         messages=[{'role': 'user', 'content': cot_prompt}],
                         format='json',
                         options={
                             'temperature': 0.6,
                             'top_p': 0.95, 
-                            'top_k': 20,
+                            'top_k': 40,
                             'num_predict': 512
                         }
                     )
@@ -724,9 +748,7 @@ class AdaptiveCryptoSignals:
                         
                         if llm_signal in ['buy', 'sell', 'none'] and 0.0 <= llm_confidence <= 1.0:
                             if llm_signal != traditional_signal:
-                                self.logger.info(f"LLM Analysis: {traditional_signal} -> {llm_signal} "
-                                            f"(confidence: {llm_confidence:.2f}, {inference_time:.0f}ms)")
-                                self.logger.info(f"LLM Reasoning: {llm_reasoning}")
+                                
                                 
                                 indicators.update({
                                     'llm_enhanced': True,
@@ -735,7 +757,9 @@ class AdaptiveCryptoSignals:
                                     'llm_reasoning': llm_reasoning,
                                     'original_signal': traditional_signal
                                 })
-                                
+                                self.logger.info(f"LLM Analysis: {traditional_signal} -> {llm_signal} "
+                                            f"(confidence: {llm_confidence:.2f}, {inference_time:.0f}ms)")
+                                self.logger.info(f"LLM Reasoning: {llm_reasoning}")
                                 return llm_signal, indicators
                             else:
                                 self.logger.info(f"LLM confirmed {traditional_signal} "
@@ -760,9 +784,9 @@ class AdaptiveCryptoSignals:
     def _format_ohlcv_for_llm(self, candles) -> str:
         """Format OHLCV data for LLM analysis - simple and clean"""
         try:
-            # Show last 30 candles to LLM for pattern recognition
-            recent_candles = candles[-30:] if len(candles) >= 30 else candles
-            
+            # Show last 60 candles to LLM for pattern recognition
+            recent_candles = candles[-60:] if len(candles) >= 60 else candles
+
             formatted_lines = []
             for i, candle in enumerate(recent_candles):
                 timestamp, open_p, high, low, close, volume = candle
